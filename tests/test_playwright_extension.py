@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import struct
 import tempfile
 import threading
@@ -350,6 +351,39 @@ class PlaywrightExtensionDetectionTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            self.assertIsNone(
+                checker.find_extension_profile(root, self.VERSION, approved)
+            )
+
+    def test_accepts_only_byte_identical_chrome_profile_import(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / "Default"
+            approved = root / "approved-unpacked"
+            self.write_manifest(approved)
+            (approved / "connect.html").write_bytes(b"approved\r\nbytes\x00")
+            imported = profile / "Unpacked Extensions" / approved.name
+            shutil.copytree(approved, imported)
+            (profile / "Secure Preferences").write_text(
+                json.dumps(
+                    {
+                        "extensions": {
+                            "settings": {
+                                checker.PLAYWRIGHT_EXTENSION_ID: self.record(
+                                    str(imported)
+                                )
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                "Default",
+                checker.find_extension_profile(root, self.VERSION, approved),
+            )
+            (imported / "connect.html").write_bytes(b"modified")
             self.assertIsNone(
                 checker.find_extension_profile(root, self.VERSION, approved)
             )

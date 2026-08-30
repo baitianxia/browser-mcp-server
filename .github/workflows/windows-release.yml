@@ -406,9 +406,9 @@ jobs:
                   # open while the user follows the three steps. GitHub's hosted
                   # Windows runner has no trusted human desktop input, so the CI
                   # substitute takes exclusive ownership of that same disposable
-                  # Profile, obtains a DirectoryEntry for the displayed path
-                  # from a renderer drag item, and invokes Chrome's persistent
-                  # developerPrivate directory loader. Exit code 21 is
+                  # Profile, copies the displayed directory into Chrome's
+                  # temporary FileSystem, and invokes Chrome's persistent
+                  # developerPrivate Profile importer. Exit code 21 is
                   # PROFILE_IN_USE, so release only the hosted runner's
                   # disposable Chrome processes first.
                   Stop-CiChrome
