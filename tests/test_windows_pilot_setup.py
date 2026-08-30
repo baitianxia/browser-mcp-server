@@ -256,7 +256,9 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("UIA_DEVELOPER_MODE", selector)
         self.assertIn("TogglePattern", selector)
         self.assertIn("UIA_LOAD_BUTTON", selector)
-        self.assertIn("action=desktop-click", selector)
+        self.assertIn("Invoke-DesktopElementKey", selector)
+        self.assertIn('-Keys "{ENTER}"', selector)
+        self.assertIn("action=focused-enter", selector)
         self.assertNotIn("Start-Process", selector)
         self.assertNotIn("UIA_ASYNC_LOAD", selector)
         self.assertIn("mouse_event(0x0002", selector)
@@ -267,6 +269,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("seedExtensionAuthToken", loader)
         self.assertIn('args.mode === "install-ui"', loader)
         self.assertIn('await findExistingExtension()', loader)
+        self.assertIn("process.exit(1)", loader)
 
         self.assertIn("exercise-extension-mcp.py", workflow)
         self.assertIn('"CHROME_EXE=$ChromeExe"', workflow)

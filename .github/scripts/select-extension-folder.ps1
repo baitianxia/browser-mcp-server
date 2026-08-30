@@ -78,6 +78,48 @@ function Invoke-DesktopElementClick {
     return @($ClickX, $ClickY)
 }
 
+function Invoke-DesktopElementKey {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Windows.Automation.AutomationElement]$Window,
+        [Parameter(Mandatory = $true)]
+        [System.Windows.Automation.AutomationElement]$Element,
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Keys
+    )
+
+    $ChromeHandle = [IntPtr]$Window.Current.NativeWindowHandle
+    $null = [IntranetDesktopInput]::ShowWindowAsync($ChromeHandle, 9)
+    $null = [IntranetDesktopInput]::BringWindowToTop($ChromeHandle)
+    $null = [IntranetDesktopInput]::SetForegroundWindow($ChromeHandle)
+    try {
+        $Element.SetFocus()
+    } catch {
+        throw (
+            "Chrome/Edge refused to focus the exact UI Automation control: " +
+            $Element.Current.Name
+        )
+    }
+    Start-Sleep -Milliseconds 400
+    $Focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if (-not $Focused -or
+        $Focused.Current.ProcessId -ne $Window.Current.ProcessId -or
+        $Focused.Current.Name -ne $Element.Current.Name) {
+        $ActualFocus = if ($Focused) {
+            "{0}|{1}" -f $Focused.Current.ProcessId, $Focused.Current.Name
+        } else {
+            "<none>"
+        }
+        throw (
+            "Chrome/Edge did not focus the requested UI Automation control; " +
+            "actual=$ActualFocus"
+        )
+    }
+    [System.Windows.Forms.SendKeys]::SendWait($Keys)
+    return $Focused.Current.Name
+}
+
 $Desktop = [System.Windows.Automation.AutomationElement]::RootElement
 $ChromeWindow = $null
 $LoadButton = $null
@@ -202,11 +244,10 @@ if (-not $LoadButton -or -not $ChromeWindow) {
     )
 }
 
-$LoadClick = Invoke-DesktopElementClick `
-    -Window $ChromeWindow -Element $LoadButton
+$FocusedLoadButton = Invoke-DesktopElementKey `
+    -Window $ChromeWindow -Element $LoadButton -Keys "{ENTER}"
 Write-Host (
-    "UIA_LOAD_BUTTON name=Load unpacked x={0} y={1} action=desktop-click" -f `
-        $LoadClick[0], $LoadClick[1]
+    "UIA_LOAD_BUTTON name={0} action=focused-enter" -f $FocusedLoadButton
 )
 
 $Dialog = $null

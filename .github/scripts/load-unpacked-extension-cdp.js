@@ -292,9 +292,9 @@ async function main() {
     if (!ready) {
       throw new Error('Chrome extensions page did not expose an enabled "Load unpacked" button');
     }
-    // The selector locates the visible browser's accessibility button,
-    // generates a real Win32 mouse click, and then controls the native picker.
-    // Chrome can distinguish that desktop input from script/CDP-injected input.
+    // The selector focuses the exact visible accessibility button, sends a
+    // desktop Enter key, and then controls Chrome's native picker. This avoids
+    // coordinate/DPI ambiguity while still exercising the user-visible path.
     selectExtensionFolder();
     let lastExtensions = [];
     for (let attempt = 0; attempt < 300; attempt += 1) {
@@ -418,5 +418,8 @@ async function main() {
 
 main().catch((error) => {
   process.stderr.write(`ERROR: ${error.stack || error}\n`);
-  process.exitCode = 1;
+  // Chrome descendants can retain remote-debugging-pipe handles after the
+  // browser process is killed. A failed CI probe must not keep the Node event
+  // loop alive and strand the still-waiting one-click installer.
+  process.exit(1);
 });
