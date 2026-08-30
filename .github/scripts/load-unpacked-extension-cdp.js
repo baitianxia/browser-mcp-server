@@ -237,18 +237,63 @@ async function main() {
       files: [extension],
       dragOperationsMask: 1,
     };
-    for (const type of ["dragEnter", "dragOver", "drop"]) {
-      await send(
-        "Input.dispatchDragEvent",
-        {
-          type,
-          x: dropPoint.x,
-          y: dropPoint.y,
-          data: dragData,
-        },
-        sessionId,
+    await send(
+      "Input.dispatchDragEvent",
+      {
+        type: "dragEnter",
+        x: dropPoint.x,
+        y: dropPoint.y,
+        data: dragData,
+      },
+      sessionId,
+    );
+    // Chrome's extensions page handles a directory drag in two explicit
+    // developerPrivate calls: remember the current WebContents drop data on
+    // dragenter, then load that remembered directory on drop. Invoke the same
+    // calls explicitly so the hosted runner is independent of shadow-DOM event
+    // routing while still exercising the persistent browser implementation.
+    const loaded = await send(
+      "Runtime.evaluate",
+      {
+        expression: `(async () => {
+          try {
+            chrome.developerPrivate.notifyDragInstallInProgress();
+            const result = await chrome.developerPrivate.loadUnpacked({
+              failQuietly: true,
+              populateError: true,
+              useDraggedPath: true,
+            });
+            return {ok: true, result: result ?? null};
+          } catch (error) {
+            return {
+              ok: false,
+              error: String(error?.stack || error),
+              runtimeError: chrome.runtime?.lastError?.message || null,
+            };
+          }
+        })()`,
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      sessionId,
+    );
+    const loadResult = loaded.result?.value;
+    process.stdout.write(`CHROME_DIRECTORY_DROP ${JSON.stringify(loadResult)}\n`);
+    if (loaded.exceptionDetails || loadResult?.ok !== true || loadResult.result) {
+      throw new Error(
+        `Chrome directory-drop API rejected the approved extension: ${JSON.stringify(loadResult)}`,
       );
     }
+    await send(
+      "Input.dispatchDragEvent",
+      {
+        type: "dragCancel",
+        x: dropPoint.x,
+        y: dropPoint.y,
+        data: dragData,
+      },
+      sessionId,
+    );
     let lastExtensions = [];
     for (let attempt = 0; attempt < 300; attempt += 1) {
       const listed = await send("Extensions.getExtensions");
