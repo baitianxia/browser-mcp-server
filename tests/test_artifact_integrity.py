@@ -93,11 +93,12 @@ class ArtifactIntegrityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify_bundle.parse_sums(f"{digest}  file\n{digest}  file\n")
 
-    def test_directory_rejects_windows_unsafe_names(self) -> None:
+    def test_directory_rejects_windows_unsafe_checksum_names(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "runtime"
             root.mkdir()
-            (root / "bad:name").write_bytes(b"fixture")
+            payload = root / "payload"
+            payload.write_bytes(b"fixture")
             subprocess.run(
                 [
                     sys.executable,
@@ -106,6 +107,14 @@ class ArtifactIntegrityTests(unittest.TestCase):
                     str(root),
                 ],
                 check=True,
+            )
+            # A colon creates an NTFS alternate data stream instead of an
+            # enumerable filename on Windows. Inject the unsafe portable name
+            # directly into the integrity manifest so this fixture exercises
+            # the same verifier branch on every supported host.
+            digest = verify_bundle.digest_path(payload)
+            (root / "SHA256SUMS").write_bytes(
+                f"{digest}  bad:name\n".encode("utf-8")
             )
             errors = verify_bundle.verify_directory(root)
             self.assertTrue(any("unsafe checksum path" in error for error in errors))
