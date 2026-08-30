@@ -4,7 +4,9 @@
 
 ## 1.0.9 候选状态（尚未 Windows 放行）
 
-1.0.9 改为 Windows pilot `extension` 模式，迁移包携带固定官方 CRX 和逐文件一致的已解压副本；安装器先尝试完全离线策略安装，失败时恢复临时策略、打开扩展页并在原进程等待用户加载，检测成功后继续。当前本地完整测试、真实 CRX 校验、交叉构建及 macOS Chrome 临时 Profile 的 `Extensions.loadUnpacked` 实测已通过；后者实际返回扩展 ID `mmlmfjhmonkocbjadbfplnigmagldckm`、版本 `0.3.0`、`enabled=true`，关闭 Chrome 后 Profile 检测仍返回 `Default`。这些证据尚不能替代 Windows PowerShell 5.1、Windows Chrome 和顶层 launcher 的 GitHub 实测；在对应 workflow 成功前，1.0.9 仍是候选，不得交付为 Windows 已验证包。
+1.0.9 改为 Windows pilot `extension` 模式，迁移包携带固定官方 CRX 和逐文件一致的已解压副本；安装器先尝试完全离线策略安装，失败时恢复临时策略、打开扩展页并在原进程等待用户加载，检测成功后继续。当前本地 80 项测试、真实 CRX 校验和交叉构建通过。进一步的真实调用复核否定了早先的 macOS `Extensions.loadUnpacked` 结论：该接口当次返回固定 ID、版本和 `enabled=true`，关闭后 Profile 检测一度通过，但 Chrome 再次启动会清除该临时加载记录，扩展 URL 返回 `ERR_BLOCKED_BY_CLIENT`，实际 MCP 一直等待扩展连接。因此它不能作为人工“加载已解压扩展”的替代证据。候选实现现已把 Windows CI 改为驱动 Chrome 自身扩展页与原生目录选择框，并在安装后以实际 MCP 工具调用和预置 Cookie 验证重启持久性；在新的 workflow 成功前，1.0.9 仍是候选，不得交付为 Windows 已验证包。
+
+固定 `@playwright/mcp` 0.0.79 的另一项真实差异也已纳入候选修复：其默认扩展预检不能识别只写入 Chrome `Secure Preferences` 的手工 unpacked 扩展。Windows 清单、渲染、握手和 Claude user-scope 注册现在共同固定自动识别的 browser `.exe`，生成精确 `--browser` 与 `--executable-path`；安装检测只允许 `Local State.profile.last_used` 指向的 Profile，避免休眠 Profile 误放行。该路径仍不保存扩展 token，仍由用户在实际使用时批准目标 Tab。
 
 发布结论：**WINDOWS CI-VERIFIED PILOT 1.0.8**。GitHub 托管的 Windows x64 环境已经完成源码测试、Windows 原生重建、PowerShell 5.1 发布门禁、真实 Claude Code 隔离注册和一次顶层 launcher 安装。该结论证明通用 Windows 自动链路可用，但不等于已通过企业内网、业务浏览器或生产治理验收。
 
@@ -12,7 +14,7 @@
 
 ## 已执行并通过
 
-- 源码测试：本机构建环境执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`，64/64 通过。覆盖 Windows 路径、user scope、版本一致性、LF/CRLF 逐字节备份、`remove/add/get` 注册失败回滚、条目/环境错写、窄 Windows 代码页与 Claude UTF-8 输出组合、遗留环境清理、Node 来源、archive 路径、配置漂移、发布顺序和 MCP stdio 握手。
+- 源码测试：本机构建环境执行 `python3 -m unittest discover -s tests -v`，80/80 通过。覆盖 Windows 路径、user scope、版本一致性、LF/CRLF 逐字节备份、`remove/add/get` 注册失败回滚、条目/环境错写、窄 Windows 代码页与 Claude UTF-8 输出组合、遗留环境清理、Node 来源、archive 路径、扩展 CRX/Profile/人工等待、休眠 Profile 防误判、显式 browser `.exe`、配置漂移、发布顺序和 MCP stdio 握手。
 - 语法与格式：全部 Python 文件通过 `compileall`；shell 入口通过 `bash -n`；11 个 JSON/JSON template 通过标准 JSON 解析；`git diff --check` 通过。
 - PowerShell 解析：`build-offline-bundle.ps1`、`INSTALL-WINDOWS-PILOT.ps1`、`verify-windows-release.ps1` 均由官方 PowerShell 7.6.5 parser 返回无 AST 错误；GitHub Actions 的 `windows-2022`、`windows-latest` 两个 job 又分别使用 Windows PowerShell 5.1 Desktop 解析仓库内全部 PowerShell 脚本并通过。
 - 清单与渲染：本地 demo 返回 `VALID`。Windows pilot 模板固定 `mcpScope=user`、`workspaceRoots=[]`，省略 `network`/`dataBoundary`，只因明确占位符而失败关闭；production 模板继续因未批准字段和占位符失败关闭。Windows `.mcp.json` 的命令直接指向包内 `node.exe`，首个参数指向固定 Playwright CLI，不使用 `.cmd` shell shim；环境与 `config/windows-mcp-environment.json` 完全一致且不含扩展 token。
@@ -28,6 +30,9 @@
 - 迁移包：逐文件白名单包含 61 个源码/文档文件，不收录 `.git`、真实部署清单、`build/`、`dist/`、缓存或 Python bytecode。迁移 archive、解压迁移目录、包内运行 archive、解压运行目录四层均返回 `VALID`；包内 64 项测试、注册 self-test 和 MCP 握手脚本随包交付。最终重建后的外层 SHA-256 以相邻 `.sha256` 为准。
 
 ## Windows Actions 实测事实
+
+- 1.0.9 的 [Windows release validation #6](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33304962390) 在扩展探针启动 Chrome 时返回 Chromium `PROFILE_IN_USE`（exit code 21），未上传交付 artifact；候选随后只关闭托管 runner 的临时 Chrome 再接管隔离 Profile。
+- 修复锁竞争后的 [Windows release validation #7](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33305261099) 中，两套 Windows PowerShell 5.1 源码 job 均通过，但原生打包 job 在“一次点击 package launcher”阶段失败且未上传 artifact。结合上述重启复现，原 CDP 当前会话加载门禁不足，现已从验收标准移除。新的 Chrome UI + 重启 MCP/Cookie 门禁尚待下一次 run 验证。
 
 - 私有仓库的 [Windows release validation #4](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33299630904) 在提交 `98bdf62ee5c7b6e1f7a4866c0e146958e0f45680` 上成功，总耗时 3 分 25 秒。`windows-2022`、`windows-latest` 两套 PowerShell 5.1 源码 job 与 Windows 原生打包/门禁/安装 job 全部通过。
 - 原生 job 安装并核对 Claude Code 2.1.84，使用批准的 Windows Node.js v24.19.0 最小 distribution 和 pnpm 11.19.0 构建。顶层 `INSTALL-WINDOWS-PILOT.cmd` 只运行一次，先通过发布门禁，再在同一进程链完成当前用户安装；后置步骤逐项确认门禁 PASS、安装 SUCCESS、安装摘要、`mcpScope=user`、空 `workspaceRoots`、无 `network` 白名单、真实 Claude user 配置和安装后运行时完整性。

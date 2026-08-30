@@ -60,7 +60,7 @@ Playwright 启动企业 Chrome，使用部署清单指定的专用 `userDataDir`
 
 ### extension
 
-Playwright Extension 接管用户明确允许的现有 Tab。生产扩展必须通过批准的企业分发渠道安装。Windows 通用内网 pilot 固定使用此模式，以复用目标机 Chrome/Edge 当前 Profile 的登录态：迁移包携带固定 ID、版本、大小、SHA-256、CRX3/manifest/Web Store 元数据均经过校验的官方 CRX，以及与 CRX payload 逐文件一致的已解压目录。安装器先尝试当前用户本地 `file:///` 策略安装；浏览器未实际确认安装时，必须恢复该临时策略，打开扩展管理页、显示唯一的包内目录并在原进程中等待人工“加载已解压的扩展程序”，检测成功后才继续。默认保留每次连接批准和 Tab 选择 UI；不在仓库或用户 MCP 配置中保存扩展 token。
+Playwright Extension 接管用户明确允许的现有 Tab。生产扩展必须通过批准的企业分发渠道安装。Windows 通用内网 pilot 固定使用此模式，以复用目标机 Chrome/Edge 当前 Profile 的登录态：迁移包携带固定 ID、版本、大小、SHA-256、CRX3/manifest/Web Store 元数据均经过校验的官方 CRX，以及与 CRX payload 逐文件一致的已解压目录。安装器先尝试当前用户本地 `file:///` 策略安装；浏览器未实际确认安装时，必须恢复该临时策略，打开扩展管理页、显示唯一的包内目录并在原进程中等待人工“加载已解压的扩展程序”，检测成功后才继续。Windows 清单和 MCP 参数还必须绑定安装器实际识别的 Chrome/Edge `.exe`；固定 MCP 版本在未指定该路径时不能完整识别只记录在 `Secure Preferences` 的手工 unpacked 扩展。指定路径后浏览器不传 `--profile-directory`，因此安装检测只允许浏览器 `Local State.profile.last_used` 指向的 Profile 通过，防止在休眠 Profile 中找到扩展却启动另一个 Profile。默认保留每次连接批准和 Tab 选择 UI；不在仓库或用户 MCP 配置中保存扩展 token。
 
 ### cdp
 
@@ -76,6 +76,7 @@ Playwright 连接已开启远程调试的 Chrome。endpoint 只能是官方 chan
 - project/managed scope 的 `workspaceRoots` 声明预期的 Claude Code 项目根，preflight 会核对。Windows 通用内网 pilot 使用 Claude Code `user` scope，`workspaceRoots=[]`，实际项目根由每次启动 Claude Code 的目录和 MCP roots 协商决定。
 - 默认 `saveSession=false`、`console.level=warning`。
 - Windows 通用内网 pilot 省略 `network` 配置；依据固定版本 Playwright MCP 的默认语义，这表示允许浏览当前主机网络可访问的全部网址。安装器不询问或修改防火墙。
+- Windows `extension` 模式必须声明由安装器自动解析的本机 `.exe` 绝对路径 `browser.executablePath`；渲染、MCP 握手、Claude user-scope 注册和最终条目核对必须使用同一个 `--executable-path`，并同时保留精确 `--browser=chrome|msedge`。
 - Windows Playwright MCP 条目必须带有 `config/windows-mcp-environment.json` 定义的精确环境映射：清空固定版本支持的配置覆盖变量以及 `NODE_OPTIONS`/`NODE_PATH`，仅把心跳超时固定为默认 `5000`。不得包含扩展连接 token、秘密或调用者提供的任意环境值；门禁握手和最终 user-scope 注册必须使用同一策略。
 - production 若配置 `allowedOrigins`，每项必须是显式 origin；不接受全局通配符或带路径 URL。该过滤仍不是网络安全边界。
 - 视觉坐标能力由 `controls.visionFallback` 显式开启。
@@ -106,7 +107,7 @@ Observe → Reason → Act(one step) → Wait/change detection
 - Windows user-scope pilot 不写任何项目的 `.mcp.json`、`CLAUDE.md` 或其他仓库文件；Claude Code 用户配置变更前必须备份，升级失败必须恢复。安装器用当前用户目录中的独占锁阻止两个向导并发修改。版本目录不可覆盖；运行时必须先在同盘唯一暂存目录校验再发布，配置必须先暂存/preflight 后整目录切换，失败时恢复旧配置目录；如检测到外部并发造成状态不明确，则保留当前目录和备份并停止，不得猜测性删除。不得下载依赖、运行包管理器、绕过 PowerShell 执行策略或自动处理登录秘密。
 - Claude Code user-scope 注册不得直接由 PowerShell 拼接并执行多步事务；安装器必须调用 `register_claude_user_mcp.py`，由它按退出码执行 `remove → add → get`、在变更前逐字节备份用户配置，并在非“条目不存在”的 `remove` 错误、`add/get`、实际 user-scope 命令/参数/固定环境不匹配或执行异常时恢复。首次安装中 Claude 明确报告旧条目不存在才可忽略。注册器必须显式容错解码 Claude CLI 的 UTF-8 输出，并使状态/错误输出在窄 Windows 代码页下可表示，终端代码页不得成为配置事务的成败条件。Windows 自动流程只接受原生 `claude.exe`，注册命令直接指向已验证 `node.exe + cli.js`。若当前用户设置 `CLAUDE_CONFIG_DIR`，只接受本机盘符绝对路径，拒绝相对路径、`~` 和 UNC，防止把用户配置意外写进迁移/项目目录。
 - 安装器在接触真实 Claude Code 用户配置前，必须在临时目录用假 Claude CLI 自动覆盖首次安装、成功 stderr、升级、`add` 失败、`get` 失败、条目错写和新配置删除回滚。正式放行前还必须在受控 Windows x64 的 Windows PowerShell 5.1 上执行 `verify-windows-release.ps1`；门禁只能校验自身所在的同一解压迁移目录，必须临时解压内层运行时，校验批准的 Node 来源并执行目标 `node.exe --version`，再用直接 `node.exe + cli.js + config` 完成 MCP stdio `initialize` 与 `tools/list` 握手。随后门禁须通过临时 `CLAUDE_CONFIG_DIR` 对真实 Claude CLI 执行隔离的 `remove/add/get` 探针并核对实际 user-scope 条目。门禁运行 Python 及其子进程时必须禁止写入 bytecode，并在测试前后各校验一次迁移包，证明自检没有污染解压目录。尚无预先门禁证据的交叉构建包只能明确标为自检候选，并由顶层 launcher 在任何持久化安装之前强制执行同一门禁；它不得冒充正式制品。
-- user-scope Windows pilot 的写入前路径检查与 preflight 必须自动证明运行时、`nodeExecutable`、配置、输出、CRX 和已解压扩展目录均位于当前用户 `%LOCALAPPDATA%`，且不经过该根目录以下的 link/junction；并证明清单和已部署 Playwright 配置使用 `extension` 模式、绑定自动选择的浏览器 channel、未配置 `userDataDir` 且保留人工连接批准。这些可计算事实不得转嫁为安装人员问答。
+- user-scope Windows pilot 的写入前路径检查与 preflight 必须自动证明运行时、`nodeExecutable`、配置、输出、CRX 和已解压扩展目录均位于当前用户 `%LOCALAPPDATA%`，且不经过该根目录以下的 link/junction；并证明清单和已部署 Playwright 配置使用 `extension` 模式、绑定自动选择的浏览器 channel 与实际浏览器可执行文件、未配置 `userDataDir` 且保留人工连接批准。这些可计算事实不得转嫁为安装人员问答。
 - `production` 清单继续要求独立网络强制层及模型数据边界记录；这些是生产放行条件，不由试点安装器收集或代填。
 - Windows 生产包必须在 Windows x64 受控构建机使用 PowerShell 构建。非 Windows 主机只可生成 `core` 试点候选包；允许携带经过来源、归档哈希、文件白名单和 AMD64 PE 校验的目标 Windows Node，但仍须在元数据标记交叉构建和未完成目标 CLI 冒烟，目标机验收前不得放行生产。
 - 企业扫描、签名和制品库上传由组织流水线完成；本项目不伪造这些外部结果。

@@ -74,6 +74,7 @@ def build_manifest(
     output_directory: str,
     profile_owner: str,
     browser_channel: str,
+    browser_executable: str,
     node_executable: str,
 ) -> dict[str, Any]:
     manifest = copy.deepcopy(template)
@@ -94,6 +95,7 @@ def build_manifest(
     manifest["browser"].update(
         {
             "channel": browser_channel,
+            "executablePath": browser_executable,
             "profileOwner": profile_owner,
         }
     )
@@ -117,6 +119,7 @@ def generate(args: argparse.Namespace) -> None:
         output_directory=args.output_directory,
         profile_owner=args.profile_owner,
         browser_channel=args.browser_channel,
+        browser_executable=args.browser_executable,
         node_executable=args.node_executable,
     )
     if args.manifest_out.exists() and not args.force:
@@ -143,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument(
         "--browser-channel", required=True, choices=("chrome", "msedge")
     )
+    generate_parser.add_argument("--browser-executable", required=True)
     generate_parser.add_argument("--force", action="store_true")
     paths_parser = subparsers.add_parser("assert-user-paths")
     paths_parser.add_argument("--local-app-data", required=True, type=Path)

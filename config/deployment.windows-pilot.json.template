@@ -21,6 +21,7 @@
   },
   "browser": {
     "channel": "chrome",
+    "executablePath": "C:\\REPLACE-ME-BROWSER\\browser.exe",
     "profileOwner": "REPLACE-ME-WINDOWS-ACCOUNT",
     "maxConcurrentAgents": 1,
     "extensionDistribution": "manual-pilot",

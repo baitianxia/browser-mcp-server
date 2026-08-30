@@ -393,6 +393,7 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         required={"channel", "profileOwner", "maxConcurrentAgents"},
         optional={
             "userDataDir",
+            "executablePath",
             "cdpEndpoint",
             "devtoolsEndpoint",
             "extensionDistribution",
@@ -413,10 +414,29 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         )
         if profile and _looks_like_default_profile(profile):
             errors.append("$.browser.userDataDir appears to be a personal/default browser profile")
-        for key in ("cdpEndpoint", "extensionDistribution", "manualConnectionApproval"):
+        for key in (
+            "executablePath",
+            "cdpEndpoint",
+            "extensionDistribution",
+            "manualConnectionApproval",
+        ):
             if key in browser:
                 errors.append(f"$.browser.{key} is not valid in persistent mode")
     elif mode == "extension":
+        executable_path = browser.get("executablePath")
+        if target_os == "windows":
+            executable_path = _absolute_path(
+                executable_path,
+                "$.browser.executablePath",
+                target_os,
+                errors,
+            )
+            if executable_path and not executable_path.lower().endswith(".exe"):
+                errors.append("$.browser.executablePath must point to a Windows .exe")
+        elif executable_path is not None:
+            errors.append(
+                "$.browser.executablePath is only supported for Windows extension mode"
+            )
         distribution = browser.get("extensionDistribution")
         if distribution not in {
             "managed-web-store",
@@ -439,7 +459,12 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
             errors.append(
                 "$.browser.cdpEndpoint must be a supported Chrome channel or loopback HTTP(S) endpoint"
             )
-        for key in ("userDataDir", "extensionDistribution", "manualConnectionApproval"):
+        for key in (
+            "userDataDir",
+            "executablePath",
+            "extensionDistribution",
+            "manualConnectionApproval",
+        ):
             if key in browser:
                 errors.append(f"$.browser.{key} is not valid in cdp mode")
 
@@ -704,7 +729,16 @@ def _render_mcp(manifest: dict[str, Any]) -> dict[str, Any]:
         "type": "stdio",
         "command": playwright_command,
         "args": playwright_arguments
-        + ([f"--browser={manifest['browser']['channel']}"] if manifest["mode"] == "extension" else [])
+        + (
+            [f"--browser={manifest['browser']['channel']}"]
+            + (
+                [f"--executable-path={manifest['browser']['executablePath']}"]
+                if windows
+                else []
+            )
+            if manifest["mode"] == "extension"
+            else []
+        )
         + [
             "--config",
             _join_target_path(
@@ -1296,7 +1330,15 @@ def preflight(
             except (OSError, subprocess.SubprocessError) as exc:
                 checks.append({"name": name, "status": "fail", "detail": str(exc)})
 
-    if manifest["mode"] == "extension":
+    if manifest["mode"] == "extension" and target_system == "windows":
+        executable_path = Path(manifest["browser"]["executablePath"])
+        checks.append(
+            {
+                "name": "extension-browser-executable",
+                "status": "pass" if executable_path.is_file() else "fail",
+                "detail": str(executable_path),
+            }
+        )
         checks.append(
             {
                 "name": "extension-config",

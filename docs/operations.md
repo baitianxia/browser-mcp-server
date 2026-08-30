@@ -13,7 +13,7 @@
 5. 将迁移包、相邻 `.sha256` 和包内 CycloneDX 清单送入企业 SCA/恶意代码扫描和签名流程。
 6. 只有扫描、签名和变更审批都通过的制品才能进入内网制品库。
 
-GitHub 仓库的 `.github/workflows/windows-release.yml` 是提交级 Windows 兼容性回归：先在 `windows-2022` 与 `windows-latest` 的 Windows PowerShell 5.1 上跑完整测试和脚本解析，再在 `windows-latest` 原生构建 Windows x64 包，安装固定 Claude Code 2.1.84，并对解压包执行顶层一次点击 launcher、发布门禁、隔离 user-scope 注册、完整安装和安装后完整性核对。运行 launcher 时为 Chrome 添加临时出站阻断；非受管 runner 进入人工扩展回退后，CI 先关闭向导打开的临时 `chrome://extensions` 窗口以释放隔离 Profile，再由专用脚本通过 Chrome 官方 remote-debugging-pipe `Extensions.loadUnpacked` 接口实际加载屏幕所指的同一本地目录，核对启用状态、固定 ID/版本以及关闭 Chrome 后的持久 Profile 记录，让等待中的原安装器自动续跑。这个探针只用于自动替代 CI 中不存在的人手，不进入目标迁移包，也不在内网安装器打开调试端口。成功 run 上传 Windows 原生迁移包及日志证据，失败 run 只保留可获得的诊断证据。该流程使用 GitHub 的临时有网 VM，不能替代企业 SCA、签名、终端策略、SSO/MFA、业务页面或生产审批验收。
+GitHub 仓库的 `.github/workflows/windows-release.yml` 是提交级 Windows 兼容性回归：先在 `windows-2022` 与 `windows-latest` 的 Windows PowerShell 5.1 上跑完整测试和脚本解析，再在 `windows-latest` 原生构建 Windows x64 包，安装固定 Claude Code 2.1.84，并对解压包执行顶层一次点击 launcher、发布门禁、隔离 user-scope 注册、完整安装和安装后完整性核对。运行 launcher 时为 Chrome 添加临时出站阻断；非受管 runner 进入人工扩展回退后，CI 先关闭向导打开的临时 `chrome://extensions` 窗口以释放隔离 Profile，再由专用脚本通过 Chrome 官方 remote-debugging-pipe 驱动扩展管理页自己的“加载已解压扩展”按钮，并在 Windows 原生目录选择框选择屏幕所指的同一本地目录。它不再用只对当前 Chrome 会话有效的 `Extensions.loadUnpacked` 结果冒充人工安装。探针核对启用状态、固定 ID/版本以及关闭 Chrome 后的持久 Profile 记录，让等待中的原安装器自动续跑。安装完成后，出站阻断仍保持，CI 使用实际安装的包内 Node/MCP 和清单中固定的实际浏览器 `.exe` 经扩展访问本机离线页面，要求 `browser_navigate`、`browser_snapshot` 和预置 Profile 会话 Cookie 同时成功，才证明安装结果能复用浏览器登录态。为替代 CI 中不存在的人手，探针只在临时 Profile 写入一次性连接令牌并在步骤结束删除令牌文件；令牌不进入目标迁移包、安装配置、日志或证据，探针也不在内网安装器打开调试端口。成功 run 上传 Windows 原生迁移包及日志证据，失败 run 只保留可获得的诊断证据。该流程使用 GitHub 的临时有网 VM，不能替代企业 SCA、签名、终端策略、SSO/MFA、业务页面或生产审批验收。
 
 默认构建跳过 npm 安装脚本和 Playwright 浏览器下载。Windows 一键包强制通过 `--node-distribution`/`-NodeDistribution` 携带组织批准的最小目标运行时；该目录必须由 `prepare_windows_node_distribution.py` 从官方 Windows x64 ZIP 与同版本 `SHASUMS256.txt` 生成，并通过 `validate_node_distribution.py --approval-file config/windows-node-sources.json` 的四文件白名单、固定批准哈希、版本和 AMD64 PE 校验。禁止把构建主机 Node 或官方 ZIP 中的 npm、npx、corepack 一并带入。目标机不探测、不依赖系统 Node。
 
@@ -56,7 +56,7 @@ powershell.exe -NoProfile -File .\toolkit\scripts\verify-windows-release.ps1 `
 ## 3. 部署清单和配置
 
 1. 自动 Windows pilot 不需要人工复制清单；向导根据当前用户 `%LOCALAPPDATA%` 生成 `mcpScope=user`、`workspaceRoots=[]` 的清单。生产从 `toolkit/config/deployment.windows-production.json.template` 复制，复制件放在迁移包目录之外，替换本机盘符路径和全部占位符，不配置 UNC 路径。
-2. Windows pilot 清单省略 `network`，因此不限制网址；不绑定任何项目目录。
+2. Windows pilot 清单省略 `network`，因此不限制网址；不绑定任何项目目录。向导自动写入实际识别到的 Chrome/Edge `.exe`，不要求用户填写；最终 MCP 同时固定 `--browser=<channel>` 与 `--executable-path=<browser.exe>`，并由浏览器使用 last-used Profile。
 3. 仅 production 清单需要列出精确 origins，并填写网络强制层、负责人、变更记录、网页数据分类、模型路由及组织实际要求的批准记录，把 `approved` 改为 `true`。
 4. 运行 `validate`，再运行 `render`。
 5. Windows pilot 由向导使用 Claude Code CLI 注册 user-scope stdio server，不复制 `.mcp.json` 到项目。production 再按选择的 project/managed scope部署生成配置。

@@ -776,7 +776,8 @@ try {
         "--output-directory", $OutputDirectory,
         "--profile-owner", $ProfileOwner,
         "--node-executable", $NodeExe,
-        "--browser-channel", $BrowserChannel
+        "--browser-channel", $BrowserChannel,
+        "--browser-executable", $BrowserExecutable
     )
     Invoke-Python $GenerateArguments
     New-Item -ItemType Directory -Path $StageDeploy -Force | Out-Null
@@ -839,7 +840,8 @@ try {
         "--node-executable", $NodeExe,
         "--playwright-cli", $PlaywrightCliPath,
         "--playwright-config", $PlaywrightConfigPath,
-        "--browser-channel", $BrowserChannel
+        "--browser-channel", $BrowserChannel,
+        "--browser-executable", $BrowserExecutable
     )
 
     if ($env:CLAUDE_CONFIG_DIR) {
@@ -874,6 +876,7 @@ try {
         "--playwright-cli", $PlaywrightCliPath,
         "--playwright-config", $PlaywrightConfigPath,
         "--browser-channel", $BrowserChannel,
+        "--browser-executable", $BrowserExecutable,
         "--user-config", $ClaudeUserConfigPath,
         "--backup", $ClaudeUserConfigBackup
     )

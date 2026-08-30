@@ -35,6 +35,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
             output_directory=user_root + r"\output\pilot",
             profile_owner=r"CORP\pilot-user",
             browser_channel="chrome",
+            browser_executable=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             node_executable=user_root + r"\releases\runtime-1\node\node.exe",
         )
 
@@ -48,6 +49,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("dataBoundary", manifest)
         self.assertEqual("extension", manifest["mode"])
         self.assertNotIn("userDataDir", manifest["browser"])
+        self.assertEqual(
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            manifest["browser"]["executablePath"],
+        )
         self.assertEqual("manual-pilot", manifest["browser"]["extensionDistribution"])
         self.assertTrue(manifest["browser"]["manualConnectionApproval"])
         self.assertIn(r"\AppData\Local\IntranetBrowserAgent", manifest["installRoot"])
@@ -93,6 +98,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"--node-executable", $NodeExe', installer)
         self.assertIn('"--playwright-cli", $PlaywrightCliPath', installer)
         self.assertIn('"--browser-channel", $BrowserChannel', installer)
+        self.assertIn('"--browser-executable", $BrowserExecutable', installer)
         self.assertNotIn('"--wrapper"', installer)
         self.assertNotIn('Get-Command "claude.cmd"', installer)
         self.assertIn('Get-Command "claude.exe"', installer)
@@ -216,6 +222,40 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertLess(verify_positions[1], verify_positions[2])
         self.assertLess(verify_positions[2], probe)
         self.assertLess(probe, verify_positions[3])
+
+    def test_windows_ci_uses_persistent_ui_extension_and_session_e2e(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "windows-release.yml").read_text(
+            encoding="utf-8"
+        )
+        loader = (
+            ROOT / ".github" / "scripts" / "load-unpacked-extension-cdp.js"
+        ).read_text(encoding="utf-8")
+        exercise = (
+            ROOT / ".github" / "scripts" / "exercise-extension-mcp.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("Extensions.loadUnpacked", loader)
+        self.assertIn('querySelector("#loadUnpacked")', loader)
+        self.assertIn('"powershell.exe"', loader)
+        self.assertIn("System.Windows.Forms.SendKeys", loader)
+        self.assertIn('send("Browser.close")', loader)
+        self.assertIn("SESSION_COOKIE_VALUE", loader)
+        self.assertIn("seedExtensionAuthToken", loader)
+
+        self.assertIn("exercise-extension-mcp.py", workflow)
+        self.assertIn('"CHROME_EXE=$ChromeExe"', workflow)
+        self.assertIn('$ChromeExe = [string]$env:CHROME_EXE', workflow)
+        self.assertIn("--browser-executable $ChromeExe", workflow)
+        self.assertIn("Installed Playwright MCP could not reuse", workflow)
+        self.assertLess(
+            workflow.index("python $ExtensionExercise"),
+            workflow.index("Remove-NetFirewallRule -DisplayName $FirewallRule"),
+        )
+
+        self.assertIn('"browser_navigate"', exercise)
+        self.assertIn('"browser_snapshot"', exercise)
+        self.assertIn("OFFLINE-INTRANET-SESSION-REUSED", exercise)
+        self.assertIn("session_cookie=reused", exercise)
 
     def test_windows_installer_stages_and_rolls_back_runtime_and_config(self) -> None:
         installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(
@@ -380,6 +420,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 output_directory=user_root + r"\output\pilot",
                 profile_owner=r"CORP\pilot-user",
                 browser_channel="chrome",
+                browser_executable=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
                 node_executable=user_root
                 + r"\releases\runtime-1\node\node.exe",
                 force=False,
@@ -395,7 +436,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 server["args"][0].endswith(r"node_modules\@playwright\mcp\cli.js")
             )
             self.assertEqual("--browser=chrome", server["args"][1])
-            self.assertEqual("--config", server["args"][2])
+            self.assertEqual(
+                r"--executable-path=C:\Program Files\Google\Chrome\Application\chrome.exe",
+                server["args"][2],
+            )
+            self.assertEqual("--config", server["args"][3])
             playwright = json.loads(
                 (root / "rendered" / "playwright.config.json").read_text(
                     encoding="utf-8"

@@ -86,12 +86,20 @@ def _playwright_command_arguments(
     playwright_cli: Path,
     playwright_config: Path,
     browser_channel: str | None,
+    browser_executable: Path | None = None,
 ) -> list[str]:
     if browser_channel not in {None, "chrome", "msedge"}:
         raise RegistrationError(f"unsupported browser channel: {browser_channel}")
     arguments = [str(playwright_cli)]
     if browser_channel is not None:
+        if browser_executable is None:
+            raise RegistrationError(
+                "extension browser channel requires an explicit browser executable"
+            )
         arguments.append(f"--browser={browser_channel}")
+        arguments.append(f"--executable-path={browser_executable}")
+    elif browser_executable is not None:
+        raise RegistrationError("browser executable requires an extension browser channel")
     arguments.extend(("--config", str(playwright_config)))
     return arguments
 
@@ -183,6 +191,7 @@ def _verify_user_registration(
     playwright_cli: Path,
     playwright_config: Path,
     browser_channel: str | None,
+    browser_executable: Path | None,
     mcp_environment: Mapping[str, str],
 ) -> None:
     try:
@@ -209,7 +218,10 @@ def _verify_user_registration(
         )
     expected_command = str(node_executable)
     expected_arguments = _playwright_command_arguments(
-        playwright_cli, playwright_config, browser_channel
+        playwright_cli,
+        playwright_config,
+        browser_channel,
+        browser_executable,
     )
     if entry.get("command") != expected_command or entry.get("args") != expected_arguments:
         raise RegistrationError(
@@ -231,6 +243,7 @@ def register_user_mcp(
     playwright_cli: Path,
     playwright_config: Path,
     browser_channel: str | None = None,
+    browser_executable: Path | None = None,
     user_config: Path,
     backup: Path,
     reporter: Reporter = print,
@@ -251,6 +264,16 @@ def register_user_mcp(
         raise RegistrationError(
             f"Playwright config is not a regular file: {playwright_config}"
         )
+    if browser_channel is not None:
+        if browser_executable is None or not browser_executable.is_file():
+            raise RegistrationError(
+                "extension browser executable is not a regular file: "
+                f"{browser_executable}"
+            )
+        if browser_executable.suffix.lower() != ".exe":
+            raise RegistrationError("extension browser executable must end in .exe")
+    elif browser_executable is not None:
+        raise RegistrationError("browser executable requires an extension browser channel")
     registered_environment = (
         load_mcp_environment()
         if mcp_environment is None
@@ -294,7 +317,10 @@ def register_user_mcp(
                 "--",
                 str(node_executable),
                 *_playwright_command_arguments(
-                    playwright_cli, playwright_config, browser_channel
+                    playwright_cli,
+                    playwright_config,
+                    browser_channel,
+                    browser_executable,
                 ),
             ),
             environment=environment,
@@ -309,6 +335,7 @@ def register_user_mcp(
             playwright_cli=playwright_cli,
             playwright_config=playwright_config,
             browser_channel=browser_channel,
+            browser_executable=browser_executable,
             mcp_environment=registered_environment,
         )
 
@@ -435,6 +462,8 @@ def self_test() -> None:
         playwright_cli.write_bytes(b"// fixed CLI\n")
         playwright_config = root / "playwright.config.json"
         playwright_config.write_bytes(b"{}\n")
+        browser_executable = root / "chrome.exe"
+        browser_executable.write_bytes(b"MZ")
         user_config = root / ".claude.json"
         events = root / "events.jsonl"
         base_environment = dict(os.environ)
@@ -459,6 +488,7 @@ def self_test() -> None:
             playwright_cli=playwright_cli,
             playwright_config=playwright_config,
             browser_channel="chrome",
+            browser_executable=browser_executable,
             user_config=user_config,
             backup=first_backup,
             reporter=quiet,
@@ -482,6 +512,7 @@ def self_test() -> None:
                 str(node_executable),
                 str(playwright_cli),
                 "--browser=chrome",
+                f"--executable-path={browser_executable}",
                 "--config",
                 str(playwright_config),
             ],
@@ -576,6 +607,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_parser.add_argument(
         "--browser-channel", choices=("chrome", "msedge")
     )
+    register_parser.add_argument("--browser-executable", type=Path)
     register_parser.add_argument("--user-config", required=True, type=Path)
     register_parser.add_argument("--backup", required=True, type=Path)
     subparsers.add_parser("self-test")
@@ -597,6 +629,7 @@ def main() -> int:
                 playwright_cli=args.playwright_cli,
                 playwright_config=args.playwright_config,
                 browser_channel=args.browser_channel,
+                browser_executable=args.browser_executable,
                 user_config=args.user_config,
                 backup=args.backup,
             )

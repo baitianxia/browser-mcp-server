@@ -35,6 +35,10 @@ FAKE_SERVER = textwrap.dedent(
     if expected_browser and f"--browser={expected_browser}" not in sys.argv[1:]:
         print("expected browser channel was not forwarded", file=sys.stderr)
         raise SystemExit(12)
+    expected_executable = os.environ.get("EXPECT_BROWSER_EXECUTABLE")
+    if expected_executable and f"--executable-path={expected_executable}" not in sys.argv[1:]:
+        print("expected browser executable was not forwarded", file=sys.stderr)
+        raise SystemExit(13)
 
     for line in sys.stdin:
         message = json.loads(line)
@@ -103,13 +107,23 @@ class PlaywrightMcpSmokeTests(unittest.TestCase):
 
     def test_extension_browser_channel_is_forwarded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            server, config = self.fixture(Path(temporary))
-            with mock.patch.dict("os.environ", {"EXPECT_BROWSER": "chrome"}):
+            root = Path(temporary)
+            server, config = self.fixture(root)
+            browser = root / "chrome.exe"
+            browser.write_bytes(b"MZ")
+            with mock.patch.dict(
+                "os.environ",
+                {
+                    "EXPECT_BROWSER": "chrome",
+                    "EXPECT_BROWSER_EXECUTABLE": str(browser),
+                },
+            ):
                 version, tool_count = smoke_module.smoke(
                     Path(sys.executable),
                     server,
                     config,
                     browser_channel="chrome",
+                    browser_executable=browser,
                 )
             self.assertEqual("fixture", version)
             self.assertEqual(2, tool_count)

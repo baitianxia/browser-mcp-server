@@ -147,7 +147,12 @@ def find_extension_profile(
     profiles = profile_directories(user_data_dir)
     last_used = last_used_profile(user_data_dir)
     if last_used in profiles:
-        profiles = [last_used, *(name for name in profiles if name != last_used)]
+        # The installer opens the browser without --profile-directory, and the
+        # production MCP executable-path fallback does the same. Only the
+        # browser's last-used Profile can therefore satisfy the manual flow.
+        # Accepting an extension from some other dormant Profile would make the
+        # installer pass and the first real MCP call fail.
+        profiles = [last_used]
     for profile in profiles:
         if extension_installed_in_profile(
             user_data_dir / profile,

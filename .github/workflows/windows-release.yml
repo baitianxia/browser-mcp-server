@@ -321,8 +321,14 @@ jobs:
           if (-not $ChromeExe) {
               throw "Chrome is required for the offline extension installation test."
           }
+          "CHROME_EXE=$ChromeExe" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $CdpProbe = Join-Path $env:GITHUB_WORKSPACE `
               ".github\scripts\load-unpacked-extension-cdp.js"
+          $ExtensionExercise = Join-Path $env:GITHUB_WORKSPACE `
+              ".github\scripts\exercise-extension-mcp.py"
+          $ExtensionTokenFile = Join-Path $env:RUNNER_TEMP `
+              "playwright-extension-ci-token.txt"
           & node.exe --check $CdpProbe
           if ($LASTEXITCODE -ne 0) {
               throw "The Chrome extension CDP probe has invalid JavaScript syntax."
@@ -382,11 +388,11 @@ jobs:
                   $ChromeUserData = Join-Path $env:LOCALAPPDATA `
                       "Google\Chrome\User Data"
                   # The real manual path deliberately leaves chrome://extensions
-                  # open while the user follows the three steps. The headless CI
-                  # substitute must take exclusive ownership of that same Profile
-                  # before it can use Extensions.loadUnpacked. Exit code 21 from
-                  # Chrome is PROFILE_IN_USE, so close only the disposable hosted
-                  # runner's Chrome processes and wait for the lock to be released.
+                  # open while the user follows the three steps. The CI substitute
+                  # must take exclusive ownership of that same disposable Profile,
+                  # then drive Chrome's own Load unpacked button and native folder
+                  # dialog. Exit code 21 from Chrome is PROFILE_IN_USE, so release
+                  # only the hosted runner's disposable Chrome processes first.
                   @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
                       Stop-Process -Force -ErrorAction SilentlyContinue
                   $ChromeShutdownDeadline = [DateTime]::UtcNow.AddSeconds(30)
@@ -407,7 +413,8 @@ jobs:
                       --profile $ChromeUserData `
                       --extension $InstalledUnpacked `
                       --expected-id $Approval.extensionId `
-                      --expected-version $Approval.version
+                      --expected-version $Approval.version `
+                      --token-file $ExtensionTokenFile
                   if ($LASTEXITCODE -ne 0) {
                       throw "Chrome rejected the packaged unpacked extension CDP probe."
                   }
@@ -416,13 +423,43 @@ jobs:
                   Stop-Process -Id $LauncherProcess.Id -Force -ErrorAction SilentlyContinue
                   throw "One-click Windows launcher did not finish within five minutes."
               }
+              if (-not (Test-Path -LiteralPath $ExtensionTokenFile -PathType Leaf)) {
+                  throw "The extension probe did not preserve its disposable token."
+              }
+              $InstalledManifestPath = Join-Path $env:LOCALAPPDATA `
+                  "IntranetBrowserAgent\config\pilot\deployment.windows-pilot.json"
+              $InstalledManifest = Get-Content -LiteralPath $InstalledManifestPath `
+                  -Raw | ConvertFrom-Json
+              $InstalledPlaywrightCli = Join-Path $InstalledManifest.installRoot `
+                  "node_modules\@playwright\mcp\cli.js"
+              $InstalledNode = [string]$InstalledManifest.nodeExecutable
+              $InstalledPlaywrightConfig = Join-Path `
+                  (Split-Path -Parent $InstalledManifestPath) `
+                  "playwright.config.json"
+              python $ExtensionExercise `
+                  --node-executable $InstalledNode `
+                  --playwright-cli $InstalledPlaywrightCli `
+                  --playwright-config $InstalledPlaywrightConfig `
+                  --environment-policy (Join-Path $env:TRANSFER_ROOT `
+                      "toolkit\config\windows-mcp-environment.json") `
+                  --token-file $ExtensionTokenFile `
+                  --profile $ChromeUserData `
+                  --browser-channel chrome `
+                  --browser-executable $ChromeExe
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Installed Playwright MCP could not reuse the offline Chrome session."
+              }
               $LauncherFinished = $true
           } finally {
               if ($LauncherProcess -and -not $LauncherFinished -and
                   -not $LauncherProcess.HasExited) {
                   Stop-Process -Id $LauncherProcess.Id -Force -ErrorAction SilentlyContinue
               }
+              @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
+                  Stop-Process -Force -ErrorAction SilentlyContinue
               Remove-NetFirewallRule -DisplayName $FirewallRule `
+                  -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath $ExtensionTokenFile -Force `
                   -ErrorAction SilentlyContinue
           }
           if (Test-Path -LiteralPath $LauncherStdout) {
@@ -440,6 +477,11 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          $ChromeExe = [string]$env:CHROME_EXE
+          if (-not $ChromeExe -or
+              -not (Test-Path -LiteralPath $ChromeExe -PathType Leaf)) {
+              throw "The detected Chrome executable was not preserved between steps."
+          }
           $EvidenceRoot = Join-Path $env:RUNNER_TEMP "windows-evidence"
           New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
           $LogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
@@ -482,6 +524,10 @@ jobs:
               $Manifest.browser.manualConnectionApproval -ne $true) {
               throw "Windows pilot is not bound to approved existing-tab extension mode."
           }
+          if ([IO.Path]::GetFullPath([string]$Manifest.browser.executablePath) -ine
+              [IO.Path]::GetFullPath($ChromeExe)) {
+              throw "Windows pilot is not bound to the detected Chrome executable."
+          }
           $ExtensionId = "mmlmfjhmonkocbjadbfplnigmagldckm"
           $ExtensionApproval = Get-Content -LiteralPath (Join-Path `
               $env:TRANSFER_ROOT "toolkit\config\playwright-extension-source.json") `
@@ -510,6 +556,9 @@ jobs:
           )
           if ($RegisteredArgs -notcontains "--browser=chrome") {
               throw "Registered MCP does not bind the selected Chrome channel."
+          }
+          if ($RegisteredArgs -notcontains ("--executable-path=" + $ChromeExe)) {
+              throw "Registered MCP does not bind the detected Chrome executable."
           }
           $PolicyPath = "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
           $PolicyValues = @()

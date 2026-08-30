@@ -25,17 +25,25 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
     def test_extension_registration_arguments_bind_exact_browser_channel(self) -> None:
         cli = Path(r"C:\Agent\cli.js")
         config = Path(r"C:\Agent\playwright.config.json")
+        browser = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
         self.assertEqual(
             [
                 str(cli),
                 "--browser=chrome",
+                f"--executable-path={browser}",
                 "--config",
                 str(config),
             ],
-            registration._playwright_command_arguments(cli, config, "chrome"),
+            registration._playwright_command_arguments(
+                cli, config, "chrome", browser
+            ),
         )
         with self.assertRaises(registration.RegistrationError):
-            registration._playwright_command_arguments(cli, config, "firefox")
+            registration._playwright_command_arguments(
+                cli, config, "firefox", browser
+            )
+        with self.assertRaises(registration.RegistrationError):
+            registration._playwright_command_arguments(cli, config, "chrome")
 
     def paths(self, root: Path) -> tuple[Path, Path, Path, Path, Path]:
         node_executable = root / "node.exe"

@@ -229,6 +229,46 @@ class PlaywrightExtensionDetectionTests(unittest.TestCase):
             )
             self.assertIn("Microsoft", str(user_data))
 
+    def test_last_used_profile_does_not_false_pass_from_dormant_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Path(temporary)
+            user_data = checker.browser_user_data_dir(local, "chrome")
+            default = user_data / "Default"
+            dormant = user_data / "Profile 2"
+            default.mkdir(parents=True)
+            dormant.mkdir()
+            (user_data / "Local State").write_text(
+                json.dumps({"profile": {"last_used": "Default"}}),
+                encoding="utf-8",
+            )
+            relative_extension = (
+                Path("Extensions")
+                / checker.PLAYWRIGHT_EXTENSION_ID
+                / f"{self.VERSION}_0"
+            )
+            self.write_manifest(dormant / relative_extension)
+            (dormant / "Preferences").write_text(
+                json.dumps(
+                    {
+                        "extensions": {
+                            "settings": {
+                                checker.PLAYWRIGHT_EXTENSION_ID: self.record(
+                                    str(relative_extension)
+                                )
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertIsNone(
+                checker.find_extension_profile(
+                    user_data,
+                    self.VERSION,
+                    local / "approved-unpacked",
+                )
+            )
+
     def test_missing_or_unrelated_profiles_do_not_false_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

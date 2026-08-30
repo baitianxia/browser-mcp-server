@@ -53,6 +53,7 @@ def smoke(
     timeout: int = 20,
     mcp_environment: dict[str, str] | None = None,
     browser_channel: str | None = None,
+    browser_executable: Path | None = None,
 ) -> tuple[str, int]:
     for label, path in (
         ("Node.js executable", node_executable),
@@ -79,9 +80,18 @@ def smoke(
     request = "\n".join(json.dumps(message) for message in messages) + "\n"
     if browser_channel not in {None, "chrome", "msedge"}:
         raise SmokeError(f"unsupported browser channel: {browser_channel}")
+    if browser_channel is not None:
+        if browser_executable is None or not browser_executable.is_file():
+            raise SmokeError(
+                "extension-mode browser executable is not a regular file: "
+                f"{browser_executable}"
+            )
+    elif browser_executable is not None:
+        raise SmokeError("browser executable requires an extension browser channel")
     command = [str(node_executable), str(playwright_cli)]
     if browser_channel is not None:
         command.append(f"--browser={browser_channel}")
+        command.append(f"--executable-path={browser_executable}")
     command.extend(("--config", str(playwright_config)))
     child_environment = dict(os.environ)
     child_environment.update(
@@ -157,6 +167,7 @@ def main() -> int:
     parser.add_argument("--playwright-cli", required=True, type=Path)
     parser.add_argument("--playwright-config", required=True, type=Path)
     parser.add_argument("--browser-channel", choices=("chrome", "msedge"))
+    parser.add_argument("--browser-executable", type=Path)
     args = parser.parse_args()
     try:
         server_version, tool_count = smoke(
@@ -164,6 +175,7 @@ def main() -> int:
             args.playwright_cli,
             args.playwright_config,
             browser_channel=args.browser_channel,
+            browser_executable=args.browser_executable,
         )
     except SmokeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

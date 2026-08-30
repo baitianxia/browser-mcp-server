@@ -11,6 +11,7 @@
 ## 决策
 
 - Windows 清单必须声明本机盘符绝对路径 `nodeExecutable`。渲染出的 MCP 直接执行已校验的 `node.exe`，首个参数是固定运行包内的 `node_modules\@playwright\mcp\cli.js`，不再把 `.cmd` shell shim 作为 Claude MCP 命令。`.cmd` 只保留为构建/人工诊断入口。
+- Windows `extension` 清单还必须声明安装器自动识别的本机 Chrome/Edge `.exe`。渲染、握手和 Claude user-scope 注册必须同时使用精确 `--browser=<channel>` 与 `--executable-path=<browser.exe>`。这是固定 MCP 版本连接手工 unpacked 扩展的兼容路径：未指定 executable 时，上游安装预检不能识别只存在于 `Secure Preferences` 的记录；指定后则由浏览器自身打开 last-used Profile。安装检测因此只能接受 last-used Profile，不能从其他休眠 Profile 误放行。
 - Windows 一键迁移包必须 `bundledNode=true`，不探测、不依赖也不修复系统 Node。Claude Code 必须提供原生 `claude.exe`；旧式 `claude.cmd` 不进入此自动流程。
 - `config/windows-node-sources.json` 是当前发布批准的 Node 来源哈希清单。准备、构建和目标安装都必须同时校验官方 archive、官方 `SHASUMS256.txt`、`node.exe` 与 `LICENSE` 的固定 SHA-256；自洽但未批准的来源失败关闭。
 - 注册事务除 `remove → add → get` 外，还必须直接读取隔离/真实的 Claude 用户配置，确认 user-scope 条目准确指向已验证的 `node.exe`、固定 CLI 和 Playwright 配置；不以可能受同名高优先级 scope 影响的 `get` 结果代替该检查。

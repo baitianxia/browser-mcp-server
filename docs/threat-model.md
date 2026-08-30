@@ -23,6 +23,7 @@
 | 跨平台误标、路径 link/junction 或 Windows reparse point 逸出 | 清单显式目标、构建主机/目标元数据、Windows link-free 归档、写入前真实路径检查、目标 preflight | 交叉构建候选包仍未证明目标 `node.exe + cli.js`、Claude CLI 与企业 Windows 镜像兼容 |
 | 安装向导污染项目、把 MCP 注册到错误账号或在首次安装分支误停 | pilot 使用当前用户 `%LOCALAPPDATA%` 和 Claude Code user scope，不提权、不接收项目路径、不写项目文件；事务模块在真实变更前自检，用户配置先备份、`add/get` 或条目核对失败时恢复；交付前执行 Windows PowerShell 5.1 门禁，并用包内 Node 完成真实 MCP stdio 握手 | 当前用户权限内的恶意进程仍可篡改其 MCP 配置或运行文件；门禁不能替代企业镜像上的最终兼容性验收 |
 | 浏览器拒绝离线 CRX 后安装状态不完整或遗留策略 | 以实际 Profile 检测为准；失败时恢复临时策略、打开扩展页并只指向 `%LOCALAPPDATA%` 下已校验目录；原安装进程等待检测成功后才写 Claude 配置 | 现有企业 `ExtensionSettings` 仍可能阻止人工加载；用户关闭等待窗口会中止安装 |
+| 扩展存在于错误 Profile 或固定 MCP 版本未识别手工加载记录 | 安装器只接受浏览器 last-used Profile；清单、握手和 user-scope 注册同时固定 channel 与实际 browser `.exe`；Windows CI 必须在 Chrome 重启后做真实扩展工具调用 | 用户随后主动切换浏览器 Profile 时仍需在目标 Profile 重新安装/批准扩展 |
 | 调试端口被远程接管 | stdio、本机 channel/loopback、禁止远程 endpoint、主机防火墙 | 同机恶意进程仍可能访问 loopback |
 | 模型侧数据外泄 | 数据分类和模型路由必须先批准；减少截图、网络和控制台信息 | 已批准模型仍会接收完成任务所需内容 |
 | 扩展 token 泄漏 | 默认人工批准；token 不写入项目；需要时由秘密管理注入 | 获得 token 的本机进程可能请求连接 |
