@@ -223,7 +223,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertLess(verify_positions[2], probe)
         self.assertLess(probe, verify_positions[3])
 
-    def test_windows_ci_uses_persistent_drop_extension_and_session_e2e(self) -> None:
+    def test_windows_ci_uses_persistent_directory_extension_and_session_e2e(self) -> None:
         if not (ROOT / ".github").is_dir():
             self.skipTest("CI-only workflow files are not part of the transfer kit")
         workflow = (ROOT / ".github" / "workflows" / "windows-release.yml").read_text(
@@ -237,21 +237,20 @@ class WindowsPilotSetupTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("Extensions.loadUnpacked", loader)
-        self.assertIn('"Input.dispatchDragEvent"', loader)
+        self.assertNotIn('"Input.dispatchDragEvent"', loader)
         self.assertIn("updateProfileConfiguration", loader)
         self.assertIn("getProfileConfiguration", loader)
+        self.assertIn('"DOM.setFileInputFiles"', loader)
         self.assertIn("files: [extension]", loader)
-        self.assertIn('type: "dragEnter"', loader)
-        self.assertIn("notifyDragInstallInProgress", loader)
-        self.assertIn("chrome.developerPrivate.loadUnpacked", loader)
-        self.assertIn("useDraggedPath: true", loader)
-        self.assertIn('type: "dragCancel"', loader)
-        self.assertIn("CHROME_DIRECTORY_DROP", loader)
+        self.assertIn("webkitdirectory = true", loader)
+        self.assertIn("webkitEntries", loader)
+        self.assertIn("chrome.developerPrivate.loadDirectory", loader)
+        self.assertIn("CHROME_DIRECTORY_INPUT", loader)
         self.assertIn("windowsHide: false", loader)
         self.assertIn('send("Browser.close")', loader)
         self.assertIn("SESSION_COOKIE_VALUE", loader)
         self.assertIn("seedExtensionAuthToken", loader)
-        self.assertIn('args.mode === "install-drag"', loader)
+        self.assertIn('args.mode === "install-directory"', loader)
         self.assertIn('await findExistingExtension()', loader)
         self.assertIn("process.exit(1)", loader)
 
@@ -260,7 +259,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('$ChromeExe = [string]$env:CHROME_EXE', workflow)
         self.assertIn("--browser-executable $ChromeExe", workflow)
         self.assertIn("Installed Playwright MCP could not reuse", workflow)
-        self.assertIn("--mode install-drag", workflow)
+        self.assertIn("--mode install-directory", workflow)
         self.assertIn("--mode seed-existing", workflow)
         self.assertIn("Get-Content -LiteralPath $LauncherStdout", workflow)
         self.assertIn("taskkill.exe", workflow)

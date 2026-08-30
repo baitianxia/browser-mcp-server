@@ -2,9 +2,10 @@
 "use strict";
 
 // CI-only Chrome probe. Chrome 137+ removed --load-extension from branded
-// builds. Exercise Chrome's own extensions-page directory-drop handler over a
-// pipe-only DevTools connection. Unlike the session-only DevTools unpacked-load
-// command, this follows the persistent user-facing extension installation path.
+// builds. Give chrome://extensions a real DirectoryEntry through a hidden
+// directory input, then ask Chrome's developerPrivate implementation to load
+// it. Unlike the session-only DevTools unpacked-load command, this writes the
+// extension to the disposable Profile and therefore survives a browser restart.
 
 const fs = require("fs");
 const path = require("path");
@@ -37,7 +38,7 @@ function parseArguments(argv) {
       throw new Error(`missing --${name}`);
     }
   }
-  if (!new Set(["install-drag", "seed-existing"]).has(result.mode)) {
+  if (!new Set(["install-directory", "seed-existing"]).has(result.mode)) {
     throw new Error(`invalid --mode: ${result.mode}`);
   }
   return result;
@@ -89,7 +90,7 @@ async function main() {
     {
       stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
       // Keep the real extensions page visible for diagnostics and screenshots
-      // when a hosted-runner Chrome regression rejects the directory drop.
+      // when a hosted-runner Chrome regression rejects the directory input.
       windowsHide: false,
     },
   );
@@ -173,7 +174,7 @@ async function main() {
     });
   }
 
-  async function loadUnpackedThroughChromeDrop() {
+  async function loadUnpackedThroughDirectoryInput() {
     const target = await send("Target.createTarget", { url: "chrome://extensions/" });
     const attached = await send("Target.attachToTarget", {
       targetId: target.targetId,
@@ -185,7 +186,7 @@ async function main() {
     const sessionId = attached.sessionId;
     await send("Page.enable", {}, sessionId);
     await send("Page.bringToFront", {}, sessionId);
-    let dropPoint;
+    let extensionsPageReady = false;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const probe = await send(
         "Runtime.evaluate",
@@ -193,26 +194,22 @@ async function main() {
           expression: `(() => {
             const manager = document.querySelector("extensions-manager");
             if (!manager || !chrome?.developerPrivate?.updateProfileConfiguration) {
-              return null;
+              return false;
             }
-            const bounds = manager.getBoundingClientRect();
-            return {
-              x: Math.max(1, Math.floor(bounds.left + bounds.width / 2)),
-              y: Math.max(1, Math.floor(bounds.top + bounds.height / 2)),
-            };
+            return Boolean(document.body);
           })()`,
           returnByValue: true,
         },
         sessionId,
       );
-      if (probe.result?.value?.x && probe.result?.value?.y) {
-        dropPoint = probe.result.value;
+      if (probe.result?.value === true) {
+        extensionsPageReady = true;
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    if (!dropPoint) {
-      throw new Error("Chrome extensions page did not expose its directory-drop surface");
+    if (!extensionsPageReady) {
+      throw new Error("Chrome extensions page did not become ready");
     }
     const enabled = await send(
       "Runtime.evaluate",
@@ -232,43 +229,67 @@ async function main() {
     if (enabled.exceptionDetails || enabled.result?.value !== true) {
       throw new Error("Chrome did not enable developer mode for the disposable Profile");
     }
-    const dragData = {
-      items: [],
-      files: [extension],
-      dragOperationsMask: 1,
-    };
-    await send(
-      "Input.dispatchDragEvent",
+    await send("DOM.enable", {}, sessionId);
+    const input = await send(
+      "Runtime.evaluate",
       {
-        type: "dragEnter",
-        x: dropPoint.x,
-        y: dropPoint.y,
-        data: dragData,
+        expression: `(() => {
+          document.getElementById("ci-extension-directory")?.remove();
+          const element = document.createElement("input");
+          element.id = "ci-extension-directory";
+          element.type = "file";
+          element.webkitdirectory = true;
+          element.multiple = true;
+          element.hidden = true;
+          document.body.appendChild(element);
+          globalThis.__ciExtensionDirectoryInput = element;
+          return element;
+        })()`,
       },
       sessionId,
     );
-    // Chrome's extensions page handles a directory drag in two explicit
-    // developerPrivate calls: remember the current WebContents drop data on
-    // dragenter, then load that remembered directory on drop. Invoke the same
-    // calls explicitly so the hosted runner is independent of shadow-DOM event
-    // routing while still exercising the persistent browser implementation.
+    const inputObjectId = input.result?.objectId;
+    if (input.exceptionDetails || !inputObjectId) {
+      throw new Error("Chrome did not create the CI directory input");
+    }
+    await send(
+      "DOM.setFileInputFiles",
+      {
+        files: [extension],
+        objectId: inputObjectId,
+      },
+      sessionId,
+    );
     const loaded = await send(
       "Runtime.evaluate",
       {
         expression: `(async () => {
+          const input = globalThis.__ciExtensionDirectoryInput;
+          const entries = Array.from(input?.webkitEntries || []);
+          const files = Array.from(input?.files || []);
+          const diagnostic = {
+            fileCount: files.length,
+            firstRelativePath: files[0]?.webkitRelativePath || null,
+            entryCount: entries.length,
+            entryName: entries[0]?.name || null,
+            entryIsDirectory: entries[0]?.isDirectory === true,
+          };
+          if (entries.length !== 1 || entries[0]?.isDirectory !== true) {
+            return {
+              ok: false,
+              error: "Chrome did not expose one DirectoryEntry for the selected directory",
+              ...diagnostic,
+            };
+          }
           try {
-            chrome.developerPrivate.notifyDragInstallInProgress();
-            const result = await chrome.developerPrivate.loadUnpacked({
-              failQuietly: true,
-              populateError: true,
-              useDraggedPath: true,
-            });
-            return {ok: true, result: result ?? null};
+            const result = await chrome.developerPrivate.loadDirectory(entries[0]);
+            return {ok: true, result: result ?? null, ...diagnostic};
           } catch (error) {
             return {
               ok: false,
               error: String(error?.stack || error),
               runtimeError: chrome.runtime?.lastError?.message || null,
+              ...diagnostic,
             };
           }
         })()`,
@@ -278,22 +299,12 @@ async function main() {
       sessionId,
     );
     const loadResult = loaded.result?.value;
-    process.stdout.write(`CHROME_DIRECTORY_DROP ${JSON.stringify(loadResult)}\n`);
-    if (loaded.exceptionDetails || loadResult?.ok !== true || loadResult.result) {
+    process.stdout.write(`CHROME_DIRECTORY_INPUT ${JSON.stringify(loadResult)}\n`);
+    if (loaded.exceptionDetails || loadResult?.ok !== true) {
       throw new Error(
-        `Chrome directory-drop API rejected the approved extension: ${JSON.stringify(loadResult)}`,
+        `Chrome directory-input API rejected the approved extension: ${JSON.stringify(loadResult)}`,
       );
     }
-    await send(
-      "Input.dispatchDragEvent",
-      {
-        type: "dragCancel",
-        x: dropPoint.x,
-        y: dropPoint.y,
-        data: dragData,
-      },
-      sessionId,
-    );
     let lastExtensions = [];
     for (let attempt = 0; attempt < 300; attempt += 1) {
       const listed = await send("Extensions.getExtensions");
@@ -311,7 +322,7 @@ async function main() {
       path: item.path,
     }));
     throw new Error(
-      `Chrome directory drop did not load the approved unpacked extension; active=${JSON.stringify(active)}`,
+      `Chrome directory input did not load the approved unpacked extension; active=${JSON.stringify(active)}`,
     );
   }
 
@@ -371,8 +382,8 @@ async function main() {
 
   try {
     const record =
-      args.mode === "install-drag"
-        ? await loadUnpackedThroughChromeDrop()
+      args.mode === "install-directory"
+        ? await loadUnpackedThroughDirectoryInput()
         : await findExistingExtension();
     if (record.enabled !== true || record.version !== args["expected-version"]) {
       throw new Error(
@@ -380,7 +391,7 @@ async function main() {
       );
     }
     if (
-      args.mode === "install-drag" &&
+      args.mode === "install-directory" &&
       path.resolve(record.path).toLowerCase() !== extension.toLowerCase()
     ) {
       throw new Error(`loaded extension path mismatch: ${record.path} != ${extension}`);

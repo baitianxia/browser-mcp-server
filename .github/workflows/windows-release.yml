@@ -406,9 +406,11 @@ jobs:
                   # open while the user follows the three steps. GitHub's hosted
                   # Windows runner has no trusted human desktop input, so the CI
                   # substitute takes exclusive ownership of that same disposable
-                  # Profile and exercises Chrome's own extensions-page directory
-                  # drop handler. Exit code 21 is PROFILE_IN_USE, so release only
-                  # the hosted runner's disposable Chrome processes first.
+                  # Profile, supplies the displayed directory through a hidden
+                  # directory input, and invokes Chrome's persistent
+                  # developerPrivate directory loader. Exit code 21 is
+                  # PROFILE_IN_USE, so release only the hosted runner's
+                  # disposable Chrome processes first.
                   Stop-CiChrome
                   & node.exe $CdpProbe `
                       --chrome $ChromeExe `
@@ -417,7 +419,7 @@ jobs:
                       --expected-id $Approval.extensionId `
                       --expected-version $Approval.version `
                       --token-file $ExtensionTokenFile `
-                      --mode install-drag
+                      --mode install-directory
                   if ($LASTEXITCODE -ne 0) {
                       throw "Chrome rejected the packaged unpacked extension CDP probe."
                   }
