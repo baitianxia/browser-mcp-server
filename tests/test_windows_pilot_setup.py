@@ -248,6 +248,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("chrome.developerPrivate.loadDirectory", loader)
         self.assertNotIn("webkitRequestFileSystem", loader)
         self.assertIn("windowsHide: true", loader)
+        self.assertNotIn('"--enable-automation"', loader)
         self.assertIn('send("Browser.close")', loader)
         self.assertIn("SESSION_COOKIE_VALUE", loader)
         self.assertIn("readExtensionAuthToken", loader)

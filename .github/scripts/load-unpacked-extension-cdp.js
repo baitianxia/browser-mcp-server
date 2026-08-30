@@ -122,7 +122,9 @@ async function main() {
       `--user-data-dir=${profile}`,
       "--remote-debugging-pipe",
       "--enable-unsafe-extension-debugging",
-      "--enable-automation",
+      // Do not pass --enable-automation. It disables Chrome's singleton
+      // forwarding, so the MCP's later chrome.exe invocation cannot deliver
+      // connect.html to this already-running extension process.
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-networking",
