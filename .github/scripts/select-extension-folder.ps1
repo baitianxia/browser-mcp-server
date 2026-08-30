@@ -158,11 +158,32 @@ do {
         }
         if ($ToggleState -eq "On") {
             Write-Host "UIA_DEVELOPER_MODE prior=On action=already-on"
+        } elseif ($ToggleObject) {
+            try {
+                ([System.Windows.Automation.TogglePattern]$ToggleObject).Toggle()
+                Start-Sleep -Milliseconds 400
+                $ToggleStateAfter = [string](
+                    ([System.Windows.Automation.TogglePattern]$ToggleObject).Current.ToggleState
+                )
+                Write-Host (
+                    "UIA_DEVELOPER_MODE prior={0} after={1} action=toggle-pattern" -f `
+                        $ToggleState, $ToggleStateAfter
+                )
+            } catch {
+                $DeveloperClick = Invoke-DesktopElementClick `
+                    -Window $ChromeWindow -Element $DeveloperButton
+                Write-Host (
+                    "UIA_DEVELOPER_MODE x={0} y={1} prior={2} " +
+                    "action=desktop-fallback" -f `
+                        $DeveloperClick[0], $DeveloperClick[1], $ToggleState
+                )
+            }
         } else {
             $DeveloperClick = Invoke-DesktopElementClick `
                 -Window $ChromeWindow -Element $DeveloperButton
             Write-Host (
-                "UIA_DEVELOPER_MODE x={0} y={1} prior={2} action=clicked" -f `
+                "UIA_DEVELOPER_MODE x={0} y={1} prior={2} " +
+                "action=desktop-no-toggle-pattern" -f `
                     $DeveloperClick[0], $DeveloperClick[1], $ToggleState
             )
         }
@@ -181,11 +202,30 @@ if (-not $LoadButton -or -not $ChromeWindow) {
     )
 }
 
-$LoadClick = Invoke-DesktopElementClick -Window $ChromeWindow -Element $LoadButton
-Write-Host (
-    "UIA_LOAD_BUTTON x={0} y={1} name={2}" -f `
-        $LoadClick[0], $LoadClick[1], $LoadButton.Current.Name
-)
+$LoadInvokeObject = $null
+if ($LoadButton.TryGetCurrentPattern(
+        [System.Windows.Automation.InvokePattern]::Pattern,
+        [ref]$LoadInvokeObject
+    )) {
+    try {
+        ([System.Windows.Automation.InvokePattern]$LoadInvokeObject).Invoke()
+        Write-Host "UIA_LOAD_BUTTON name=Load unpacked action=invoke-pattern"
+    } catch {
+        $LoadClick = Invoke-DesktopElementClick `
+            -Window $ChromeWindow -Element $LoadButton
+        Write-Host (
+            "UIA_LOAD_BUTTON x={0} y={1} name={2} action=desktop-fallback" -f `
+                $LoadClick[0], $LoadClick[1], $LoadButton.Current.Name
+        )
+    }
+} else {
+    $LoadClick = Invoke-DesktopElementClick `
+        -Window $ChromeWindow -Element $LoadButton
+    Write-Host (
+        "UIA_LOAD_BUTTON x={0} y={1} name={2} action=desktop-no-invoke-pattern" -f `
+            $LoadClick[0], $LoadClick[1], $LoadButton.Current.Name
+    )
+}
 
 $Dialog = $null
 $TopWindows = @()
