@@ -472,7 +472,15 @@ jobs:
           } finally {
               if ($LauncherProcess -and -not $LauncherFinished -and
                   -not $LauncherProcess.HasExited) {
-                  Stop-Process -Id $LauncherProcess.Id -Force -ErrorAction SilentlyContinue
+                  # The launcher is cmd -> release gate -> installer. Kill the
+                  # disposable CI process tree so a failed browser probe cannot
+                  # leave the installer waiting and keep redirected handles open.
+                  & (Join-Path $env:SystemRoot "System32\taskkill.exe") `
+                      /PID $LauncherProcess.Id /T /F 2>$null | Out-Null
+                  if (-not $LauncherProcess.HasExited) {
+                      Stop-Process -Id $LauncherProcess.Id -Force `
+                          -ErrorAction SilentlyContinue
+                  }
                   $null = $LauncherProcess.WaitForExit(5000)
               }
               @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |

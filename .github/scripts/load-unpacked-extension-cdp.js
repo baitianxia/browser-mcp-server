@@ -235,7 +235,12 @@ async function main() {
         "-ExtensionDirectory",
         extension,
       ],
-      { encoding: "utf8", windowsHide: false },
+      {
+        encoding: "utf8",
+        windowsHide: false,
+        timeout: 60000,
+        killSignal: "SIGKILL",
+      },
     );
     if (selection.error || selection.status !== 0) {
       const diagnostics = [selection.stdout, selection.stderr]
@@ -287,8 +292,8 @@ async function main() {
     if (!ready) {
       throw new Error('Chrome extensions page did not expose an enabled "Load unpacked" button');
     }
-    // The selector locates the visible browser's accessibility button and
-    // generates a real Win32 mouse click before controlling the native picker.
+    // The selector locates the visible browser's accessibility button,
+    // generates a real Win32 mouse click, and then controls the native picker.
     // Chrome can distinguish that desktop input from script/CDP-injected input.
     selectExtensionFolder();
     let lastExtensions = [];

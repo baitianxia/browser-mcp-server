@@ -235,9 +235,6 @@ class WindowsPilotSetupTests(unittest.TestCase):
         selector = (
             ROOT / ".github" / "scripts" / "select-extension-folder.ps1"
         ).read_text(encoding="utf-8")
-        async_invoker = (
-            ROOT / ".github" / "scripts" / "invoke-load-unpacked.ps1"
-        ).read_text(encoding="utf-8")
         exercise = (
             ROOT / ".github" / "scripts" / "exercise-extension-mcp.py"
         ).read_text(encoding="utf-8")
@@ -247,6 +244,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn(".click();", loader)
         self.assertNotIn('"Input.dispatchMouseEvent"', loader)
         self.assertIn("windowsHide: false", loader)
+        self.assertIn("timeout: 60000", loader)
+        self.assertIn('killSignal: "SIGKILL"', loader)
         self.assertIn('"powershell.exe"', loader)
         self.assertIn("select-extension-folder.ps1", loader)
         self.assertIn("System.Windows.Automation.AutomationElement", selector)
@@ -257,11 +256,9 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("UIA_DEVELOPER_MODE", selector)
         self.assertIn("TogglePattern", selector)
         self.assertIn("UIA_LOAD_BUTTON", selector)
-        self.assertIn("invoke-load-unpacked.ps1", selector)
-        self.assertIn("Start-Process", selector)
-        self.assertIn("WaitForExit(20000)", selector)
-        self.assertIn("InvokePattern", async_invoker)
-        self.assertIn("UIA_ASYNC_LOAD", async_invoker)
+        self.assertIn("action=desktop-click", selector)
+        self.assertNotIn("Start-Process", selector)
+        self.assertNotIn("UIA_ASYNC_LOAD", selector)
         self.assertIn("mouse_event(0x0002", selector)
         self.assertIn("mouse_event(0x0004", selector)
         self.assertIn('AutomationIdProperty, "1"', selector)
@@ -279,6 +276,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("--mode install-ui", workflow)
         self.assertIn("--mode seed-existing", workflow)
         self.assertIn("Get-Content -LiteralPath $LauncherStdout", workflow)
+        self.assertIn("taskkill.exe", workflow)
+        self.assertIn("/PID $LauncherProcess.Id /T /F", workflow)
         self.assertLess(
             workflow.index("python $ExtensionExercise"),
             workflow.index("Remove-NetFirewallRule -DisplayName $FirewallRule"),
