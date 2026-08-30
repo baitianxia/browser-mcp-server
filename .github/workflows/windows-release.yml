@@ -337,6 +337,10 @@ jobs:
               "playwright-extension-ci.stdout.log"
           $CdpStderr = Join-Path $env:RUNNER_TEMP `
               "playwright-extension-ci.stderr.log"
+          $LauncherExitFile = Join-Path $env:RUNNER_TEMP `
+              "one-click-launcher.exit.txt"
+          $CdpExitFile = Join-Path $env:RUNNER_TEMP `
+              "playwright-extension-ci.exit.txt"
           $Approval = Get-Content -LiteralPath (Join-Path `
               $env:TRANSFER_ROOT `
               "toolkit\config\playwright-extension-source.json") `
@@ -353,7 +357,9 @@ jobs:
           $WrapperBody = @"
           @echo off
           call "$Launcher" -ManualExtensionWaitSeconds 180 < nul
-          exit /b %errorlevel%
+          set "PILOT_EXIT=%errorlevel%"
+          > "$LauncherExitFile" echo %PILOT_EXIT%
+          exit /b %PILOT_EXIT%
           "@
           [IO.File]::WriteAllText(
               $Wrapper,
@@ -365,7 +371,9 @@ jobs:
           $CdpWrapperBody = @"
           @echo off
           node.exe "$CdpProbe" --chrome "$ChromeExe" --profile "$ChromeUserData" --extension "$InstalledUnpacked" --expected-id "$($Approval.extensionId)" --expected-version "$($Approval.version)" --token-file "$ExtensionTokenFile" --ready-file "$CdpReadyFile" --stop-file "$CdpStopFile" --maximum-seconds 600
-          exit /b %errorlevel%
+          set "CDP_EXIT=%errorlevel%"
+          > "$CdpExitFile" echo %CDP_EXIT%
+          exit /b %CDP_EXIT%
           "@
           [IO.File]::WriteAllText(
               $CdpWrapper,
@@ -393,6 +401,21 @@ jobs:
                   Start-Sleep -Milliseconds 250
               } while ([DateTime]::UtcNow -lt $ChromeShutdownDeadline)
               throw "CI could not release the disposable Chrome Profile."
+          }
+          function Read-CiExitCode {
+              param(
+                  [Parameter(Mandatory = $true)][string]$Path,
+                  [Parameter(Mandatory = $true)][string]$Label
+              )
+              if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+                  throw "$Label did not write its exit-code marker: $Path"
+              }
+              $RawExitCode = (Get-Content -LiteralPath $Path -Raw).Trim()
+              $ParsedExitCode = 0
+              if (-not [int]::TryParse($RawExitCode, [ref]$ParsedExitCode)) {
+                  throw "$Label wrote an invalid exit code: $RawExitCode"
+              }
+              return $ParsedExitCode
           }
           try {
               New-NetFirewallRule -DisplayName $FirewallRule `
@@ -424,8 +447,12 @@ jobs:
               if (-not $ManualFallbackReached -and -not $LauncherProcess.HasExited) {
                   throw "The installer reached neither extension fallback nor completion."
               }
-              if (-not $ManualFallbackReached -and $LauncherProcess.ExitCode -ne 0) {
-                  throw "One-click Windows launcher failed before the manual fallback with exit code $($LauncherProcess.ExitCode)"
+              if (-not $ManualFallbackReached) {
+                  $LauncherExitCode = Read-CiExitCode `
+                      $LauncherExitFile "One-click Windows launcher"
+                  if ($LauncherExitCode -ne 0) {
+                      throw "One-click Windows launcher failed before the manual fallback with exit code $LauncherExitCode"
+                  }
               }
 
               # The target flow leaves chrome://extensions open while the user
@@ -437,7 +464,7 @@ jobs:
               # claiming that CI performed or persisted the human picker action.
               Stop-CiChrome
               foreach ($StaleMarker in @(
-                  $ExtensionTokenFile, $CdpReadyFile, $CdpStopFile
+                  $ExtensionTokenFile, $CdpReadyFile, $CdpStopFile, $CdpExitFile
               )) {
                   Remove-Item -LiteralPath $StaleMarker -Force `
                       -ErrorAction SilentlyContinue
@@ -455,7 +482,11 @@ jobs:
               }
               if (-not (Test-Path -LiteralPath $CdpReadyFile -PathType Leaf)) {
                   $CdpExit = if ($CdpProcess.HasExited) {
-                      $CdpProcess.ExitCode
+                      if (Test-Path -LiteralPath $CdpExitFile -PathType Leaf) {
+                          Read-CiExitCode $CdpExitFile "Chrome CI session"
+                      } else {
+                          "missing-marker"
+                      }
                   } else {
                       "still-running"
                   }
@@ -481,8 +512,10 @@ jobs:
               if (-not $LauncherProcess.HasExited) {
                   throw "One-click Windows launcher is still running unexpectedly."
               }
-              if ($LauncherProcess.ExitCode -ne 0) {
-                  throw "One-click Windows launcher failed with exit code $($LauncherProcess.ExitCode)"
+              $LauncherExitCode = Read-CiExitCode `
+                  $LauncherExitFile "One-click Windows launcher"
+              if ($LauncherExitCode -ne 0) {
+                  throw "One-click Windows launcher failed with exit code $LauncherExitCode"
               }
               $InstalledManifestPath = Join-Path $env:LOCALAPPDATA `
                   "IntranetBrowserAgent\config\pilot\deployment.windows-pilot.json"
@@ -515,8 +548,9 @@ jobs:
               if (-not $CdpProcess.WaitForExit(30000)) {
                   throw "The Chrome CI session did not stop after the E2E completed."
               }
-              if ($CdpProcess.ExitCode -ne 0) {
-                  throw "The Chrome CI session failed with exit code $($CdpProcess.ExitCode)"
+              $CdpExitCode = Read-CiExitCode $CdpExitFile "Chrome CI session"
+              if ($CdpExitCode -ne 0) {
+                  throw "The Chrome CI session failed with exit code $CdpExitCode"
               }
               $CdpFinished = $true
               $LauncherFinished = $true
@@ -554,7 +588,8 @@ jobs:
               Remove-NetFirewallRule -DisplayName $FirewallRule `
                   -ErrorAction SilentlyContinue
               foreach ($Marker in @(
-                  $ExtensionTokenFile, $CdpReadyFile, $CdpStopFile
+                  $ExtensionTokenFile, $CdpReadyFile, $CdpStopFile,
+                  $LauncherExitFile, $CdpExitFile
               )) {
                   Remove-Item -LiteralPath $Marker -Force `
                       -ErrorAction SilentlyContinue
