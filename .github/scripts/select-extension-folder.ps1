@@ -78,48 +78,6 @@ function Invoke-DesktopElementClick {
     return @($ClickX, $ClickY)
 }
 
-function Invoke-DesktopElementKey {
-    param(
-        [Parameter(Mandatory = $true)]
-        [System.Windows.Automation.AutomationElement]$Window,
-        [Parameter(Mandatory = $true)]
-        [System.Windows.Automation.AutomationElement]$Element,
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]$Keys
-    )
-
-    $ChromeHandle = [IntPtr]$Window.Current.NativeWindowHandle
-    $null = [IntranetDesktopInput]::ShowWindowAsync($ChromeHandle, 9)
-    $null = [IntranetDesktopInput]::BringWindowToTop($ChromeHandle)
-    $null = [IntranetDesktopInput]::SetForegroundWindow($ChromeHandle)
-    try {
-        $Element.SetFocus()
-    } catch {
-        throw (
-            "Chrome/Edge refused to focus the exact UI Automation control: " +
-            $Element.Current.Name
-        )
-    }
-    Start-Sleep -Milliseconds 400
-    $Focused = [System.Windows.Automation.AutomationElement]::FocusedElement
-    if (-not $Focused -or
-        $Focused.Current.ProcessId -ne $Window.Current.ProcessId -or
-        $Focused.Current.Name -ne $Element.Current.Name) {
-        $ActualFocus = if ($Focused) {
-            "{0}|{1}" -f $Focused.Current.ProcessId, $Focused.Current.Name
-        } else {
-            "<none>"
-        }
-        throw (
-            "Chrome/Edge did not focus the requested UI Automation control; " +
-            "actual=$ActualFocus"
-        )
-    }
-    [System.Windows.Forms.SendKeys]::SendWait($Keys)
-    return $Focused.Current.Name
-}
-
 $Desktop = [System.Windows.Automation.AutomationElement]::RootElement
 $ChromeWindow = $null
 $LoadButton = $null
@@ -244,11 +202,34 @@ if (-not $LoadButton -or -not $ChromeWindow) {
     )
 }
 
-$FocusedLoadButton = Invoke-DesktopElementKey `
-    -Window $ChromeWindow -Element $LoadButton -Keys "{ENTER}"
-Write-Host (
-    "UIA_LOAD_BUTTON name={0} action=focused-enter" -f $FocusedLoadButton
+$InvokerRunspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+$InvokerRunspace.ApartmentState = [System.Threading.ApartmentState]::STA
+$InvokerRunspace.ThreadOptions = `
+    [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+$InvokerRunspace.Open()
+$InvokerRunspace.SessionStateProxy.SetVariable(
+    "IntranetLoadButton",
+    $LoadButton
 )
+$LoadInvoker = [System.Management.Automation.PowerShell]::Create()
+$LoadInvoker.Runspace = $InvokerRunspace
+$null = $LoadInvoker.AddScript(@'
+$ErrorActionPreference = "Stop"
+$InvokeObject = $null
+if (-not $IntranetLoadButton.TryGetCurrentPattern(
+        [System.Windows.Automation.InvokePattern]::Pattern,
+        [ref]$InvokeObject
+    )) {
+    throw "Chrome/Edge Load unpacked button does not support InvokePattern."
+}
+"UIA_ASYNC_LOAD action=invoking"
+([System.Windows.Automation.InvokePattern]$InvokeObject).Invoke()
+"UIA_ASYNC_LOAD action=returned"
+'@)
+$LoadInvocation = $LoadInvoker.BeginInvoke()
+$LoadInvokerCompleted = $false
+$LoadInvokerOutput = @()
+Write-Host "UIA_LOAD_BUTTON name=Load unpacked action=sta-runspace-invoke"
 
 $Dialog = $null
 $TopWindows = @()
@@ -271,6 +252,20 @@ do {
             }
         } catch {
             # UI Automation elements can disappear while the desktop is scanned.
+        }
+    }
+    if (-not $LoadInvokerCompleted -and $LoadInvocation.IsCompleted) {
+        try {
+            $LoadInvokerOutput = @($LoadInvoker.EndInvoke($LoadInvocation))
+            $LoadInvokerCompleted = $true
+        } catch {
+            $InvokerErrors = @($LoadInvoker.Streams.Error | ForEach-Object {
+                $_.ToString()
+            }) -join " | "
+            throw (
+                "STA Load unpacked invoker failed before the dialog appeared: " +
+                $InvokerErrors
+            )
         }
     }
     if (-not $Dialog) {
@@ -360,3 +355,27 @@ Write-Host (
         $Accept.Current.AutomationId, $Accept.Current.Name
 )
 ([System.Windows.Automation.InvokePattern]$InvokeObject).Invoke()
+
+if (-not $LoadInvokerCompleted) {
+    if (-not $LoadInvocation.AsyncWaitHandle.WaitOne(20000)) {
+        throw "STA Load unpacked invoker did not return after the folder closed."
+    }
+    try {
+        $LoadInvokerOutput = @($LoadInvoker.EndInvoke($LoadInvocation))
+        $LoadInvokerCompleted = $true
+    } catch {
+        $InvokerErrors = @($LoadInvoker.Streams.Error | ForEach-Object {
+            $_.ToString()
+        }) -join " | "
+        throw "STA Load unpacked invoker failed after dialog close: $InvokerErrors"
+    }
+}
+if ($LoadInvoker.Streams.Error.Count -gt 0) {
+    $InvokerErrors = @($LoadInvoker.Streams.Error | ForEach-Object {
+        $_.ToString()
+    }) -join " | "
+    throw "STA Load unpacked invoker wrote errors: $InvokerErrors"
+}
+@($LoadInvokerOutput) | ForEach-Object { Write-Host ([string]$_) }
+$LoadInvoker.Dispose()
+$InvokerRunspace.Dispose()

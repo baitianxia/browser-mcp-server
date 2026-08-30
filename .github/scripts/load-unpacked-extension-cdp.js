@@ -292,9 +292,9 @@ async function main() {
     if (!ready) {
       throw new Error('Chrome extensions page did not expose an enabled "Load unpacked" button');
     }
-    // The selector focuses the exact visible accessibility button, sends a
-    // desktop Enter key, and then controls Chrome's native picker. This avoids
-    // coordinate/DPI ambiguity while still exercising the user-visible path.
+    // The selector invokes the exact visible accessibility button on a
+    // dedicated STA runspace while its main runspace controls Chrome's modal
+    // native picker. This exercises the same user-visible persistent path.
     selectExtensionFolder();
     let lastExtensions = [];
     for (let attempt = 0; attempt < 300; attempt += 1) {
