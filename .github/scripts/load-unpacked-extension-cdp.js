@@ -2,10 +2,10 @@
 "use strict";
 
 // CI-only Chrome probe. Chrome 137+ removed --load-extension from branded
-// builds. Give chrome://extensions a real DirectoryEntry through a hidden
-// directory input, then ask Chrome's developerPrivate implementation to load
-// it. Unlike the session-only DevTools unpacked-load command, this writes the
-// extension to the disposable Profile and therefore survives a browser restart.
+// builds. Give chrome://extensions a real DirectoryEntry from a renderer drag
+// item, then ask Chrome's developerPrivate implementation to load it. Unlike
+// the session-only DevTools unpacked-load command, this writes the extension to
+// the disposable Profile and therefore survives a browser restart.
 
 const fs = require("fs");
 const path = require("path");
@@ -174,7 +174,7 @@ async function main() {
     });
   }
 
-  async function loadUnpackedThroughDirectoryInput() {
+  async function loadUnpackedThroughDirectoryEntry() {
     const target = await send("Target.createTarget", { url: "chrome://extensions/" });
     const attached = await send("Target.attachToTarget", {
       targetId: target.targetId,
@@ -186,7 +186,7 @@ async function main() {
     const sessionId = attached.sessionId;
     await send("Page.enable", {}, sessionId);
     await send("Page.bringToFront", {}, sessionId);
-    let extensionsPageReady = false;
+    let dropPoint;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const probe = await send(
         "Runtime.evaluate",
@@ -196,20 +196,24 @@ async function main() {
             if (!manager || !chrome?.developerPrivate?.updateProfileConfiguration) {
               return false;
             }
-            return Boolean(document.body);
+            const bounds = manager.getBoundingClientRect();
+            return {
+              x: Math.max(1, Math.floor(bounds.left + bounds.width / 2)),
+              y: Math.max(1, Math.floor(bounds.top + bounds.height / 2)),
+            };
           })()`,
           returnByValue: true,
         },
         sessionId,
       );
-      if (probe.result?.value === true) {
-        extensionsPageReady = true;
+      if (probe.result?.value?.x && probe.result?.value?.y) {
+        dropPoint = probe.result.value;
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    if (!extensionsPageReady) {
-      throw new Error("Chrome extensions page did not become ready");
+    if (!dropPoint) {
+      throw new Error("Chrome extensions page did not expose its drop surface");
     }
     const enabled = await send(
       "Runtime.evaluate",
@@ -229,41 +233,65 @@ async function main() {
     if (enabled.exceptionDetails || enabled.result?.value !== true) {
       throw new Error("Chrome did not enable developer mode for the disposable Profile");
     }
-    await send("DOM.enable", {}, sessionId);
-    const input = await send(
+    const listener = await send(
       "Runtime.evaluate",
       {
         expression: `(() => {
-          document.getElementById("ci-extension-directory")?.remove();
-          const element = document.createElement("input");
-          element.id = "ci-extension-directory";
-          element.type = "file";
-          element.webkitdirectory = true;
-          element.multiple = true;
-          element.hidden = true;
-          document.body.appendChild(element);
-          globalThis.__ciExtensionDirectoryInput = element;
-          globalThis.__ciExtensionDirectoryReady = new Promise((resolve) => {
-            element.addEventListener(
-              "input",
-              () => resolve("input"),
-              {once: true},
-            );
+          globalThis.__ciDraggedDirectoryEntry = null;
+          globalThis.__ciDraggedDirectoryReady = new Promise((resolve) => {
+            document.addEventListener("dragenter", (event) => {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              const items = Array.from(event.dataTransfer?.items || []);
+              const itemDetails = [];
+              for (const item of items) {
+                let entry = null;
+                let entryError = null;
+                try {
+                  entry = item.webkitGetAsEntry?.() || null;
+                } catch (error) {
+                  entryError = String(error?.stack || error);
+                }
+                itemDetails.push({
+                  kind: item.kind,
+                  type: item.type,
+                  entryName: entry?.name || null,
+                  entryIsDirectory: entry?.isDirectory === true,
+                  entryError,
+                });
+                if (!globalThis.__ciDraggedDirectoryEntry && entry?.isDirectory) {
+                  globalThis.__ciDraggedDirectoryEntry = entry;
+                }
+              }
+              resolve({
+                eventType: event.type,
+                itemCount: items.length,
+                fileCount: event.dataTransfer?.files?.length || 0,
+                itemDetails,
+              });
+            }, {capture: true, once: true});
           });
-          return element;
+          return true;
         })()`,
+        returnByValue: true,
       },
       sessionId,
     );
-    const inputObjectId = input.result?.objectId;
-    if (input.exceptionDetails || !inputObjectId) {
-      throw new Error("Chrome did not create the CI directory input");
+    if (listener.exceptionDetails || listener.result?.value !== true) {
+      throw new Error("Chrome did not install the CI directory-entry listener");
     }
+    const dragData = {
+      items: [],
+      files: [extension],
+      dragOperationsMask: 1,
+    };
     await send(
-      "DOM.setFileInputFiles",
+      "Input.dispatchDragEvent",
       {
-        files: [extension],
-        objectId: inputObjectId,
+        type: "dragEnter",
+        x: dropPoint.x,
+        y: dropPoint.y,
+        data: dragData,
       },
       sessionId,
     );
@@ -271,30 +299,28 @@ async function main() {
       "Runtime.evaluate",
       {
         expression: `(async () => {
-          const input = globalThis.__ciExtensionDirectoryInput;
-          const inputEvent = await Promise.race([
-            globalThis.__ciExtensionDirectoryReady,
-            new Promise((resolve) => setTimeout(() => resolve("timeout"), 15000)),
+          const drag = await Promise.race([
+            globalThis.__ciDraggedDirectoryReady,
+            new Promise((resolve) => setTimeout(
+              () => resolve({eventType: "timeout", itemCount: 0, itemDetails: []}),
+              15000,
+            )),
           ]);
-          const entries = Array.from(input?.webkitEntries || []);
-          const files = Array.from(input?.files || []);
+          const entry = globalThis.__ciDraggedDirectoryEntry;
           const diagnostic = {
-            inputEvent,
-            fileCount: files.length,
-            firstRelativePath: files[0]?.webkitRelativePath || null,
-            entryCount: entries.length,
-            entryName: entries[0]?.name || null,
-            entryIsDirectory: entries[0]?.isDirectory === true,
+            ...drag,
+            entryName: entry?.name || null,
+            entryIsDirectory: entry?.isDirectory === true,
           };
-          if (entries.length !== 1 || entries[0]?.isDirectory !== true) {
+          if (entry?.isDirectory !== true) {
             return {
               ok: false,
-              error: "Chrome did not expose one DirectoryEntry for the selected directory",
+              error: "Chrome drag data did not expose a DirectoryEntry",
               ...diagnostic,
             };
           }
           try {
-            const result = await chrome.developerPrivate.loadDirectory(entries[0]);
+            const result = await chrome.developerPrivate.loadDirectory(entry);
             return {ok: true, result: result ?? null, ...diagnostic};
           } catch (error) {
             return {
@@ -310,11 +336,21 @@ async function main() {
       },
       sessionId,
     );
+    await send(
+      "Input.dispatchDragEvent",
+      {
+        type: "dragCancel",
+        x: dropPoint.x,
+        y: dropPoint.y,
+        data: dragData,
+      },
+      sessionId,
+    );
     const loadResult = loaded.result?.value;
-    process.stdout.write(`CHROME_DIRECTORY_INPUT ${JSON.stringify(loadResult)}\n`);
+    process.stdout.write(`CHROME_DIRECTORY_ENTRY ${JSON.stringify(loadResult)}\n`);
     if (loaded.exceptionDetails || loadResult?.ok !== true) {
       throw new Error(
-        `Chrome directory-input API rejected the approved extension: ${JSON.stringify(loadResult)}`,
+        `Chrome directory-entry API rejected the approved extension: ${JSON.stringify(loadResult)}`,
       );
     }
     let lastExtensions = [];
@@ -334,7 +370,7 @@ async function main() {
       path: item.path,
     }));
     throw new Error(
-      `Chrome directory input did not load the approved unpacked extension; active=${JSON.stringify(active)}`,
+      `Chrome directory entry did not load the approved unpacked extension; active=${JSON.stringify(active)}`,
     );
   }
 
@@ -395,7 +431,7 @@ async function main() {
   try {
     const record =
       args.mode === "install-directory"
-        ? await loadUnpackedThroughDirectoryInput()
+        ? await loadUnpackedThroughDirectoryEntry()
         : await findExistingExtension();
     if (record.enabled !== true || record.version !== args["expected-version"]) {
       throw new Error(
