@@ -243,6 +243,13 @@ async function main() {
           element.hidden = true;
           document.body.appendChild(element);
           globalThis.__ciExtensionDirectoryInput = element;
+          globalThis.__ciExtensionDirectoryReady = new Promise((resolve) => {
+            element.addEventListener(
+              "input",
+              () => resolve("input"),
+              {once: true},
+            );
+          });
           return element;
         })()`,
       },
@@ -265,9 +272,14 @@ async function main() {
       {
         expression: `(async () => {
           const input = globalThis.__ciExtensionDirectoryInput;
+          const inputEvent = await Promise.race([
+            globalThis.__ciExtensionDirectoryReady,
+            new Promise((resolve) => setTimeout(() => resolve("timeout"), 15000)),
+          ]);
           const entries = Array.from(input?.webkitEntries || []);
           const files = Array.from(input?.files || []);
           const diagnostic = {
+            inputEvent,
             fileCount: files.length,
             firstRelativePath: files[0]?.webkitRelativePath || null,
             entryCount: entries.length,

@@ -243,6 +243,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"DOM.setFileInputFiles"', loader)
         self.assertIn("files: [extension]", loader)
         self.assertIn("webkitdirectory = true", loader)
+        self.assertIn('addEventListener(\n              "input"', loader)
+        self.assertIn("__ciExtensionDirectoryReady", loader)
         self.assertIn("webkitEntries", loader)
         self.assertIn("chrome.developerPrivate.loadDirectory", loader)
         self.assertIn("CHROME_DIRECTORY_INPUT", loader)
