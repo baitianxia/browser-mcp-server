@@ -232,14 +232,21 @@ class WindowsPilotSetupTests(unittest.TestCase):
         loader = (
             ROOT / ".github" / "scripts" / "load-unpacked-extension-cdp.js"
         ).read_text(encoding="utf-8")
+        selector = (
+            ROOT / ".github" / "scripts" / "select-extension-folder.ps1"
+        ).read_text(encoding="utf-8")
         exercise = (
             ROOT / ".github" / "scripts" / "exercise-extension-mcp.py"
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("Extensions.loadUnpacked", loader)
         self.assertIn('querySelector("#loadUnpacked")', loader)
+        self.assertIn("windowsHide: false", loader)
         self.assertIn('"powershell.exe"', loader)
-        self.assertIn("System.Windows.Forms.SendKeys", loader)
+        self.assertIn("select-extension-folder.ps1", loader)
+        self.assertIn("System.Windows.Automation.AutomationElement", selector)
+        self.assertIn("System.Windows.Forms.SendKeys", selector)
+        self.assertIn('AutomationIdProperty, "1"', selector)
         self.assertIn('send("Browser.close")', loader)
         self.assertIn("SESSION_COOKIE_VALUE", loader)
         self.assertIn("seedExtensionAuthToken", loader)

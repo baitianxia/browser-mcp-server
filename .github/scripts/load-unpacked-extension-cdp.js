@@ -121,7 +121,10 @@ async function main() {
     ],
     {
       stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-      windowsHide: true,
+      // The install-ui mode must expose Chrome's real native folder picker to
+      // the hosted runner desktop so UI Automation can perform the same action
+      // as the user. Hiding the browser makes SendKeys/UIA results ambiguous.
+      windowsHide: false,
     },
   );
   const protocolInput = child.stdio[3];
@@ -210,37 +213,38 @@ async function main() {
         `the native folder-dialog probe is Windows-only; platform=${process.platform}`,
       );
     }
-    const environment = {
-      ...process.env,
-      INTRANET_EXTENSION_DIR: extension,
-      INTRANET_CHROME_PID: String(child.pid),
-    };
-    const script = [
-      "Add-Type -AssemblyName System.Windows.Forms",
-      "$shell = New-Object -ComObject WScript.Shell",
-      "$null = $shell.AppActivate([int]$env:INTRANET_CHROME_PID)",
-      "Start-Sleep -Milliseconds 700",
-      "[System.Windows.Forms.Clipboard]::SetText($env:INTRANET_EXTENSION_DIR)",
-      "[System.Windows.Forms.SendKeys]::SendWait('^l')",
-      "Start-Sleep -Milliseconds 300",
-      "[System.Windows.Forms.SendKeys]::SendWait('^v')",
-      "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')",
-      "Start-Sleep -Milliseconds 700",
-      "[System.Windows.Forms.SendKeys]::SendWait('%s')",
-      "Start-Sleep -Milliseconds 300",
-      "[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')",
-    ].join("; ");
+    // Do not race the native picker or assume that AppActivate(browserPid)
+    // focuses its modal child. Locate the actual Windows common-item dialog,
+    // set its address field through UI Automation, then invoke its accept
+    // button. This is the same user-visible picker opened by Chrome's own
+    // Load unpacked button; no extension/profile state is injected directly.
+    const selector = path.join(__dirname, "select-extension-folder.ps1");
+    if (!fs.statSync(selector).isFile()) {
+      throw new Error(`Windows folder-dialog selector is missing: ${selector}`);
+    }
     const selection = spawnSync(
       "powershell.exe",
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-      { env: environment, encoding: "utf8", windowsHide: false },
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        selector,
+        "-ExtensionDirectory",
+        extension,
+      ],
+      { encoding: "utf8", windowsHide: false },
     );
     if (selection.error || selection.status !== 0) {
       throw new Error(
         `could not select the unpacked extension in Chrome's folder dialog: ` +
-          `${selection.error || selection.stderr || `exit=${selection.status}`}`,
+          `${selection.error || selection.stderr || selection.stdout || `exit=${selection.status}`}`,
       );
     }
+    if (selection.stdout) process.stdout.write(selection.stdout);
+    if (selection.stderr) process.stderr.write(selection.stderr);
   }
 
   async function loadUnpackedThroughChromeUi() {
@@ -296,15 +300,25 @@ async function main() {
       throw new Error("could not click Chrome's Load unpacked button");
     }
     selectExtensionFolder();
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    let lastExtensions = [];
+    for (let attempt = 0; attempt < 300; attempt += 1) {
       const listed = await send("Extensions.getExtensions");
-      const record = (listed.extensions || []).find(
+      lastExtensions = listed.extensions || [];
+      const record = lastExtensions.find(
         (item) => item.id === args["expected-id"],
       );
       if (record) return record;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    throw new Error("Chrome UI did not load the approved unpacked extension");
+    const active = lastExtensions.map((item) => ({
+      id: item.id,
+      version: item.version,
+      enabled: item.enabled,
+      path: item.path,
+    }));
+    throw new Error(
+      `Chrome UI did not load the approved unpacked extension; active=${JSON.stringify(active)}`,
+    );
   }
 
   async function findExistingExtension() {
