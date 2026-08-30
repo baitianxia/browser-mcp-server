@@ -61,7 +61,13 @@ function Invoke-DesktopElementClick {
     $null = [IntranetDesktopInput]::ShowWindowAsync($ChromeHandle, 9)
     $null = [IntranetDesktopInput]::BringWindowToTop($ChromeHandle)
     $null = [IntranetDesktopInput]::SetForegroundWindow($ChromeHandle)
-    $Window.SetFocus()
+    try {
+        $Window.SetFocus()
+    } catch {
+        # Chrome's top-level accessibility object can reject SetFocus even
+        # after user32 has successfully restored and foregrounded its HWND.
+        Write-Host "UIA_WINDOW_FOCUS action=win32-only"
+    }
     Start-Sleep -Milliseconds 400
     if (-not [IntranetDesktopInput]::SetCursorPos($ClickX, $ClickY)) {
         throw "Windows refused to position the pointer over the Chrome/Edge control."
