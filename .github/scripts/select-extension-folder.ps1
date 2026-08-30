@@ -14,8 +14,124 @@ if (-not (Test-Path -LiteralPath $ExtensionDirectory -PathType Container)) {
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class IntranetDesktopInput
+{
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindowAsync(IntPtr window, int command);
+
+    [DllImport("user32.dll")]
+    public static extern bool BringWindowToTop(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr window);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    public static extern void mouse_event(
+        uint flags,
+        uint x,
+        uint y,
+        uint data,
+        UIntPtr extraInfo
+    );
+}
+"@
 
 $Desktop = [System.Windows.Automation.AutomationElement]::RootElement
+$ChromeWindow = $null
+$LoadButton = $null
+$LastButtonNames = @()
+$ButtonDeadline = [DateTime]::UtcNow.AddSeconds(20)
+
+do {
+    $TopWindows = $Desktop.FindAll(
+        [System.Windows.Automation.TreeScope]::Children,
+        [System.Windows.Automation.Condition]::TrueCondition
+    )
+    foreach ($Candidate in $TopWindows) {
+        try {
+            if ($Candidate.Current.ClassName -ne "Chrome_WidgetWin_1") {
+                continue
+            }
+            $Owner = Get-Process -Id $Candidate.Current.ProcessId -ErrorAction Stop
+            if ($Owner.ProcessName -notin @("chrome", "msedge")) {
+                continue
+            }
+            $ButtonCondition = New-Object -TypeName `
+                System.Windows.Automation.PropertyCondition -ArgumentList `
+                (
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Button
+                )
+            $Buttons = $Candidate.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $ButtonCondition
+            )
+            $LastButtonNames = @($Buttons | ForEach-Object {
+                try { $_.Current.Name } catch { "<stale>" }
+            })
+            $LoadButton = @($Buttons | Where-Object {
+                try {
+                    $_.Current.Name -in @(
+                        "Load unpacked",
+                        "加载已解压的扩展程序",
+                        "加载解压缩的扩展"
+                    )
+                } catch {
+                    $false
+                }
+            } | Select-Object -First 1)
+            if ($LoadButton.Count -eq 1) {
+                $LoadButton = $LoadButton[0]
+                $ChromeWindow = $Candidate
+                break
+            }
+            $LoadButton = $null
+        } catch {
+            # The browser accessibility tree can change while it is scanned.
+        }
+    }
+    if (-not $LoadButton) {
+        Start-Sleep -Milliseconds 200
+    }
+} while (-not $LoadButton -and [DateTime]::UtcNow -lt $ButtonDeadline)
+
+if (-not $LoadButton -or -not $ChromeWindow) {
+    throw (
+        "Chrome/Edge Load unpacked UI Automation button was not found; buttons=" +
+        (@($LastButtonNames) -join "|")
+    )
+}
+
+$Bounds = $LoadButton.Current.BoundingRectangle
+if ($Bounds.Width -le 0 -or $Bounds.Height -le 0) {
+    throw "Chrome/Edge Load unpacked button has no visible screen bounds."
+}
+$ClickX = [int][Math]::Floor($Bounds.Left + ($Bounds.Width / 2))
+$ClickY = [int][Math]::Floor($Bounds.Top + ($Bounds.Height / 2))
+$ChromeHandle = [IntPtr]$ChromeWindow.Current.NativeWindowHandle
+$null = [IntranetDesktopInput]::ShowWindowAsync($ChromeHandle, 9)
+$null = [IntranetDesktopInput]::BringWindowToTop($ChromeHandle)
+$null = [IntranetDesktopInput]::SetForegroundWindow($ChromeHandle)
+$ChromeWindow.SetFocus()
+Start-Sleep -Milliseconds 400
+if (-not [IntranetDesktopInput]::SetCursorPos($ClickX, $ClickY)) {
+    throw "Windows refused to position the pointer over Load unpacked."
+}
+Write-Host (
+    "UIA_LOAD_BUTTON x={0} y={1} name={2}" -f `
+        $ClickX, $ClickY, $LoadButton.Current.Name
+)
+[IntranetDesktopInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 100
+[IntranetDesktopInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+
 $Dialog = $null
 $TopWindows = @()
 $Deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -126,4 +242,3 @@ Write-Host (
         $Accept.Current.AutomationId, $Accept.Current.Name
 )
 ([System.Windows.Automation.InvokePattern]$InvokeObject).Invoke()
-

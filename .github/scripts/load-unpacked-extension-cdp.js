@@ -238,9 +238,13 @@ async function main() {
       { encoding: "utf8", windowsHide: false },
     );
     if (selection.error || selection.status !== 0) {
+      const diagnostics = [selection.stdout, selection.stderr]
+        .filter(Boolean)
+        .join("\n")
+        .trim();
       throw new Error(
         `could not select the unpacked extension in Chrome's folder dialog: ` +
-          `${selection.error || selection.stderr || selection.stdout || `exit=${selection.status}`}`,
+          `${selection.error || diagnostics || `exit=${selection.status}`}`,
       );
     }
     if (selection.stdout) process.stdout.write(selection.stdout);
@@ -283,59 +287,9 @@ async function main() {
     if (!ready) {
       throw new Error('Chrome extensions page did not expose an enabled "Load unpacked" button');
     }
-    const buttonRect = await send(
-      "Runtime.evaluate",
-      {
-        expression: `(() => {
-          const manager = document.querySelector("extensions-manager");
-          const toolbar = manager.shadowRoot.querySelector("extensions-toolbar");
-          const button = toolbar.shadowRoot.querySelector("#loadUnpacked");
-          const rect = button.getBoundingClientRect();
-          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-        })()`,
-        returnByValue: true,
-      },
-      sessionId,
-    );
-    const point = buttonRect.result?.value;
-    if (
-      buttonRect.exceptionDetails ||
-      !point ||
-      !Number.isFinite(point.x) ||
-      !Number.isFinite(point.y)
-    ) {
-      throw new Error("could not locate Chrome's Load unpacked button");
-    }
-    // A JavaScript HTMLElement.click() is not a trusted user gesture and Chrome
-    // may therefore decline to open its native picker. Dispatch the same real
-    // mouse sequence DevTools uses, against the visible browser window.
-    await send(
-      "Input.dispatchMouseEvent",
-      { type: "mouseMoved", x: point.x, y: point.y },
-      sessionId,
-    );
-    await send(
-      "Input.dispatchMouseEvent",
-      {
-        type: "mousePressed",
-        x: point.x,
-        y: point.y,
-        button: "left",
-        clickCount: 1,
-      },
-      sessionId,
-    );
-    await send(
-      "Input.dispatchMouseEvent",
-      {
-        type: "mouseReleased",
-        x: point.x,
-        y: point.y,
-        button: "left",
-        clickCount: 1,
-      },
-      sessionId,
-    );
+    // The selector locates the visible browser's accessibility button and
+    // generates a real Win32 mouse click before controlling the native picker.
+    // Chrome can distinguish that desktop input from script/CDP-injected input.
     selectExtensionFolder();
     let lastExtensions = [];
     for (let attempt = 0; attempt < 300; attempt += 1) {
