@@ -28,6 +28,14 @@ MCP_ENVIRONMENT_PATH = (
 ENVIRONMENT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
+def _configure_standard_streams() -> None:
+    """Keep status/error reporting from aborting on narrow Windows code pages."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(errors="backslashreplace")
+
+
 def _validated_mcp_environment(environment: Mapping[str, str]) -> dict[str, str]:
     if not environment:
         raise RegistrationError("Windows MCP environment policy must not be empty")
@@ -111,6 +119,7 @@ def _run_claude(
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=60,
             env=dict(environment) if environment is not None else None,
@@ -374,7 +383,10 @@ _FAKE_CLAUDE_SOURCE = textwrap.dedent(
         }
         save(payload)
         if os.environ.get("FAKE_CLAUDE_ADD_STDERR") == "1":
-            print("simulated non-fatal warning", file=sys.stderr)
+            if os.environ.get("FAKE_CLAUDE_UNICODE_STDERR") == "1":
+                sys.stderr.buffer.write("模拟的非致命警告 ✓\n".encode("utf-8"))
+            else:
+                print("simulated non-fatal warning", file=sys.stderr)
         raise SystemExit(0)
 
     if args[:2] == ["mcp", "get"]:
@@ -570,4 +582,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    _configure_standard_streams()
     raise SystemExit(main())

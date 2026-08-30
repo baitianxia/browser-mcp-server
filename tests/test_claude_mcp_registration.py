@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -462,6 +463,56 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("SELF-TEST PASSED", result.stdout)
+
+    def test_entrypoint_survives_narrow_code_page_and_unicode_cli_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_cli = root / "fake_claude.py"
+            fake_cli.write_bytes(registration._FAKE_CLAUDE_SOURCE.encode("utf-8"))
+            node_executable, playwright_cli, playwright_config, user_config, backup = (
+                self.paths(root)
+            )
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "FAKE_CLAUDE_CONFIG": str(user_config),
+                    "FAKE_CLAUDE_EVENTS": str(root / "events.jsonl"),
+                    "FAKE_CLAUDE_ADD_STDERR": "1",
+                    "FAKE_CLAUDE_UNICODE_STDERR": "1",
+                    "PYTHONIOENCODING": "cp1252:strict",
+                }
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "register_claude_user_mcp.py"),
+                    "register",
+                    "--claude-executable",
+                    sys.executable,
+                    "--claude-prefix",
+                    str(fake_cli),
+                    "--server-name",
+                    "intranet-browser-agent",
+                    "--node-executable",
+                    str(node_executable),
+                    "--playwright-cli",
+                    str(playwright_cli),
+                    "--playwright-config",
+                    str(playwright_config),
+                    "--user-config",
+                    str(user_config),
+                    "--backup",
+                    str(backup),
+                ],
+                check=False,
+                capture_output=True,
+                env=environment,
+                timeout=30,
+            )
+            self.assertEqual(0, result.returncode, result.stderr.decode("ascii"))
+            self.assertIn(b"\\u672a\\u53d1\\u73b0", result.stdout)
+            payload = json.loads(user_config.read_text(encoding="utf-8"))
+            self.assertIn("intranet-browser-agent", payload["mcpServers"])
 
     def test_native_claude_command_is_executed_without_a_shell(self) -> None:
         command = registration._native_command(

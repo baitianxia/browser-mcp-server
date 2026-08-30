@@ -29,7 +29,7 @@ Windows 试点优先使用迁移包顶层 `INSTALL-WINDOWS-PILOT.cmd`。一次�
 
 自动门禁输出会写入 `%TEMP%\IntranetBrowserAgent\WINDOWS-RELEASE-GATE-*.log`；安装阶段的 Python、完整性验证、Claude Code CLI 和 preflight 输出会写入 `%TEMP%\IntranetBrowserAgent\INSTALL-WINDOWS-PILOT-*.log`。失败时外层 launcher 会显示对应日志路径，首次运行即可保留完整证据，不要求为采集日志重跑。故障报告必须包含 `FAILED`、紧邻的 `PYTHON`/`NATIVE` 行和 stack 行，不能只报告 exit code。
 
-首次安装没有旧的 `intranet-browser-agent` 条目时，只有 Claude 明确返回“user-scope 条目不存在”，注册模块才会继续 `mcp add`；权限、配置解析等其他 `remove` 错误会立即恢复并停止。成功命令即使写入 stderr，也只按退出码判断。安装器在操作真实用户配置前，会先在临时目录使用假 Claude CLI 自动演练首次安装、升级、条目/环境错写和 `remove/add/get` 失败回滚。写入前检查与 preflight 会自动拒绝 `%LOCALAPPDATA%` 外路径及其根以下的 link/junction，确认清单中的直接 Node 命令、固定 CLI、固定环境和专用非默认 Profile 与部署配置匹配。若用户已设置 `CLAUDE_CONFIG_DIR`，向导自动沿用，但只接受本机盘符绝对路径；相对路径、`~` 或 UNC 会在修改配置前失败关闭。
+首次安装没有旧的 `intranet-browser-agent` 条目时，只有 Claude 明确返回“user-scope 条目不存在”，注册模块才会继续 `mcp add`；权限、配置解析等其他 `remove` 错误会立即恢复并停止。成功命令即使写入 stderr，也只按退出码判断。注册模块按 UTF-8 容错读取 Claude 输出，并在 Windows 默认代码页无法表示中文状态文本时转义该文本而不中断注册。安装器在操作真实用户配置前，会先在临时目录使用假 Claude CLI 自动演练首次安装、升级、条目/环境错写和 `remove/add/get` 失败回滚；自动测试还会在严格 `cp1252` 输出和 Claude UTF-8 stderr 组合下运行真实注册子进程。写入前检查与 preflight 会自动拒绝 `%LOCALAPPDATA%` 外路径及其根以下的 link/junction，确认清单中的直接 Node 命令、固定 CLI、固定环境和专用非默认 Profile 与部署配置匹配。若用户已设置 `CLAUDE_CONFIG_DIR`，向导自动沿用，但只接受本机盘符绝对路径；相对路径、`~` 或 UNC 会在修改配置前失败关闭。
 
 正式放行前，发布人员必须在受控 Windows x64、Windows PowerShell 5.1 Desktop 上执行：
 
