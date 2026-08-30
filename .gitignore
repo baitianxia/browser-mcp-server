@@ -1,0 +1,9 @@
+build/
+dist/
+.pnpm-store/
+__pycache__/
+*.py[cod]
+deployment.pilot.json
+deployment.production.json
+deployment.windows-pilot.json
+deployment.windows-production.json

@@ -1,0 +1,380 @@
+name: Windows release validation
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CLAUDE_CODE_VERSION: "2.1.84"
+  DISABLE_AUTOUPDATER: "1"
+  DISABLE_UPDATES: "1"
+  NODE_VERSION: "24.19.0"
+  PNPM_VERSION: "11.19.0"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  windows-tests:
+    name: Tests / ${{ matrix.os }} / Windows PowerShell 5.1
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2022
+          - windows-latest
+
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Prove the target PowerShell and architecture
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($PSVersionTable.PSEdition -ne "Desktop") {
+              throw "Windows PowerShell Desktop is required; found $($PSVersionTable.PSEdition)"
+          }
+          if ($PSVersionTable.PSVersion -lt [version]"5.1") {
+              throw "Windows PowerShell 5.1+ is required; found $($PSVersionTable.PSVersion)"
+          }
+          if (-not [Environment]::Is64BitOperatingSystem -or
+              $env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+              throw "Windows x64/AMD64 is required; found $env:PROCESSOR_ARCHITECTURE"
+          }
+          Write-Host "Windows PowerShell $($PSVersionTable.PSVersion) Desktop / AMD64"
+          python --version
+
+      - name: Run the complete Python regression suite
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m unittest discover -s tests -v
+
+      - name: Parse every PowerShell script with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Failures = @()
+          Get-ChildItem -LiteralPath . -Filter "*.ps1" -Recurse | ForEach-Object {
+              $Tokens = $null
+              $ParseErrors = $null
+              [Management.Automation.Language.Parser]::ParseFile(
+                  $_.FullName,
+                  [ref]$Tokens,
+                  [ref]$ParseErrors
+              ) | Out-Null
+              foreach ($ParseError in @($ParseErrors)) {
+                  $Failures += "$($_.FullName): $($ParseError.Message)"
+              }
+          }
+          if ($Failures.Count -ne 0) {
+              throw ($Failures -join [Environment]::NewLine)
+          }
+          Write-Host "All PowerShell scripts parsed successfully."
+
+      - name: Run the transactional Claude MCP registrar self-test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python .\scripts\register_claude_user_mcp.py self-test
+
+      - name: Prove tests did not mutate the checkout
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Status = git status --porcelain=v1
+          if ($LASTEXITCODE -ne 0) {
+              throw "git status failed with exit code $LASTEXITCODE"
+          }
+          if ($Status) {
+              Write-Host $Status
+              throw "Windows tests mutated the reviewed checkout."
+          }
+
+  windows-package-and-install:
+    name: Native package, release gate, and one-click install
+    needs: windows-tests
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up the approved build Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.19.0"
+
+      - name: Install the pinned build-only pnpm
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          npm.cmd install --global "pnpm@$env:PNPM_VERSION"
+          if ($LASTEXITCODE -ne 0) {
+              throw "npm could not install build-only pnpm $env:PNPM_VERSION"
+          }
+          $ActualPnpm = (& pnpm.cmd --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $ActualPnpm -ne $env:PNPM_VERSION) {
+              throw "Expected pnpm $env:PNPM_VERSION; found $ActualPnpm"
+          }
+          $ActualNode = (& node.exe --version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $ActualNode -ne "v$env:NODE_VERSION") {
+              throw "Expected Node.js v$env:NODE_VERSION; found $ActualNode"
+          }
+          Write-Host "Online build tools: Node.js $ActualNode / pnpm $ActualPnpm"
+
+      - name: Prepare the approved minimal Windows Node distribution
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $SourceRoot = Join-Path $env:RUNNER_TEMP "node-source"
+          $DistributionRoot = Join-Path $env:RUNNER_TEMP "node-minimal"
+          New-Item -ItemType Directory -Path $SourceRoot -Force | Out-Null
+          $ArchiveName = "node-v$env:NODE_VERSION-win-x64.zip"
+          $Archive = Join-Path $SourceRoot $ArchiveName
+          $Checksums = Join-Path $SourceRoot "SHASUMS256.txt"
+          $ReleaseRoot = "https://nodejs.org/download/release/v$env:NODE_VERSION"
+          Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseRoot/$ArchiveName" -OutFile $Archive
+          Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseRoot/SHASUMS256.txt" -OutFile $Checksums
+          python .\scripts\prepare_windows_node_distribution.py `
+              --archive $Archive `
+              --shasums $Checksums `
+              --output $DistributionRoot `
+              --approval-file .\config\windows-node-sources.json
+          if ($LASTEXITCODE -ne 0) {
+              throw "Minimal Windows Node distribution preparation failed."
+          }
+          "WINDOWS_NODE_DISTRIBUTION=$DistributionRoot" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build the runtime natively with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Node = (Get-Command node.exe -ErrorAction Stop).Source
+          $Pnpm = (Get-Command pnpm.cmd -ErrorAction Stop).Source
+          $Python = (Get-Command python.exe -ErrorAction Stop).Source
+          & powershell.exe -NoLogo -NoProfile -File .\scripts\build-offline-bundle.ps1 `
+              -Profile core `
+              -NodeDistribution $env:WINDOWS_NODE_DISTRIBUTION `
+              -NodeBin $Node `
+              -PnpmBin $Pnpm `
+              -PythonBin $Python `
+              -OutputDir .\dist
+          if ($LASTEXITCODE -ne 0) {
+              throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
+          }
+          $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
+              -Filter "browser-agent-runtime-1.0.8-core-windows-x64.tar.gz")
+          if ($RuntimeArchives.Count -ne 1) {
+              throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
+          }
+          "RUNTIME_ARCHIVE=$($RuntimeArchives[0].FullName)" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Assemble and extract the reviewed transfer kit
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          python .\scripts\build-transfer-kit.py `
+              --runtime-archive $env:RUNTIME_ARCHIVE `
+              --output-dir .\dist
+          if ($LASTEXITCODE -ne 0) {
+              throw "Transfer-kit build failed."
+          }
+          $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
+              -Filter "intranet-browser-agent-transfer-1.0.8-core-windows-x64.tar.gz")
+          if ($TransferArchives.Count -ne 1) {
+              throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
+          }
+          python .\scripts\verify-bundle.py $TransferArchives[0].FullName
+          if ($LASTEXITCODE -ne 0) {
+              throw "Transfer archive verification failed."
+          }
+          $ExtractionRoot = Join-Path $env:RUNNER_TEMP "windows-transfer"
+          New-Item -ItemType Directory -Path $ExtractionRoot -Force | Out-Null
+          & tar.exe -xzf $TransferArchives[0].FullName -C $ExtractionRoot
+          if ($LASTEXITCODE -ne 0) {
+              throw "Windows tar.exe could not extract the transfer kit."
+          }
+          $TransferRoots = @(Get-ChildItem -LiteralPath $ExtractionRoot -Directory)
+          if ($TransferRoots.Count -ne 1) {
+              throw "Expected one extracted transfer root; found $($TransferRoots.Count)"
+          }
+          python .\scripts\verify-bundle.py $TransferRoots[0].FullName
+          if ($LASTEXITCODE -ne 0) {
+              throw "Extracted transfer verification failed."
+          }
+          "TRANSFER_ARCHIVE=$($TransferArchives[0].FullName)" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TRANSFER_ROOT=$($TransferRoots[0].FullName)" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install the exact native Claude Code used by the pilot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          & powershell.exe -NoLogo -NoProfile -Command `
+              "& ([scriptblock]::Create((Invoke-RestMethod https://claude.ai/install.ps1))) $env:CLAUDE_CODE_VERSION"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Official Claude Code installer failed with exit code $LASTEXITCODE"
+          }
+          $Candidates = @(
+              (Join-Path $env:USERPROFILE ".local\bin\claude.exe")
+          )
+          $ClaudeCommand = Get-Command claude.exe -ErrorAction SilentlyContinue
+          if ($ClaudeCommand) {
+              $Candidates += $ClaudeCommand.Source
+          }
+          $ClaudeExecutable = $Candidates |
+              Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } |
+              Select-Object -First 1
+          if (-not $ClaudeExecutable -or
+              [IO.Path]::GetExtension($ClaudeExecutable) -ine ".exe") {
+              throw "The official installer did not produce native claude.exe."
+          }
+          $ActualClaude = ((& $ClaudeExecutable --version 2>&1) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $ActualClaude -notmatch ("^" + [regex]::Escape($env:CLAUDE_CODE_VERSION) + "(?:\s|$)")) {
+              throw "Expected Claude Code $env:CLAUDE_CODE_VERSION; found $ActualClaude"
+          }
+          $ClaudeDirectory = Split-Path -Parent $ClaudeExecutable
+          $env:PATH = "$ClaudeDirectory;$env:PATH"
+          $ClaudeDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CLAUDE_EXECUTABLE=$ClaudeExecutable" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $ClaudeConfig = Join-Path $env:RUNNER_TEMP "pilot-claude-config"
+          New-Item -ItemType Directory -Path $ClaudeConfig -Force | Out-Null
+          "CLAUDE_CONFIG_DIR=$ClaudeConfig" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Native Claude Code: $ActualClaude"
+
+      - name: Run the exact one-click package launcher
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Launcher = Join-Path $env:TRANSFER_ROOT "INSTALL-WINDOWS-PILOT.cmd"
+          if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
+              throw "Transfer launcher is missing: $Launcher"
+          }
+          $PreviousPreference = $ErrorActionPreference
+          $Output = @()
+          $ExitCode = 1
+          try {
+              $ErrorActionPreference = "Continue"
+              $Output = " " | & $Launcher 2>&1
+              $ExitCode = $LASTEXITCODE
+          } finally {
+              $ErrorActionPreference = $PreviousPreference
+          }
+          foreach ($Line in @($Output)) {
+              if ($null -ne $Line) {
+                  Write-Host $Line
+              }
+          }
+          if ($ExitCode -ne 0) {
+              throw "One-click Windows launcher failed with exit code $ExitCode"
+          }
+
+      - name: Verify release-gate and installed-state evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $EvidenceRoot = Join-Path $env:RUNNER_TEMP "windows-evidence"
+          New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
+          $LogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
+          $GateLogs = @(Get-ChildItem -LiteralPath $LogRoot `
+              -Filter "WINDOWS-RELEASE-GATE-*.log" -ErrorAction Stop |
+              Sort-Object LastWriteTime -Descending)
+          $InstallLogs = @(Get-ChildItem -LiteralPath $LogRoot `
+              -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
+              Sort-Object LastWriteTime -Descending)
+          if ($GateLogs.Count -lt 1 -or $InstallLogs.Count -lt 1) {
+              throw "The launcher did not preserve both release-gate and installer logs."
+          }
+          if (-not (Select-String -LiteralPath $GateLogs[0].FullName `
+              -SimpleMatch "WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED" -Quiet)) {
+              throw "The release-gate PASS marker is missing."
+          }
+          if (-not (Select-String -LiteralPath $InstallLogs[0].FullName `
+              -SimpleMatch "SUCCESS: installation and preflight completed" -Quiet)) {
+              throw "The installer success marker is missing."
+          }
+          $Summary = Join-Path $env:LOCALAPPDATA "IntranetBrowserAgent\INSTALLATION.txt"
+          $ManifestPath = Join-Path $env:LOCALAPPDATA `
+              "IntranetBrowserAgent\config\pilot\deployment.windows-pilot.json"
+          $UserConfig = Join-Path $env:CLAUDE_CONFIG_DIR ".claude.json"
+          foreach ($Required in @($Summary, $ManifestPath, $UserConfig)) {
+              if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
+                  throw "Expected installed-state evidence is missing: $Required"
+              }
+          }
+          $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+          if ($Manifest.mcpScope -ne "user" -or @($Manifest.workspaceRoots).Count -ne 0) {
+              throw "Installed manifest is not project-independent user scope."
+          }
+          if ($null -ne $Manifest.network) {
+              throw "Windows pilot unexpectedly contains an origin allowlist."
+          }
+          python (Join-Path $env:TRANSFER_ROOT "toolkit\scripts\verify-bundle.py") `
+              $Manifest.installRoot
+          if ($LASTEXITCODE -ne 0) {
+              throw "Installed runtime verification failed."
+          }
+          Copy-Item -LiteralPath $GateLogs[0].FullName `
+              -Destination (Join-Path $EvidenceRoot "WINDOWS-RELEASE-GATE.log")
+          Copy-Item -LiteralPath $InstallLogs[0].FullName `
+              -Destination (Join-Path $EvidenceRoot "INSTALL-WINDOWS-PILOT.log")
+          Copy-Item -LiteralPath $Summary `
+              -Destination (Join-Path $EvidenceRoot "INSTALLATION.txt")
+          Copy-Item -LiteralPath $ManifestPath `
+              -Destination (Join-Path $EvidenceRoot "deployment.windows-pilot.json")
+          Copy-Item -LiteralPath "$env:TRANSFER_ARCHIVE.sha256" `
+              -Destination (Join-Path $EvidenceRoot "transfer.tar.gz.sha256")
+          Write-Host "Windows package, release gate, and one-click install all passed."
+
+      - name: Upload Windows validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-validation-evidence-${{ github.run_id }}
+          path: ${{ runner.temp }}\windows-evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload the gate-passed Windows transfer kit
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: intranet-browser-agent-transfer-1.0.8-windows-x64-${{ github.run_id }}
+          path: |
+            ${{ env.TRANSFER_ARCHIVE }}
+            ${{ env.TRANSFER_ARCHIVE }}.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+RUNTIME_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+if [ -x "$RUNTIME_ROOT/node/bin/node" ]; then
+  NODE_EXECUTABLE="$RUNTIME_ROOT/node/bin/node"
+elif [ -n "${BROWSER_AGENT_NODE:-}" ] && [ -x "$BROWSER_AGENT_NODE" ]; then
+  NODE_EXECUTABLE="$BROWSER_AGENT_NODE"
+elif command -v node >/dev/null 2>&1; then
+  NODE_EXECUTABLE=$(command -v node)
+else
+  echo "Node.js was not found; install Node.js 20.19+ or set BROWSER_AGENT_NODE" >&2
+  exit 127
+fi
+
+exec "$NODE_EXECUTABLE" "$RUNTIME_ROOT/node_modules/@playwright/mcp/cli.js" "$@"

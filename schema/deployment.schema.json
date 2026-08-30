@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/intranet-browser-agent/deployment.schema.json",
+  "title": "Intranet Browser Agent deployment manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "deploymentId",
+    "environment",
+    "target",
+    "mode",
+    "installRoot",
+    "configRoot",
+    "workspaceRoots",
+    "output",
+    "browser",
+    "controls",
+    "timeouts"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "deploymentId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,62}$"
+    },
+    "environment": {
+      "enum": ["development", "pilot", "production"]
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["os", "arch"],
+      "properties": {
+        "os": { "enum": ["darwin", "linux", "windows"] },
+        "arch": { "enum": ["arm64", "x64"] }
+      }
+    },
+    "mode": {
+      "enum": ["persistent", "extension", "cdp"]
+    },
+    "mcpScope": {
+      "enum": ["project", "user", "managed"]
+    },
+    "installRoot": { "type": "string", "minLength": 1 },
+    "nodeExecutable": { "type": "string", "minLength": 1 },
+    "configRoot": { "type": "string", "minLength": 1 },
+    "workspaceRoots": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory", "maxBytes", "retainSession", "retentionDays"],
+      "properties": {
+        "directory": { "type": "string", "minLength": 1 },
+        "maxBytes": { "type": "integer", "minimum": 1048576, "maximum": 1073741824 },
+        "retainSession": { "type": "boolean" },
+        "retentionDays": { "type": "integer", "minimum": 0, "maximum": 30 }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "profileOwner", "maxConcurrentAgents"],
+      "properties": {
+        "channel": { "enum": ["chrome", "msedge"] },
+        "userDataDir": { "type": "string" },
+        "profileOwner": { "type": "string", "minLength": 1 },
+        "maxConcurrentAgents": { "const": 1 },
+        "cdpEndpoint": { "type": "string" },
+        "devtoolsEndpoint": { "type": "string" },
+        "extensionDistribution": {
+          "enum": ["managed-web-store", "managed-self-hosted-crx", "manual-pilot"]
+        },
+        "manualConnectionApproval": { "type": "boolean" }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedOrigins"],
+      "properties": {
+        "allowedOrigins": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "enforcement": {
+          "enum": ["egress-proxy", "host-firewall", "isolated-vdi", "loopback-only-demo"]
+        },
+        "enforcementOwner": { "type": "string", "minLength": 1 },
+        "changeReference": { "type": "string", "minLength": 1 }
+      }
+    },
+    "dataBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "modelRoute", "approved", "approvalReference"],
+      "properties": {
+        "classification": {
+          "enum": ["public-test", "internal", "confidential", "restricted"]
+        },
+        "modelRoute": { "type": "string", "minLength": 1 },
+        "approved": { "type": "boolean" },
+        "approvalReference": { "type": "string", "minLength": 1 }
+      }
+    },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transport",
+        "humanAuthentication",
+        "singleAgentPerProfile",
+        "visionFallback",
+        "devtools",
+        "confirmationActions"
+      ],
+      "properties": {
+        "transport": { "const": "stdio" },
+        "humanAuthentication": { "const": true },
+        "singleAgentPerProfile": { "const": true },
+        "visionFallback": { "type": "boolean" },
+        "devtools": { "type": "boolean" },
+        "confirmationActions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "delete",
+              "financial-transaction",
+              "production-change",
+              "account-permission-change",
+              "representational-communication",
+              "file-upload",
+              "final-submission",
+              "secret-transmission"
+            ]
+          }
+        }
+      }
+    },
+    "timeouts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actionMs", "navigationMs", "settleMs"],
+      "properties": {
+        "actionMs": { "type": "integer", "minimum": 1000, "maximum": 120000 },
+        "navigationMs": { "type": "integer", "minimum": 5000, "maximum": 300000 },
+        "settleMs": { "type": "integer", "minimum": 100, "maximum": 10000 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "mcpScope": { "const": "user" } },
+        "required": ["mcpScope"]
+      },
+      "then": {
+        "properties": { "workspaceRoots": { "maxItems": 0 } }
+      },
+      "else": {
+        "properties": { "workspaceRoots": { "minItems": 1 } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "target": {
+            "properties": { "os": { "const": "windows" } },
+            "required": ["os"]
+          }
+        }
+      },
+      "then": {
+        "required": ["nodeExecutable"],
+        "properties": {
+          "target": {
+            "properties": { "arch": { "const": "x64" } }
+          }
+        }
+      },
+      "else": {
+        "not": { "required": ["nodeExecutable"] }
+      }
+    },
+    {
+      "if": {
+        "properties": { "environment": { "const": "production" } },
+        "required": ["environment"]
+      },
+      "then": {
+        "required": ["network", "dataBoundary"],
+        "properties": {
+          "network": {
+            "required": ["allowedOrigins", "enforcement", "enforcementOwner", "changeReference"]
+          }
+        }
+      }
+    }
+  ]
+}

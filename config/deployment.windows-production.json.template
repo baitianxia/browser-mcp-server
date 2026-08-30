@@ -1,0 +1,66 @@
+{
+  "$schema": "../schema/deployment.schema.json",
+  "schemaVersion": 1,
+  "deploymentId": "corp-browser-agent-windows-prod",
+  "environment": "production",
+  "target": {
+    "os": "windows",
+    "arch": "x64"
+  },
+  "mode": "persistent",
+  "installRoot": "C:\\ProgramData\\IntranetBrowserAgent\\current",
+  "nodeExecutable": "C:\\ProgramData\\IntranetBrowserAgent\\current\\node\\node.exe",
+  "configRoot": "C:\\ProgramData\\IntranetBrowserAgent\\config\\prod",
+  "workspaceRoots": [
+    "C:\\BrowserAgent\\Workspace"
+  ],
+  "output": {
+    "directory": "C:\\ProgramData\\IntranetBrowserAgent\\output\\prod",
+    "maxBytes": 104857600,
+    "retainSession": false,
+    "retentionDays": 0
+  },
+  "browser": {
+    "channel": "chrome",
+    "userDataDir": "C:\\ProgramData\\IntranetBrowserAgent\\profiles\\prod",
+    "profileOwner": "REPLACE-ME-WINDOWS-ACCOUNT",
+    "maxConcurrentAgents": 1
+  },
+  "network": {
+    "allowedOrigins": [
+      "https://REPLACE-ME.corp.example",
+      "https://REPLACE-ME-SSO.corp.example"
+    ],
+    "enforcement": "host-firewall",
+    "enforcementOwner": "REPLACE-ME-NETWORK-OWNER",
+    "changeReference": "REPLACE-ME-WINDOWS-FIREWALL-CHANGE"
+  },
+  "dataBoundary": {
+    "classification": "internal",
+    "modelRoute": "REPLACE-ME-APPROVED-MODEL-ROUTE",
+    "approved": false,
+    "approvalReference": "REPLACE-ME-DATA-APPROVAL"
+  },
+  "controls": {
+    "transport": "stdio",
+    "humanAuthentication": true,
+    "singleAgentPerProfile": true,
+    "visionFallback": true,
+    "devtools": false,
+    "confirmationActions": [
+      "delete",
+      "financial-transaction",
+      "production-change",
+      "account-permission-change",
+      "representational-communication",
+      "file-upload",
+      "final-submission",
+      "secret-transmission"
+    ]
+  },
+  "timeouts": {
+    "actionMs": 10000,
+    "navigationMs": 90000,
+    "settleMs": 1000
+  }
+}

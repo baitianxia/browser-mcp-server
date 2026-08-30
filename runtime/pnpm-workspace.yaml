@@ -1,0 +1,10 @@
+packages: []
+
+# pnpm 11 reads non-registry project settings from pnpm-workspace.yaml.
+# A hoisted, copied tree is link-free and can be archived safely for Windows.
+nodeLinker: hoisted
+packageImportMethod: copy
+strictPeerDependencies: true
+resolutionMode: highest
+saveExact: true
+ignoreScripts: true

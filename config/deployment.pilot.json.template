@@ -1,0 +1,65 @@
+{
+  "$schema": "../schema/deployment.schema.json",
+  "schemaVersion": 1,
+  "deploymentId": "corp-browser-agent-pilot",
+  "environment": "pilot",
+  "target": {
+    "os": "linux",
+    "arch": "x64"
+  },
+  "mode": "persistent",
+  "installRoot": "/opt/intranet-browser-agent/current",
+  "configRoot": "/etc/intranet-browser-agent/pilot",
+  "workspaceRoots": [
+    "/srv/browser-agent/pilot-workspace"
+  ],
+  "output": {
+    "directory": "/var/lib/intranet-browser-agent/pilot-output",
+    "maxBytes": 52428800,
+    "retainSession": false,
+    "retentionDays": 0
+  },
+  "browser": {
+    "channel": "chrome",
+    "userDataDir": "/var/lib/intranet-browser-agent/profiles/pilot",
+    "profileOwner": "REPLACE-ME-PILOT-OS-ACCOUNT",
+    "maxConcurrentAgents": 1
+  },
+  "network": {
+    "allowedOrigins": [
+      "https://REPLACE-ME-PILOT.corp.example",
+      "https://REPLACE-ME-SSO.corp.example"
+    ],
+    "enforcement": "isolated-vdi",
+    "enforcementOwner": "REPLACE-ME-NETWORK-OWNER",
+    "changeReference": "REPLACE-ME-PILOT-NETWORK-CHANGE"
+  },
+  "dataBoundary": {
+    "classification": "internal",
+    "modelRoute": "REPLACE-ME-APPROVED-PILOT-MODEL-ROUTE",
+    "approved": false,
+    "approvalReference": "REPLACE-ME-PILOT-DATA-APPROVAL"
+  },
+  "controls": {
+    "transport": "stdio",
+    "humanAuthentication": true,
+    "singleAgentPerProfile": true,
+    "visionFallback": true,
+    "devtools": false,
+    "confirmationActions": [
+      "delete",
+      "financial-transaction",
+      "production-change",
+      "account-permission-change",
+      "representational-communication",
+      "file-upload",
+      "final-submission",
+      "secret-transmission"
+    ]
+  },
+  "timeouts": {
+    "actionMs": 10000,
+    "navigationMs": 90000,
+    "settleMs": 1000
+  }
+}

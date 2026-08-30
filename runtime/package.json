@@ -1,0 +1,16 @@
+{
+  "name": "intranet-browser-agent-runtime",
+  "version": "1.0.8",
+  "private": true,
+  "description": "Pinned offline runtime for the intranet Browser Agent baseline",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "packageManager": "pnpm@11.19.0",
+  "dependencies": {
+    "@playwright/mcp": "0.0.79"
+  },
+  "optionalDependencies": {
+    "chrome-devtools-mcp": "1.8.0"
+  }
+}

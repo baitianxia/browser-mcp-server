@@ -1,0 +1,65 @@
+{
+  "$schema": "../schema/deployment.schema.json",
+  "schemaVersion": 1,
+  "deploymentId": "corp-browser-agent-prod",
+  "environment": "production",
+  "target": {
+    "os": "linux",
+    "arch": "x64"
+  },
+  "mode": "persistent",
+  "installRoot": "/opt/intranet-browser-agent/current",
+  "configRoot": "/etc/intranet-browser-agent/prod",
+  "workspaceRoots": [
+    "/srv/browser-agent/workspace"
+  ],
+  "output": {
+    "directory": "/var/lib/intranet-browser-agent/output",
+    "maxBytes": 104857600,
+    "retainSession": false,
+    "retentionDays": 0
+  },
+  "browser": {
+    "channel": "chrome",
+    "userDataDir": "/var/lib/intranet-browser-agent/profiles/prod",
+    "profileOwner": "REPLACE-ME-OS-ACCOUNT",
+    "maxConcurrentAgents": 1
+  },
+  "network": {
+    "allowedOrigins": [
+      "https://REPLACE-ME.corp.example",
+      "https://REPLACE-ME-sso.corp.example"
+    ],
+    "enforcement": "egress-proxy",
+    "enforcementOwner": "REPLACE-ME-NETWORK-OWNER",
+    "changeReference": "REPLACE-ME-NETWORK-CHANGE"
+  },
+  "dataBoundary": {
+    "classification": "internal",
+    "modelRoute": "REPLACE-ME-APPROVED-MODEL-ROUTE",
+    "approved": false,
+    "approvalReference": "REPLACE-ME-DATA-APPROVAL"
+  },
+  "controls": {
+    "transport": "stdio",
+    "humanAuthentication": true,
+    "singleAgentPerProfile": true,
+    "visionFallback": true,
+    "devtools": false,
+    "confirmationActions": [
+      "delete",
+      "financial-transaction",
+      "production-change",
+      "account-permission-change",
+      "representational-communication",
+      "file-upload",
+      "final-submission",
+      "secret-transmission"
+    ]
+  },
+  "timeouts": {
+    "actionMs": 10000,
+    "navigationMs": 90000,
+    "settleMs": 1000
+  }
+}
