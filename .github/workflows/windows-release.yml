@@ -16,8 +16,6 @@ concurrency:
 
 env:
   CLAUDE_CODE_VERSION: "2.1.84"
-  DISABLE_AUTOUPDATER: "1"
-  DISABLE_UPDATES: "1"
   NODE_VERSION: "24.19.0"
   PNPM_VERSION: "11.19.0"
   PYTHONDONTWRITEBYTECODE: "1"
@@ -268,6 +266,10 @@ jobs:
           $env:PATH = "$ClaudeDirectory;$env:PATH"
           $ClaudeDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "CLAUDE_EXECUTABLE=$ClaudeExecutable" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DISABLE_AUTOUPDATER=1" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DISABLE_UPDATES=1" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $ClaudeConfig = Join-Path $env:RUNNER_TEMP "pilot-claude-config"
           New-Item -ItemType Directory -Path $ClaudeConfig -Force | Out-Null
