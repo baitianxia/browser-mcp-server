@@ -43,9 +43,40 @@ public static class IntranetDesktopInput
 }
 "@
 
+function Invoke-DesktopElementClick {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Windows.Automation.AutomationElement]$Window,
+        [Parameter(Mandatory = $true)]
+        [System.Windows.Automation.AutomationElement]$Element
+    )
+
+    $Bounds = $Element.Current.BoundingRectangle
+    if ($Bounds.Width -le 0 -or $Bounds.Height -le 0) {
+        throw "Chrome/Edge UI Automation element has no visible screen bounds."
+    }
+    $ClickX = [int][Math]::Floor($Bounds.Left + ($Bounds.Width / 2))
+    $ClickY = [int][Math]::Floor($Bounds.Top + ($Bounds.Height / 2))
+    $ChromeHandle = [IntPtr]$Window.Current.NativeWindowHandle
+    $null = [IntranetDesktopInput]::ShowWindowAsync($ChromeHandle, 9)
+    $null = [IntranetDesktopInput]::BringWindowToTop($ChromeHandle)
+    $null = [IntranetDesktopInput]::SetForegroundWindow($ChromeHandle)
+    $Window.SetFocus()
+    Start-Sleep -Milliseconds 400
+    if (-not [IntranetDesktopInput]::SetCursorPos($ClickX, $ClickY)) {
+        throw "Windows refused to position the pointer over the Chrome/Edge control."
+    }
+    [IntranetDesktopInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 100
+    [IntranetDesktopInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+    return @($ClickX, $ClickY)
+}
+
 $Desktop = [System.Windows.Automation.AutomationElement]::RootElement
 $ChromeWindow = $null
 $LoadButton = $null
+$DeveloperButton = $null
+$DeveloperModeClicked = $false
 $LastButtonNames = @()
 $ButtonDeadline = [DateTime]::UtcNow.AddSeconds(20)
 
@@ -76,6 +107,14 @@ do {
             $LastButtonNames = @($Buttons | ForEach-Object {
                 try { $_.Current.Name } catch { "<stale>" }
             })
+            $DeveloperButton = @($Buttons | Where-Object {
+                try { $_.Current.Name -eq "Developer mode" } catch { $false }
+            } | Select-Object -First 1)
+            if ($DeveloperButton.Count -eq 1) {
+                $DeveloperButton = $DeveloperButton[0]
+            } else {
+                $DeveloperButton = $null
+            }
             $LoadButton = @($Buttons | Where-Object {
                 try {
                     # GitHub's Windows runner and bundled Chrome use English.
@@ -92,9 +131,37 @@ do {
                 break
             }
             $LoadButton = $null
+            if ($DeveloperButton) {
+                $ChromeWindow = $Candidate
+            }
         } catch {
             # The browser accessibility tree can change while it is scanned.
         }
+    }
+    if (-not $LoadButton -and -not $DeveloperModeClicked -and
+        $DeveloperButton -and $ChromeWindow) {
+        $ToggleObject = $null
+        $ToggleState = "unknown"
+        if ($DeveloperButton.TryGetCurrentPattern(
+                [System.Windows.Automation.TogglePattern]::Pattern,
+                [ref]$ToggleObject
+            )) {
+            $ToggleState = [string](
+                ([System.Windows.Automation.TogglePattern]$ToggleObject).Current.ToggleState
+            )
+        }
+        if ($ToggleState -eq "On") {
+            Write-Host "UIA_DEVELOPER_MODE prior=On action=already-on"
+        } else {
+            $DeveloperClick = Invoke-DesktopElementClick `
+                -Window $ChromeWindow -Element $DeveloperButton
+            Write-Host (
+                "UIA_DEVELOPER_MODE x={0} y={1} prior={2} action=clicked" -f `
+                    $DeveloperClick[0], $DeveloperClick[1], $ToggleState
+            )
+        }
+        $DeveloperModeClicked = $true
+        Start-Sleep -Milliseconds 800
     }
     if (-not $LoadButton) {
         Start-Sleep -Milliseconds 200
@@ -108,28 +175,11 @@ if (-not $LoadButton -or -not $ChromeWindow) {
     )
 }
 
-$Bounds = $LoadButton.Current.BoundingRectangle
-if ($Bounds.Width -le 0 -or $Bounds.Height -le 0) {
-    throw "Chrome/Edge Load unpacked button has no visible screen bounds."
-}
-$ClickX = [int][Math]::Floor($Bounds.Left + ($Bounds.Width / 2))
-$ClickY = [int][Math]::Floor($Bounds.Top + ($Bounds.Height / 2))
-$ChromeHandle = [IntPtr]$ChromeWindow.Current.NativeWindowHandle
-$null = [IntranetDesktopInput]::ShowWindowAsync($ChromeHandle, 9)
-$null = [IntranetDesktopInput]::BringWindowToTop($ChromeHandle)
-$null = [IntranetDesktopInput]::SetForegroundWindow($ChromeHandle)
-$ChromeWindow.SetFocus()
-Start-Sleep -Milliseconds 400
-if (-not [IntranetDesktopInput]::SetCursorPos($ClickX, $ClickY)) {
-    throw "Windows refused to position the pointer over Load unpacked."
-}
+$LoadClick = Invoke-DesktopElementClick -Window $ChromeWindow -Element $LoadButton
 Write-Host (
     "UIA_LOAD_BUTTON x={0} y={1} name={2}" -f `
-        $ClickX, $ClickY, $LoadButton.Current.Name
+        $LoadClick[0], $LoadClick[1], $LoadButton.Current.Name
 )
-[IntranetDesktopInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-Start-Sleep -Milliseconds 100
-[IntranetDesktopInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
 
 $Dialog = $null
 $TopWindows = @()
