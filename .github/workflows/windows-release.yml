@@ -381,6 +381,27 @@ jobs:
                       "IntranetBrowserAgent\browser-extension\$($Approval.version)\unpacked"
                   $ChromeUserData = Join-Path $env:LOCALAPPDATA `
                       "Google\Chrome\User Data"
+                  # The real manual path deliberately leaves chrome://extensions
+                  # open while the user follows the three steps. The headless CI
+                  # substitute must take exclusive ownership of that same Profile
+                  # before it can use Extensions.loadUnpacked. Exit code 21 from
+                  # Chrome is PROFILE_IN_USE, so close only the disposable hosted
+                  # runner's Chrome processes and wait for the lock to be released.
+                  @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
+                      Stop-Process -Force -ErrorAction SilentlyContinue
+                  $ChromeShutdownDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                  do {
+                      $RemainingChrome = @(
+                          Get-Process -Name chrome -ErrorAction SilentlyContinue
+                      )
+                      if ($RemainingChrome.Count -eq 0) {
+                          break
+                      }
+                      Start-Sleep -Milliseconds 250
+                  } while ([DateTime]::UtcNow -lt $ChromeShutdownDeadline)
+                  if ($RemainingChrome.Count -ne 0) {
+                      throw "CI could not release Chrome before the extension probe."
+                  }
                   & node.exe $CdpProbe `
                       --chrome $ChromeExe `
                       --profile $ChromeUserData `
