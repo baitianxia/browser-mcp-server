@@ -329,6 +329,14 @@ jobs:
               ".github\scripts\exercise-extension-mcp.py"
           $ExtensionTokenFile = Join-Path $env:RUNNER_TEMP `
               "playwright-extension-ci-token.txt"
+          $Approval = Get-Content -LiteralPath (Join-Path `
+              $env:TRANSFER_ROOT `
+              "toolkit\config\playwright-extension-source.json") `
+              -Raw | ConvertFrom-Json
+          $InstalledUnpacked = Join-Path $env:LOCALAPPDATA `
+              "IntranetBrowserAgent\browser-extension\$($Approval.version)\unpacked"
+          $ChromeUserData = Join-Path $env:LOCALAPPDATA `
+              "Google\Chrome\User Data"
           & node.exe --check $CdpProbe
           if ($LASTEXITCODE -ne 0) {
               throw "The Chrome extension CDP probe has invalid JavaScript syntax."
@@ -349,6 +357,21 @@ jobs:
           $FirewallRule = "IntranetBrowserAgent-CI-$env:GITHUB_RUN_ID"
           $LauncherProcess = $null
           $LauncherFinished = $false
+          function Stop-CiChrome {
+              @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
+                  Stop-Process -Force -ErrorAction SilentlyContinue
+              $ChromeShutdownDeadline = [DateTime]::UtcNow.AddSeconds(30)
+              do {
+                  $RemainingChrome = @(
+                      Get-Process -Name chrome -ErrorAction SilentlyContinue
+                  )
+                  if ($RemainingChrome.Count -eq 0) {
+                      return
+                  }
+                  Start-Sleep -Milliseconds 250
+              } while ([DateTime]::UtcNow -lt $ChromeShutdownDeadline)
+              throw "CI could not release the disposable Chrome Profile."
+          }
           try {
               New-NetFirewallRule -DisplayName $FirewallRule `
                   -Direction Outbound -Program $ChromeExe -Action Block | Out-Null
@@ -379,42 +402,21 @@ jobs:
                   throw "The installer reached neither extension fallback nor completion."
               }
               if ($ManualFallbackReached) {
-                  $Approval = Get-Content -LiteralPath (Join-Path `
-                      $env:TRANSFER_ROOT `
-                      "toolkit\config\playwright-extension-source.json") `
-                      -Raw | ConvertFrom-Json
-                  $InstalledUnpacked = Join-Path $env:LOCALAPPDATA `
-                      "IntranetBrowserAgent\browser-extension\$($Approval.version)\unpacked"
-                  $ChromeUserData = Join-Path $env:LOCALAPPDATA `
-                      "Google\Chrome\User Data"
                   # The real manual path deliberately leaves chrome://extensions
                   # open while the user follows the three steps. The CI substitute
                   # must take exclusive ownership of that same disposable Profile,
                   # then drive Chrome's own Load unpacked button and native folder
                   # dialog. Exit code 21 from Chrome is PROFILE_IN_USE, so release
                   # only the hosted runner's disposable Chrome processes first.
-                  @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
-                      Stop-Process -Force -ErrorAction SilentlyContinue
-                  $ChromeShutdownDeadline = [DateTime]::UtcNow.AddSeconds(30)
-                  do {
-                      $RemainingChrome = @(
-                          Get-Process -Name chrome -ErrorAction SilentlyContinue
-                      )
-                      if ($RemainingChrome.Count -eq 0) {
-                          break
-                      }
-                      Start-Sleep -Milliseconds 250
-                  } while ([DateTime]::UtcNow -lt $ChromeShutdownDeadline)
-                  if ($RemainingChrome.Count -ne 0) {
-                      throw "CI could not release Chrome before the extension probe."
-                  }
+                  Stop-CiChrome
                   & node.exe $CdpProbe `
                       --chrome $ChromeExe `
                       --profile $ChromeUserData `
                       --extension $InstalledUnpacked `
                       --expected-id $Approval.extensionId `
                       --expected-version $Approval.version `
-                      --token-file $ExtensionTokenFile
+                      --token-file $ExtensionTokenFile `
+                      --mode install-ui
                   if ($LASTEXITCODE -ne 0) {
                       throw "Chrome rejected the packaged unpacked extension CDP probe."
                   }
@@ -423,8 +425,25 @@ jobs:
                   Stop-Process -Id $LauncherProcess.Id -Force -ErrorAction SilentlyContinue
                   throw "One-click Windows launcher did not finish within five minutes."
               }
+              if ($LauncherProcess.ExitCode -ne 0) {
+                  throw "One-click Windows launcher failed with exit code $($LauncherProcess.ExitCode)"
+              }
               if (-not (Test-Path -LiteralPath $ExtensionTokenFile -PathType Leaf)) {
-                  throw "The extension probe did not preserve its disposable token."
+                  # A managed/local policy may complete without entering the
+                  # manual fallback. Seed only disposable CI auth state after
+                  # the successful installer has proved that extension path.
+                  Stop-CiChrome
+                  & node.exe $CdpProbe `
+                      --chrome $ChromeExe `
+                      --profile $ChromeUserData `
+                      --extension $InstalledUnpacked `
+                      --expected-id $Approval.extensionId `
+                      --expected-version $Approval.version `
+                      --token-file $ExtensionTokenFile `
+                      --mode seed-existing
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Chrome could not seed the installed extension CI session."
+                  }
               }
               $InstalledManifestPath = Join-Path $env:LOCALAPPDATA `
                   "IntranetBrowserAgent\config\pilot\deployment.windows-pilot.json"
@@ -454,6 +473,7 @@ jobs:
               if ($LauncherProcess -and -not $LauncherFinished -and
                   -not $LauncherProcess.HasExited) {
                   Stop-Process -Id $LauncherProcess.Id -Force -ErrorAction SilentlyContinue
+                  $null = $LauncherProcess.WaitForExit(5000)
               }
               @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
                   Stop-Process -Force -ErrorAction SilentlyContinue
@@ -461,16 +481,14 @@ jobs:
                   -ErrorAction SilentlyContinue
               Remove-Item -LiteralPath $ExtensionTokenFile -Force `
                   -ErrorAction SilentlyContinue
-          }
-          if (Test-Path -LiteralPath $LauncherStdout) {
-              Get-Content -LiteralPath $LauncherStdout | Write-Host
-          }
-          if (Test-Path -LiteralPath $LauncherStderr) {
-              Get-Content -LiteralPath $LauncherStderr | Write-Host
-          }
-          if (-not $LauncherProcess -or $LauncherProcess.ExitCode -ne 0) {
-              $ExitCode = if ($LauncherProcess) { $LauncherProcess.ExitCode } else { -1 }
-              throw "One-click Windows launcher failed with exit code $ExitCode"
+              if (Test-Path -LiteralPath $LauncherStdout) {
+                  Get-Content -LiteralPath $LauncherStdout -ErrorAction SilentlyContinue |
+                      Write-Host
+              }
+              if (Test-Path -LiteralPath $LauncherStderr) {
+                  Get-Content -LiteralPath $LauncherStderr -ErrorAction SilentlyContinue |
+                      Write-Host
+              }
           }
 
       - name: Verify release-gate and installed-state evidence

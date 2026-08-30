@@ -31,10 +31,14 @@ function parseArguments(argv) {
     "expected-id",
     "expected-version",
     "token-file",
+    "mode",
   ]) {
     if (!result[name]) {
       throw new Error(`missing --${name}`);
     }
+  }
+  if (!new Set(["install-ui", "seed-existing"]).has(result.mode)) {
+    throw new Error(`invalid --mode: ${result.mode}`);
   }
   return result;
 }
@@ -303,6 +307,18 @@ async function main() {
     throw new Error("Chrome UI did not load the approved unpacked extension");
   }
 
+  async function findExistingExtension() {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const listed = await send("Extensions.getExtensions");
+      const record = (listed.extensions || []).find(
+        (item) => item.id === args["expected-id"],
+      );
+      if (record) return record;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error("approved extension is not active in the restarted Chrome Profile");
+  }
+
   async function seedExtensionAuthToken(extensionId, tokenFile) {
     const extensionUrl = `chrome-extension://${extensionId}/status.html`;
     const target = await send("Target.createTarget", { url: extensionUrl });
@@ -346,13 +362,19 @@ async function main() {
   }
 
   try {
-    const record = await loadUnpackedThroughChromeUi();
+    const record =
+      args.mode === "install-ui"
+        ? await loadUnpackedThroughChromeUi()
+        : await findExistingExtension();
     if (record.enabled !== true || record.version !== args["expected-version"]) {
       throw new Error(
         `loaded extension is not enabled at the approved version: ${JSON.stringify(record)}`,
       );
     }
-    if (path.resolve(record.path).toLowerCase() !== extension.toLowerCase()) {
+    if (
+      args.mode === "install-ui" &&
+      path.resolve(record.path).toLowerCase() !== extension.toLowerCase()
+    ) {
       throw new Error(`loaded extension path mismatch: ${record.path} != ${extension}`);
     }
     await send("Storage.setCookies", {

@@ -224,6 +224,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertLess(probe, verify_positions[3])
 
     def test_windows_ci_uses_persistent_ui_extension_and_session_e2e(self) -> None:
+        if not (ROOT / ".github").is_dir():
+            self.skipTest("CI-only workflow files are not part of the transfer kit")
         workflow = (ROOT / ".github" / "workflows" / "windows-release.yml").read_text(
             encoding="utf-8"
         )
@@ -241,12 +243,17 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('send("Browser.close")', loader)
         self.assertIn("SESSION_COOKIE_VALUE", loader)
         self.assertIn("seedExtensionAuthToken", loader)
+        self.assertIn('args.mode === "install-ui"', loader)
+        self.assertIn('await findExistingExtension()', loader)
 
         self.assertIn("exercise-extension-mcp.py", workflow)
         self.assertIn('"CHROME_EXE=$ChromeExe"', workflow)
         self.assertIn('$ChromeExe = [string]$env:CHROME_EXE', workflow)
         self.assertIn("--browser-executable $ChromeExe", workflow)
         self.assertIn("Installed Playwright MCP could not reuse", workflow)
+        self.assertIn("--mode install-ui", workflow)
+        self.assertIn("--mode seed-existing", workflow)
+        self.assertIn("Get-Content -LiteralPath $LauncherStdout", workflow)
         self.assertLess(
             workflow.index("python $ExtensionExercise"),
             workflow.index("Remove-NetFirewallRule -DisplayName $FirewallRule"),
