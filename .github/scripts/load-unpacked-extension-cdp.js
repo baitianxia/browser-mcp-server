@@ -283,22 +283,59 @@ async function main() {
     if (!ready) {
       throw new Error('Chrome extensions page did not expose an enabled "Load unpacked" button');
     }
-    const clicked = await send(
+    const buttonRect = await send(
       "Runtime.evaluate",
       {
         expression: `(() => {
           const manager = document.querySelector("extensions-manager");
           const toolbar = manager.shadowRoot.querySelector("extensions-toolbar");
-          toolbar.shadowRoot.querySelector("#loadUnpacked").click();
-          return true;
+          const button = toolbar.shadowRoot.querySelector("#loadUnpacked");
+          const rect = button.getBoundingClientRect();
+          return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
         })()`,
         returnByValue: true,
       },
       sessionId,
     );
-    if (clicked.exceptionDetails || clicked.result?.value !== true) {
-      throw new Error("could not click Chrome's Load unpacked button");
+    const point = buttonRect.result?.value;
+    if (
+      buttonRect.exceptionDetails ||
+      !point ||
+      !Number.isFinite(point.x) ||
+      !Number.isFinite(point.y)
+    ) {
+      throw new Error("could not locate Chrome's Load unpacked button");
     }
+    // A JavaScript HTMLElement.click() is not a trusted user gesture and Chrome
+    // may therefore decline to open its native picker. Dispatch the same real
+    // mouse sequence DevTools uses, against the visible browser window.
+    await send(
+      "Input.dispatchMouseEvent",
+      { type: "mouseMoved", x: point.x, y: point.y },
+      sessionId,
+    );
+    await send(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mousePressed",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      },
+      sessionId,
+    );
+    await send(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseReleased",
+        x: point.x,
+        y: point.y,
+        button: "left",
+        clickCount: 1,
+      },
+      sessionId,
+    );
     selectExtensionFolder();
     let lastExtensions = [];
     for (let attempt = 0; attempt < 300; attempt += 1) {

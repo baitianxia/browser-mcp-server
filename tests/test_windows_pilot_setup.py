@@ -241,6 +241,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
 
         self.assertNotIn("Extensions.loadUnpacked", loader)
         self.assertIn('querySelector("#loadUnpacked")', loader)
+        self.assertNotIn(".click();", loader)
+        self.assertIn('"Input.dispatchMouseEvent"', loader)
+        self.assertIn('type: "mousePressed"', loader)
+        self.assertIn('type: "mouseReleased"', loader)
         self.assertIn("windowsHide: false", loader)
         self.assertIn('"powershell.exe"', loader)
         self.assertIn("select-extension-folder.ps1", loader)
