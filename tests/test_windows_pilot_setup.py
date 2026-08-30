@@ -250,7 +250,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("windowsHide: true", loader)
         self.assertIn('send("Browser.close")', loader)
         self.assertIn("SESSION_COOKIE_VALUE", loader)
-        self.assertIn("seedExtensionAuthToken", loader)
+        self.assertIn("readExtensionAuthToken", loader)
+        self.assertIn('document.querySelector(".auth-token-code")', loader)
+        self.assertIn("PLAYWRIGHT_MCP_EXTENSION_TOKEN=", loader)
+        self.assertNotIn('localStorage.setItem("auth-token"', loader)
         self.assertIn("process.exit(1)", loader)
 
         self.assertIn("exercise-extension-mcp.py", workflow)

@@ -9,7 +9,6 @@
 // continues, and while the installed MCP performs an authenticated offline E2E.
 // This is deliberately not evidence that the manual load survives a restart.
 
-const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -210,7 +209,7 @@ async function main() {
     });
   }
 
-  async function seedExtensionAuthToken(extensionId) {
+  async function readExtensionAuthToken(extensionId) {
     const extensionUrl = `chrome-extension://${extensionId}/status.html`;
     const target = await send("Target.createTarget", { url: extensionUrl });
     const attached = await send("Target.attachToTarget", {
@@ -234,17 +233,33 @@ async function main() {
     if (typeof currentUrl !== "string" || !currentUrl.startsWith(extensionUrl)) {
       throw new Error(`extension status page did not load: ${currentUrl}`);
     }
-    const token = crypto.randomBytes(32).toString("base64url");
-    const seeded = await send(
-      "Runtime.evaluate",
-      {
-        expression: `localStorage.setItem("auth-token", ${JSON.stringify(token)}); localStorage.getItem("auth-token")`,
-        returnByValue: true,
-      },
-      attached.sessionId,
-    );
-    if (seeded.exceptionDetails || seeded.result?.value !== token) {
-      throw new Error("could not seed the disposable extension authentication token");
+    // Read the token rendered by the extension itself. The background service
+    // caches this value during startup, so overwriting localStorage after the
+    // extension has initialized can produce a token that looks persisted but
+    // is not accepted by the running service worker. This mirrors Playwright's
+    // own extension fixture, which reads `.auth-token-code` from status.html.
+    const tokenPrefix = "PLAYWRIGHT_MCP_EXTENSION_TOKEN=";
+    let token = "";
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const rendered = await send(
+        "Runtime.evaluate",
+        {
+          expression:
+            'document.querySelector(".auth-token-code")?.textContent || ""',
+          returnByValue: true,
+        },
+        attached.sessionId,
+      );
+      const text = rendered.result?.value;
+      if (typeof text === "string" && text.trim().startsWith(tokenPrefix)) {
+        token = text.trim().slice(tokenPrefix.length);
+        if (token.length >= 32 && !/\s/.test(token)) break;
+        token = "";
+      }
+      await delay(100);
+    }
+    if (!token) {
+      throw new Error("extension status page did not expose a valid authentication token");
     }
     writeAtomic(tokenFile, token, { encoding: "utf8", mode: 0o600 });
     await send("Target.closeTarget", { targetId: target.targetId });
@@ -297,7 +312,7 @@ async function main() {
         },
       ],
     });
-    await seedExtensionAuthToken(record.id);
+    await readExtensionAuthToken(record.id);
     const ready = {
       sessionOnly: loadedForSession,
       source: loadedForSession ? "session-surrogate" : "existing-installation",
