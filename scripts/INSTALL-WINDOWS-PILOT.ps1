@@ -4,6 +4,8 @@
 param(
     [ValidateSet("auto", "chrome", "msedge")]
     [string]$BrowserChannel = "auto",
+    [ValidateRange(0, 86400)]
+    [int]$ManualExtensionWaitSeconds = 0,
     [string]$LogPath = ""
 )
 
@@ -28,6 +30,14 @@ $UserConfigChangeStarted = $false
 $UserConfigCommitted = $false
 $InstallLockPath = $null
 $InstallLockStream = $null
+$ExtensionPolicyPath = $null
+$ExtensionPolicyValueName = $null
+$ExtensionPolicyPreviousValue = $null
+$ExtensionPolicyValueWasPresent = $false
+$ExtensionPolicyKeyWasPresent = $false
+$ExtensionPolicyChangeStarted = $false
+$ExtensionPolicyCommitted = $false
+$ExtensionInstallMethod = ""
 
 function Write-InstallLog {
     param([string]$Message)
@@ -139,11 +149,15 @@ function Get-NodeInfo {
     }
 }
 
-function Test-BrowserInstalled {
+function Get-BrowserExecutable {
     param([ValidateSet("chrome", "msedge")][string]$Channel)
     $Executable = if ($Channel -eq "chrome") { "chrome.exe" } else { "msedge.exe" }
-    if (Get-Command $Executable -ErrorAction SilentlyContinue) {
-        return $true
+    $Command = Get-Command $Executable -ErrorAction SilentlyContinue
+    if ($Command) {
+        $Resolved = if ($Command.Source) { $Command.Source } else { $Command.Path }
+        if ($Resolved -and (Test-Path -LiteralPath $Resolved -PathType Leaf)) {
+            return $Resolved
+        }
     }
     $RelativePath = if ($Channel -eq "chrome") {
         "Google\Chrome\Application\chrome.exe"
@@ -152,10 +166,15 @@ function Test-BrowserInstalled {
     }
     foreach ($Base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
         if ($Base -and (Test-Path -LiteralPath (Join-Path $Base $RelativePath) -PathType Leaf)) {
-            return $true
+            return (Join-Path $Base $RelativePath)
         }
     }
-    return $false
+    return ""
+}
+
+function Test-BrowserInstalled {
+    param([ValidateSet("chrome", "msedge")][string]$Channel)
+    return [bool](Get-BrowserExecutable $Channel)
 }
 
 function Get-ClaudeExecutable {
@@ -182,6 +201,81 @@ function Write-Utf8NoBom {
     param([string]$Path, [string]$Content)
     $Encoding = New-Object System.Text.UTF8Encoding($false)
     [IO.File]::WriteAllText($Path, $Content, $Encoding)
+}
+
+function Test-PlaywrightExtension {
+    param(
+        [string]$Checker,
+        [string]$LocalAppData,
+        [ValidateSet("chrome", "msedge")][string]$Channel,
+        [string]$ExpectedVersion,
+        [string]$ApprovedUnpackedPath
+    )
+    $Prefix = $script:PythonPrefix
+    $Output = @()
+    $ExitCode = 1
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $HadDontWriteBytecode = Test-Path Env:PYTHONDONTWRITEBYTECODE
+    $PreviousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
+    try {
+        $ErrorActionPreference = "Continue"
+        $env:PYTHONDONTWRITEBYTECODE = "1"
+        $Output = & $script:PythonExe @Prefix $Checker "check" `
+            "--local-app-data" $LocalAppData `
+            "--browser-channel" $Channel `
+            "--expected-version" $ExpectedVersion `
+            "--approved-unpacked-path" $ApprovedUnpackedPath `
+            "--quiet" 2>&1
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        if ($HadDontWriteBytecode) {
+            $env:PYTHONDONTWRITEBYTECODE = $PreviousDontWriteBytecode
+        } else {
+            Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
+        }
+        $ErrorActionPreference = $PreviousErrorActionPreference
+    }
+    if ($ExitCode -eq 0) {
+        return $true
+    }
+    if ($ExitCode -eq 3) {
+        return $false
+    }
+    foreach ($Line in @($Output)) {
+        if ($null -ne $Line) {
+            Write-Host $Line
+            Write-InstallLog "EXTENSION CHECK: $Line"
+        }
+    }
+    throw "Playwright Extension 检测失败，退出码 $ExitCode。"
+}
+
+function Restore-ExtensionPolicyChange {
+    if (-not $script:ExtensionPolicyChangeStarted -or
+        $script:ExtensionPolicyCommitted -or
+        -not $script:ExtensionPolicyPath -or
+        -not $script:ExtensionPolicyValueName) {
+        return
+    }
+    if ($script:ExtensionPolicyValueWasPresent) {
+        New-ItemProperty -LiteralPath $script:ExtensionPolicyPath `
+            -Name $script:ExtensionPolicyValueName `
+            -Value $script:ExtensionPolicyPreviousValue `
+            -PropertyType String -Force | Out-Null
+        Write-InstallLog "ROLLBACK: restored previous browser extension policy"
+    } elseif (Test-Path -LiteralPath $script:ExtensionPolicyPath) {
+        Remove-ItemProperty -LiteralPath $script:ExtensionPolicyPath `
+            -Name $script:ExtensionPolicyValueName -Force -ErrorAction SilentlyContinue
+        if (-not $script:ExtensionPolicyKeyWasPresent) {
+            $RollbackPolicyKey = Get-Item -LiteralPath $script:ExtensionPolicyPath
+            if (@($RollbackPolicyKey.GetValueNames()).Count -eq 0 -and
+                $RollbackPolicyKey.SubKeyCount -eq 0) {
+                Remove-Item -LiteralPath $script:ExtensionPolicyPath -Force
+            }
+        }
+        Write-InstallLog "ROLLBACK: removed newly added browser extension policy"
+    }
+    $script:ExtensionPolicyChangeStarted = $false
 }
 
 try {
@@ -244,6 +338,9 @@ try {
     $NodeDistributionVerifier = Join-Path $ToolkitRoot "scripts\validate_node_distribution.py"
     $NodeSourceApprovals = Join-Path $ToolkitRoot "config\windows-node-sources.json"
     $Configurator = Join-Path $ToolkitRoot "scripts\configure_windows_pilot.py"
+    $ExtensionChecker = Join-Path $ToolkitRoot "scripts\check_playwright_extension.py"
+    $ExtensionVerifier = Join-Path $ToolkitRoot "scripts\validate_playwright_extension.py"
+    $ExtensionApproval = Join-Path $ToolkitRoot "config\playwright-extension-source.json"
     $McpRegistrar = Join-Path $ToolkitRoot "scripts\register_claude_user_mcp.py"
     $McpSmoke = Join-Path $ToolkitRoot "scripts\smoke_playwright_mcp.py"
     $BrowserAgent = Join-Path $ToolkitRoot "tools\browser_agent.py"
@@ -253,6 +350,9 @@ try {
         $NodeDistributionVerifier,
         $NodeSourceApprovals,
         $Configurator,
+        $ExtensionChecker,
+        $ExtensionVerifier,
+        $ExtensionApproval,
         $McpRegistrar,
         $McpSmoke,
         $BrowserAgent,
@@ -270,6 +370,46 @@ try {
         $KitMetadata.runtime.buildMetadata.target.machine -ne "x64") {
         throw "迁移包目标不是 Windows x64。"
     }
+    $BrowserExtensionProperty = $KitMetadata.PSObject.Properties["browserExtension"]
+    if ($null -eq $BrowserExtensionProperty -or
+        $null -eq $BrowserExtensionProperty.Value) {
+        throw "迁移包缺少离线 Playwright Extension 元数据。"
+    }
+    $BrowserExtensionMetadata = $BrowserExtensionProperty.Value
+    foreach ($MetadataField in @(
+        "extensionId", "version", "path", "unpackedPath", "installation"
+    )) {
+        if ($null -eq $BrowserExtensionMetadata.PSObject.Properties[$MetadataField]) {
+            throw "迁移包的 Playwright Extension 元数据缺少字段：$MetadataField"
+        }
+    }
+    $ExtensionId = [string]$BrowserExtensionMetadata.extensionId
+    $ExtensionVersion = [string]$BrowserExtensionMetadata.version
+    $ExtensionRelativePath = [string]$BrowserExtensionMetadata.path
+    $ExtensionUnpackedRelativePath = [string]$BrowserExtensionMetadata.unpackedPath
+    $ExtensionInstallation = [string]$BrowserExtensionMetadata.installation
+    if ($ExtensionId -ne "mmlmfjhmonkocbjadbfplnigmagldckm" -or
+        $ExtensionVersion -notmatch '^\d+\.\d+\.\d+$' -or
+        $ExtensionRelativePath -notmatch '^browser-extension/playwright-extension-[0-9.]+\.crx$' -or
+        $ExtensionUnpackedRelativePath -ne "browser-extension/unpacked" -or
+        $ExtensionInstallation -ne "offline-user-policy-with-manual-unpacked-fallback") {
+        throw "迁移包的 Playwright Extension 元数据不合法。"
+    }
+    $ExtensionSourcePath = Join-Path $PSScriptRoot ($ExtensionRelativePath -replace '/', '\')
+    $ExtensionUnpackedSourcePath = Join-Path $PSScriptRoot `
+        ($ExtensionUnpackedRelativePath -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $ExtensionSourcePath -PathType Leaf)) {
+        throw "迁移包缺少离线 Playwright Extension：$ExtensionSourcePath"
+    }
+    if (-not (Test-Path -LiteralPath $ExtensionUnpackedSourcePath -PathType Container)) {
+        throw "迁移包缺少已解压 Playwright Extension：$ExtensionUnpackedSourcePath"
+    }
+    Invoke-Python @(
+        $ExtensionVerifier,
+        $ExtensionSourcePath,
+        "--approval-file", $ExtensionApproval,
+        "--unpacked-directory", $ExtensionUnpackedSourcePath
+    )
     $RuntimeArchiveName = [string]$KitMetadata.runtime.archive
     if ($RuntimeArchiveName -notmatch '^browser-agent-runtime-[a-zA-Z0-9._-]+\.tar\.gz$') {
         throw "运行包文件名不合法：$RuntimeArchiveName"
@@ -304,6 +444,10 @@ try {
     } elseif (-not (Test-BrowserInstalled $BrowserChannel)) {
         throw "未找到指定浏览器：$BrowserChannel"
     }
+    $BrowserExecutable = Get-BrowserExecutable $BrowserChannel
+    if (-not $BrowserExecutable) {
+        throw "无法解析浏览器可执行文件：$BrowserChannel"
+    }
     $ProfileOwner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $LocalAppDataRoot = [IO.Path]::GetFullPath($env:LOCALAPPDATA).TrimEnd("\")
     $AgentRoot = [IO.Path]::GetFullPath((Join-Path $LocalAppDataRoot "IntranetBrowserAgent"))
@@ -318,7 +462,12 @@ try {
     $RuntimeRoot = Join-Path $ReleaseRoot $RuntimeName
     $ConfigRoot = Join-Path $AgentRoot "config\pilot"
     $OutputDirectory = Join-Path $AgentRoot "output\pilot"
-    $ProfileDirectory = Join-Path $AgentRoot "profiles\pilot"
+    $ExtensionInstallRoot = Join-Path $AgentRoot "browser-extension\$ExtensionVersion"
+    $InstalledExtensionCrx = Join-Path $ExtensionInstallRoot ([IO.Path]::GetFileName($ExtensionSourcePath))
+    $InstalledExtensionUnpacked = Join-Path $ExtensionInstallRoot "unpacked"
+    $PlaywrightExtensionAlreadyInstalled = Test-PlaywrightExtension `
+        $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
+        $InstalledExtensionUnpacked
     Invoke-Python @(
         $Configurator,
         "assert-user-paths",
@@ -328,7 +477,8 @@ try {
         "--path", $RuntimeRoot,
         "--path", $ConfigRoot,
         "--path", $OutputDirectory,
-        "--path", $ProfileDirectory,
+        "--path", $ExtensionInstallRoot,
+        "--path", $InstalledExtensionUnpacked,
         "--path", (Join-Path $AgentRoot "staging"),
         "--path", (Join-Path $AgentRoot "backups"),
         "--path", (Join-Path $AgentRoot ".install.lock")
@@ -339,6 +489,8 @@ try {
     Write-Host "  安装范围：当前用户的全部 Claude Code 项目"
     Write-Host "  安装目录：$AgentRoot"
     Write-Host "  浏览器：$BrowserChannel"
+    Write-Host "  浏览器登录态：连接当前 Profile 中已登录的标签页"
+    Write-Host "  Playwright Extension：$ExtensionVersion（离线包内安装）"
     Write-Host "  运行账号：$ProfileOwner"
 
     Write-Step 3 "安装并验证固定运行时"
@@ -414,6 +566,197 @@ try {
     Write-Host "已启用包内 Node.js $($BundledNodeInfo.Text)；未修改系统 Node.js。" -ForegroundColor Green
     Write-InstallLog "Bundled Node.js selected: $BundledNodeExe ($($BundledNodeInfo.Text))"
 
+    if ($PlaywrightExtensionAlreadyInstalled) {
+        Invoke-Python @(
+            $ExtensionChecker,
+            "check",
+            "--local-app-data", $LocalAppDataRoot,
+            "--browser-channel", $BrowserChannel,
+            "--expected-version", $ExtensionVersion,
+            "--approved-unpacked-path", $InstalledExtensionUnpacked
+        )
+        $ExtensionInstallMethod = "existing"
+        Write-Host "当前浏览器已安装批准的 Playwright Extension，直接复用。" -ForegroundColor Green
+    } else {
+        Write-Host "当前浏览器未安装 Playwright Extension；开始从迁移包离线安装。" -ForegroundColor Cyan
+        if (Test-Path -LiteralPath $ExtensionInstallRoot) {
+            if (-not (Test-Path -LiteralPath $ExtensionInstallRoot -PathType Container)) {
+                throw "离线扩展安装路径已存在但不是目录：$ExtensionInstallRoot"
+            }
+            if (-not (Test-Path -LiteralPath $InstalledExtensionCrx -PathType Leaf)) {
+                throw "离线扩展版本目录不完整：$ExtensionInstallRoot"
+            }
+            if (-not (Test-Path -LiteralPath $InstalledExtensionUnpacked -PathType Container)) {
+                throw "离线扩展版本目录缺少已解压内容：$ExtensionInstallRoot"
+            }
+            Invoke-Python @(
+                $ExtensionVerifier,
+                $InstalledExtensionCrx,
+                "--approval-file", $ExtensionApproval,
+                "--unpacked-directory", $InstalledExtensionUnpacked
+            )
+        } else {
+            $StagedExtensionRoot = Join-Path $StagingRoot `
+                ("extension-" + [guid]::NewGuid().ToString("N"))
+            New-Item -ItemType Directory -Path $StagedExtensionRoot | Out-Null
+            $StagedExtensionCrx = Join-Path $StagedExtensionRoot `
+                ([IO.Path]::GetFileName($ExtensionSourcePath))
+            $StagedExtensionUnpacked = Join-Path $StagedExtensionRoot "unpacked"
+            Copy-Item -LiteralPath $ExtensionSourcePath -Destination $StagedExtensionCrx
+            Copy-Item -LiteralPath $ExtensionUnpackedSourcePath `
+                -Destination $StagedExtensionUnpacked -Recurse
+            Invoke-Python @(
+                $ExtensionVerifier,
+                $StagedExtensionCrx,
+                "--approval-file", $ExtensionApproval,
+                "--unpacked-directory", $StagedExtensionUnpacked
+            )
+            New-Item -ItemType Directory -Path (Split-Path -Parent $ExtensionInstallRoot) `
+                -Force | Out-Null
+            Move-Item -LiteralPath $StagedExtensionRoot -Destination $ExtensionInstallRoot
+        }
+
+        $CrxUri = ([Uri]$InstalledExtensionCrx).AbsoluteUri
+        $UpdateManifestPath = Join-Path $ExtensionInstallRoot "updates.xml"
+        $EscapedCrxUri = [Security.SecurityElement]::Escape($CrxUri)
+        $UpdateManifest = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
+  <app appid="$ExtensionId">
+    <updatecheck codebase="$EscapedCrxUri" version="$ExtensionVersion" />
+  </app>
+</gupdate>
+"@
+        Write-Utf8NoBom $UpdateManifestPath $UpdateManifest
+        $UpdateManifestUri = ([Uri]$UpdateManifestPath).AbsoluteUri
+
+        $ExtensionPolicyPath = if ($BrowserChannel -eq "chrome") {
+            "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
+        } else {
+            "HKCU:\Software\Policies\Microsoft\Edge\ExtensionInstallForcelist"
+        }
+        $ExtensionPolicyKeyWasPresent = Test-Path -LiteralPath $ExtensionPolicyPath
+        if (-not $ExtensionPolicyKeyWasPresent) {
+            New-Item -Path $ExtensionPolicyPath -Force | Out-Null
+        }
+        $PolicyKey = Get-Item -LiteralPath $ExtensionPolicyPath
+        $PolicyValueNames = @($PolicyKey.GetValueNames())
+        foreach ($PolicyValueName in $PolicyValueNames) {
+            $PolicyValue = [string]$PolicyKey.GetValue($PolicyValueName, "")
+            if ($PolicyValue -match ("^" + [regex]::Escape($ExtensionId) + ";")) {
+                $ExtensionPolicyValueName = $PolicyValueName
+                break
+            }
+        }
+        if (-not $ExtensionPolicyValueName) {
+            $PolicyIndex = 1
+            while ($PolicyValueNames -contains [string]$PolicyIndex) {
+                $PolicyIndex += 1
+            }
+            $ExtensionPolicyValueName = [string]$PolicyIndex
+        }
+        $ExtensionPolicyValueWasPresent = $PolicyValueNames -contains $ExtensionPolicyValueName
+        if ($ExtensionPolicyValueWasPresent) {
+            $ExtensionPolicyPreviousValue = [string]$PolicyKey.GetValue(
+                $ExtensionPolicyValueName,
+                ""
+            )
+        }
+        $ExtensionPolicyChangeStarted = $true
+        New-ItemProperty -LiteralPath $ExtensionPolicyPath `
+            -Name $ExtensionPolicyValueName `
+            -Value ("$ExtensionId;$UpdateManifestUri") `
+            -PropertyType String -Force | Out-Null
+        Write-InstallLog (
+            "Offline extension policy configured: {0}\{1}" -f `
+                $ExtensionPolicyPath, $ExtensionPolicyValueName
+        )
+
+        Start-Process -FilePath $BrowserExecutable -ArgumentList @("about:blank")
+        Write-Host "已尝试当前用户离线策略安装，正在等待浏览器确认……"
+        $PolicyInstallDeadline = [DateTime]::UtcNow.AddSeconds(30)
+        while (-not (Test-PlaywrightExtension `
+            $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
+            $InstalledExtensionUnpacked)) {
+            if ([DateTime]::UtcNow -ge $PolicyInstallDeadline) {
+                break
+            }
+            Start-Sleep -Seconds 2
+        }
+        if (-not (Test-PlaywrightExtension `
+            $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
+            $InstalledExtensionUnpacked)) {
+            Restore-ExtensionPolicyChange
+            $ExtensionsPage = if ($BrowserChannel -eq "chrome") {
+                "chrome://extensions"
+            } else {
+                "edge://extensions"
+            }
+            Start-Process -FilePath $BrowserExecutable -ArgumentList @($ExtensionsPage)
+            $ClipCommand = Get-Command "clip.exe" -ErrorAction SilentlyContinue
+            if ($ClipCommand) {
+                try {
+                    $InstalledExtensionUnpacked | & $ClipCommand.Source
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Host "扩展目录已复制到剪贴板。" -ForegroundColor Green
+                    }
+                } catch {
+                    Write-InstallLog "WARNING: could not copy extension path to clipboard"
+                }
+            }
+            Write-Host ""
+            Write-Host "浏览器未接受自动安装，请在刚打开的扩展页完成以下 3 步：" `
+                -ForegroundColor Yellow
+            Write-Host "  1. 打开右上角“开发者模式”。"
+            Write-Host "  2. 点击“加载已解压的扩展程序”。"
+            Write-Host "  3. 在文件夹选择框粘贴或选择下面这个目录："
+            Write-Host ""
+            Write-Host "     $InstalledExtensionUnpacked" -ForegroundColor Cyan
+            Write-Host ""
+            Write-Host "安装器正在等待；检测到扩展后会自动继续，无需重新运行安装器。" `
+                -ForegroundColor Yellow
+            Write-InstallLog (
+                "MANUAL EXTENSION LOAD REQUIRED: {0} from {1}" -f `
+                    $ExtensionsPage, $InstalledExtensionUnpacked
+            )
+            $ManualExtensionDeadline = if ($ManualExtensionWaitSeconds -gt 0) {
+                [DateTime]::UtcNow.AddSeconds($ManualExtensionWaitSeconds)
+            } else {
+                [DateTime]::MaxValue
+            }
+            $NextWaitingMessage = [DateTime]::UtcNow.AddSeconds(30)
+            while (-not (Test-PlaywrightExtension `
+                $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
+                $InstalledExtensionUnpacked)) {
+                if ([DateTime]::UtcNow -ge $ManualExtensionDeadline) {
+                    throw (
+                        "未检测到手动加载的 Playwright Extension；等待目录为：" +
+                        $InstalledExtensionUnpacked
+                    )
+                }
+                if ([DateTime]::UtcNow -ge $NextWaitingMessage) {
+                    Write-Host "仍在等待浏览器加载扩展；完成后会自动继续……"
+                    $NextWaitingMessage = [DateTime]::UtcNow.AddSeconds(30)
+                }
+                Start-Sleep -Seconds 2
+            }
+            Write-InstallLog "MANUAL EXTENSION LOAD DETECTED"
+            $ExtensionInstallMethod = "manual-unpacked"
+        } else {
+            $ExtensionInstallMethod = "offline-user-policy"
+        }
+        Invoke-Python @(
+            $ExtensionChecker,
+            "check",
+            "--local-app-data", $LocalAppDataRoot,
+            "--browser-channel", $BrowserChannel,
+            "--expected-version", $ExtensionVersion,
+            "--approved-unpacked-path", $InstalledExtensionUnpacked
+        )
+        Write-Host "Playwright Extension 已从迁移包离线安装并验证。" -ForegroundColor Green
+    }
+    Write-InstallLog "EXTENSION INSTALL METHOD: $ExtensionInstallMethod"
+
     Write-Step 4 "自动生成配置并备份旧版本"
     $StageRoot = Join-Path $StagingRoot `
         ("pilot-" + [guid]::NewGuid().ToString("N"))
@@ -431,7 +774,6 @@ try {
         "--runtime-root", $RuntimeRoot,
         "--config-root", $ConfigRoot,
         "--output-directory", $OutputDirectory,
-        "--profile-directory", $ProfileDirectory,
         "--profile-owner", $ProfileOwner,
         "--node-executable", $NodeExe,
         "--browser-channel", $BrowserChannel
@@ -470,7 +812,7 @@ try {
         $ConfigBackupPath = Join-Path $BackupRoot "config-pilot"
     }
     New-Item -ItemType Directory `
-        -Path (Split-Path -Parent $ConfigRoot), $OutputDirectory, $ProfileDirectory `
+        -Path (Split-Path -Parent $ConfigRoot), $OutputDirectory `
         -Force | Out-Null
     $ConfigChangeStarted = $true
     if ($ConfigWasPresent) {
@@ -496,7 +838,8 @@ try {
         $McpSmoke,
         "--node-executable", $NodeExe,
         "--playwright-cli", $PlaywrightCliPath,
-        "--playwright-config", $PlaywrightConfigPath
+        "--playwright-config", $PlaywrightConfigPath,
+        "--browser-channel", $BrowserChannel
     )
 
     if ($env:CLAUDE_CONFIG_DIR) {
@@ -530,11 +873,13 @@ try {
         "--node-executable", $NodeExe,
         "--playwright-cli", $PlaywrightCliPath,
         "--playwright-config", $PlaywrightConfigPath,
+        "--browser-channel", $BrowserChannel,
         "--user-config", $ClaudeUserConfigPath,
         "--backup", $ClaudeUserConfigBackup
     )
     $UserConfigCommitted = $true
     $ConfigCommitted = $true
+    $ExtensionPolicyCommitted = $true
 
     Write-Step 6 "完成"
     $SummaryPath = Join-Path $AgentRoot "INSTALLATION.txt"
@@ -544,10 +889,12 @@ Windows Browser Agent pilot is installed.
 Runtime: $RuntimeRoot
 Manifest: $InstalledManifest
 Claude MCP scope: user (all projects for the current Windows user)
+Browser mode: existing $BrowserChannel tabs through Playwright Extension $ExtensionVersion
+Extension install method: $ExtensionInstallMethod
 Backup: $BackupRoot
 
 Next: restart Claude Code in any project, run /mcp to confirm intranet-browser-agent,
-let a human finish SSO/MFA, and perform a read-only page-title test first.
+approve the browser tab connection, and perform a read-only page-title test first.
 "@
     $SummaryWritten = $false
     try {
@@ -560,6 +907,7 @@ let a human finish SSO/MFA, and perform a read-only page-title test first.
     Write-InstallLog "SUCCESS: installation and preflight completed"
     Write-Host "安装和 preflight 已完成。" -ForegroundColor Green
     Write-Host "下一步：重启 Claude Code，在任意项目中输入 /mcp 查看 intranet-browser-agent。"
+    Write-Host "首次调用浏览器工具时，在 Playwright Extension 页面选择允许控制的现有标签页。"
     if ($SummaryWritten) {
         Write-Host "安装摘要：$SummaryPath"
     }
@@ -619,6 +967,13 @@ let a human finish SSO/MFA, and perform a read-only page-title test first.
             }
         } catch {
             Write-InstallLog "CONFIG ROLLBACK FAILED: $($_.Exception.Message)"
+        }
+    }
+    if ($ExtensionPolicyChangeStarted -and -not $ExtensionPolicyCommitted) {
+        try {
+            Restore-ExtensionPolicyChange
+        } catch {
+            Write-InstallLog "EXTENSION POLICY ROLLBACK FAILED: $($_.Exception.Message)"
         }
     }
     if ($BackupRoot) {

@@ -22,6 +22,21 @@ SPEC.loader.exec_module(registration)
 
 
 class ClaudeMcpRegistrationTests(unittest.TestCase):
+    def test_extension_registration_arguments_bind_exact_browser_channel(self) -> None:
+        cli = Path(r"C:\Agent\cli.js")
+        config = Path(r"C:\Agent\playwright.config.json")
+        self.assertEqual(
+            [
+                str(cli),
+                "--browser=chrome",
+                "--config",
+                str(config),
+            ],
+            registration._playwright_command_arguments(cli, config, "chrome"),
+        )
+        with self.assertRaises(registration.RegistrationError):
+            registration._playwright_command_arguments(cli, config, "firefox")
+
     def paths(self, root: Path) -> tuple[Path, Path, Path, Path, Path]:
         node_executable = root / "node.exe"
         node_executable.write_bytes(b"MZ")

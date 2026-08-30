@@ -24,7 +24,7 @@ echo.
 echo Automated Windows checks passed. Continuing in the same window...
 
 set "INSTALL_LOG=%TEMP%\IntranetBrowserAgent\INSTALL-WINDOWS-PILOT-%RANDOM%-%RANDOM%.log"
-powershell.exe -NoProfile -File "%~dp0INSTALL-WINDOWS-PILOT.ps1" -LogPath "%INSTALL_LOG%"
+powershell.exe -NoProfile -File "%~dp0INSTALL-WINDOWS-PILOT.ps1" -LogPath "%INSTALL_LOG%" %*
 set "INSTALL_EXIT=%ERRORLEVEL%"
 
 if "%INSTALL_EXIT%"=="0" (

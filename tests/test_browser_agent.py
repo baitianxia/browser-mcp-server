@@ -76,7 +76,6 @@ class BrowserAgentManifestTests(unittest.TestCase):
         )
         manifest["configRoot"] = user_root + r"\config\pilot"
         manifest["output"]["directory"] = user_root + r"\output\pilot"
-        manifest["browser"]["userDataDir"] = user_root + r"\profiles\pilot"
         manifest["browser"]["profileOwner"] = "CORP\\browser-agent-pilot"
         return manifest
 
@@ -114,10 +113,11 @@ class BrowserAgentManifestTests(unittest.TestCase):
                 r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent\releases\runtime-1\node_modules\@playwright\mcp\cli.js",
                 server["args"][0],
             )
-            self.assertEqual("--config", server["args"][1])
+            self.assertEqual("--browser=chrome", server["args"][1])
+            self.assertEqual("--config", server["args"][2])
             self.assertEqual(
                 r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent\config\pilot\playwright.config.json",
-                server["args"][2],
+                server["args"][3],
             )
             self.assertEqual(
                 browser_agent._load_windows_mcp_environment(), server["env"]

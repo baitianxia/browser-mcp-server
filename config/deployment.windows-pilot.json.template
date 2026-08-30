@@ -7,7 +7,7 @@
     "os": "windows",
     "arch": "x64"
   },
-  "mode": "persistent",
+  "mode": "extension",
   "mcpScope": "user",
   "installRoot": "C:\\Users\\REPLACE-ME\\AppData\\Local\\IntranetBrowserAgent\\releases\\current",
   "nodeExecutable": "C:\\Users\\REPLACE-ME\\AppData\\Local\\IntranetBrowserAgent\\releases\\current\\node\\node.exe",
@@ -21,9 +21,10 @@
   },
   "browser": {
     "channel": "chrome",
-    "userDataDir": "C:\\Users\\REPLACE-ME\\AppData\\Local\\IntranetBrowserAgent\\profiles\\pilot",
     "profileOwner": "REPLACE-ME-WINDOWS-ACCOUNT",
-    "maxConcurrentAgents": 1
+    "maxConcurrentAgents": 1,
+    "extensionDistribution": "manual-pilot",
+    "manualConnectionApproval": true
   },
   "controls": {
     "transport": "stdio",

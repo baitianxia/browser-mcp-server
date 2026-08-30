@@ -82,6 +82,20 @@ def _mcp_environment_arguments(environment: Mapping[str, str]) -> tuple[str, ...
     )
 
 
+def _playwright_command_arguments(
+    playwright_cli: Path,
+    playwright_config: Path,
+    browser_channel: str | None,
+) -> list[str]:
+    if browser_channel not in {None, "chrome", "msedge"}:
+        raise RegistrationError(f"unsupported browser channel: {browser_channel}")
+    arguments = [str(playwright_cli)]
+    if browser_channel is not None:
+        arguments.append(f"--browser={browser_channel}")
+    arguments.extend(("--config", str(playwright_config)))
+    return arguments
+
+
 def _atomic_copy(source: Path, destination: Path, *, overwrite: bool) -> None:
     if not source.is_file():
         raise RegistrationError(f"backup source is not a regular file: {source}")
@@ -168,6 +182,7 @@ def _verify_user_registration(
     node_executable: Path,
     playwright_cli: Path,
     playwright_config: Path,
+    browser_channel: str | None,
     mcp_environment: Mapping[str, str],
 ) -> None:
     try:
@@ -193,7 +208,9 @@ def _verify_user_registration(
             + ", ".join(sorted(unexpected_fields))
         )
     expected_command = str(node_executable)
-    expected_arguments = [str(playwright_cli), "--config", str(playwright_config)]
+    expected_arguments = _playwright_command_arguments(
+        playwright_cli, playwright_config, browser_channel
+    )
     if entry.get("command") != expected_command or entry.get("args") != expected_arguments:
         raise RegistrationError(
             "user-scoped MCP entry does not match the verified node.exe/CLI/config paths"
@@ -213,6 +230,7 @@ def register_user_mcp(
     node_executable: Path,
     playwright_cli: Path,
     playwright_config: Path,
+    browser_channel: str | None = None,
     user_config: Path,
     backup: Path,
     reporter: Reporter = print,
@@ -275,9 +293,9 @@ def register_user_mcp(
                 *_mcp_environment_arguments(registered_environment),
                 "--",
                 str(node_executable),
-                str(playwright_cli),
-                "--config",
-                str(playwright_config),
+                *_playwright_command_arguments(
+                    playwright_cli, playwright_config, browser_channel
+                ),
             ),
             environment=environment,
         )
@@ -290,6 +308,7 @@ def register_user_mcp(
             node_executable=node_executable,
             playwright_cli=playwright_cli,
             playwright_config=playwright_config,
+            browser_channel=browser_channel,
             mcp_environment=registered_environment,
         )
 
@@ -439,6 +458,7 @@ def self_test() -> None:
             node_executable=node_executable,
             playwright_cli=playwright_cli,
             playwright_config=playwright_config,
+            browser_channel="chrome",
             user_config=user_config,
             backup=first_backup,
             reporter=quiet,
@@ -461,6 +481,7 @@ def self_test() -> None:
                 "--",
                 str(node_executable),
                 str(playwright_cli),
+                "--browser=chrome",
                 "--config",
                 str(playwright_config),
             ],
@@ -552,6 +573,9 @@ def build_parser() -> argparse.ArgumentParser:
     register_parser.add_argument("--node-executable", required=True, type=Path)
     register_parser.add_argument("--playwright-cli", required=True, type=Path)
     register_parser.add_argument("--playwright-config", required=True, type=Path)
+    register_parser.add_argument(
+        "--browser-channel", choices=("chrome", "msedge")
+    )
     register_parser.add_argument("--user-config", required=True, type=Path)
     register_parser.add_argument("--backup", required=True, type=Path)
     subparsers.add_parser("self-test")
@@ -572,6 +596,7 @@ def main() -> int:
                 node_executable=args.node_executable,
                 playwright_cli=args.playwright_cli,
                 playwright_config=args.playwright_config,
+                browser_channel=args.browser_channel,
                 user_config=args.user_config,
                 backup=args.backup,
             )

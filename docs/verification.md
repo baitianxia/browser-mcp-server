@@ -2,6 +2,10 @@
 
 状态：2026-08-30 的验证证据快照，不是规范性设计文档。
 
+## 1.0.9 候选状态（尚未 Windows 放行）
+
+1.0.9 改为 Windows pilot `extension` 模式，迁移包携带固定官方 CRX 和逐文件一致的已解压副本；安装器先尝试完全离线策略安装，失败时恢复临时策略、打开扩展页并在原进程等待用户加载，检测成功后继续。当前本地完整测试、真实 CRX 校验、交叉构建及 macOS Chrome 临时 Profile 的 `Extensions.loadUnpacked` 实测已通过；后者实际返回扩展 ID `mmlmfjhmonkocbjadbfplnigmagldckm`、版本 `0.3.0`、`enabled=true`，关闭 Chrome 后 Profile 检测仍返回 `Default`。这些证据尚不能替代 Windows PowerShell 5.1、Windows Chrome 和顶层 launcher 的 GitHub 实测；在对应 workflow 成功前，1.0.9 仍是候选，不得交付为 Windows 已验证包。
+
 发布结论：**WINDOWS CI-VERIFIED PILOT 1.0.8**。GitHub 托管的 Windows x64 环境已经完成源码测试、Windows 原生重建、PowerShell 5.1 发布门禁、真实 Claude Code 隔离注册和一次顶层 launcher 安装。该结论证明通用 Windows 自动链路可用，但不等于已通过企业内网、业务浏览器或生产治理验收。
 
 1.0.6 已撤回：其真实 Windows PowerShell 5.1 门禁在字节保真测试中暴露 CRLF 夹具缺陷。1.0.7 也在交付前撤回：复核发现把 `.cmd` 作为实际 MCP 命令、Node 来源只做自洽校验，以及运行时/配置发布事务不够严格。1.0.8 才包含直接 `node.exe + cli.js`、固定 Node 批准哈希、固定 MCP 子进程环境、真实 MCP stdio 握手和本记录所述的事务收紧。

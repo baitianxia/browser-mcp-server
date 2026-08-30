@@ -33,7 +33,6 @@ class WindowsPilotSetupTests(unittest.TestCase):
             runtime_root=user_root + r"\releases\runtime-1",
             config_root=user_root + r"\config\pilot",
             output_directory=user_root + r"\output\pilot",
-            profile_directory=user_root + r"\profiles\pilot",
             profile_owner=r"CORP\pilot-user",
             browser_channel="chrome",
             node_executable=user_root + r"\releases\runtime-1\node\node.exe",
@@ -47,6 +46,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("$schema", manifest)
         self.assertNotIn("network", manifest)
         self.assertNotIn("dataBoundary", manifest)
+        self.assertEqual("extension", manifest["mode"])
+        self.assertNotIn("userDataDir", manifest["browser"])
+        self.assertEqual("manual-pilot", manifest["browser"]["extensionDistribution"])
+        self.assertTrue(manifest["browser"]["manualConnectionApproval"])
         self.assertIn(r"\AppData\Local\IntranetBrowserAgent", manifest["installRoot"])
 
     def test_user_scope_rejects_project_roots(self) -> None:
@@ -74,6 +77,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("C:\\ProgramData", installer)
         self.assertNotIn("icacls.exe", installer)
         self.assertNotIn("Read-Host", installer)
+        self.assertNotIn("ProfileDirectory", installer)
+        self.assertNotIn("--profile-directory", installer)
         self.assertIn("$env:LOCALAPPDATA", installer)
         self.assertIn("USERPROFILE 和 LOCALAPPDATA 必须是本机盘符绝对路径", installer)
         self.assertNotIn("Invoke-ExternalOptional", installer)
@@ -81,10 +86,13 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn('"mcp", "add"', installer)
         self.assertIn("register_claude_user_mcp.py", installer)
         self.assertIn("smoke_playwright_mcp.py", installer)
+        self.assertIn("check_playwright_extension.py", installer)
+        self.assertIn("validate_playwright_extension.py", installer)
         self.assertIn('Invoke-Python @($McpRegistrar, "self-test")', installer)
         self.assertIn('"--claude-executable", $ClaudeExecutable', installer)
         self.assertIn('"--node-executable", $NodeExe', installer)
         self.assertIn('"--playwright-cli", $PlaywrightCliPath', installer)
+        self.assertIn('"--browser-channel", $BrowserChannel', installer)
         self.assertNotIn('"--wrapper"', installer)
         self.assertNotIn('Get-Command "claude.cmd"', installer)
         self.assertIn('Get-Command "claude.exe"', installer)
@@ -101,12 +109,34 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('if ($BrowserChannel -eq "auto")', installer)
         self.assertIn('Test-BrowserInstalled "chrome"', installer)
         self.assertIn('Test-BrowserInstalled "msedge"', installer)
+        self.assertIn("ExtensionInstallForcelist", installer)
+        self.assertIn("$CrxUri = ([Uri]$InstalledExtensionCrx).AbsoluteUri", installer)
+        self.assertIn('codebase="$EscapedCrxUri"', installer)
+        self.assertIn("Start-Process -FilePath $BrowserExecutable", installer)
+        self.assertIn("Test-PlaywrightExtension", installer)
+        self.assertIn('"unpackedPath"', installer)
+        self.assertIn('"--unpacked-directory", $InstalledExtensionUnpacked', installer)
+        self.assertIn('"--expected-version", $ExtensionVersion', installer)
+        self.assertIn(
+            '"--approved-unpacked-path", $InstalledExtensionUnpacked', installer
+        )
+        self.assertIn('"chrome://extensions"', installer)
+        self.assertIn('"edge://extensions"', installer)
+        self.assertIn("开发者模式", installer)
+        self.assertIn("加载已解压的扩展程序", installer)
+        self.assertIn("无需重新运行安装器", installer)
+        self.assertIn("Restore-ExtensionPolicyChange", installer)
+        self.assertIn("[int]$ManualExtensionWaitSeconds = 0", installer)
+        self.assertNotIn("chromewebstore.google.com", installer)
+        self.assertNotIn("Invoke-WebRequest", installer)
+        self.assertNotIn("clients2.google.com", installer)
         self.assertNotIn("AllowedOrigins", installer)
         self.assertNotIn("批准单号", installer)
         self.assertIn('Invoke-Python @($Verifier, $PSScriptRoot)', installer)
         self.assertNotIn("BROWSER_AGENT_NODE", installer)
         self.assertIn("未修改系统 Node.js", installer)
         self.assertIn("Detailed error log:", launcher)
+        self.assertIn('-LogPath "%INSTALL_LOG%" %*', launcher)
         self.assertIn("toolkit\\scripts\\verify-windows-release.ps1", launcher)
         self.assertIn('set "TRANSFER_ROOT=%%~fI"', launcher)
         self.assertIn('-TransferPath "%TRANSFER_ROOT%"', launcher)
@@ -221,6 +251,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
             '$StageRoot = Join-Path $StagingRoot', installer
         )
         self.assertNotIn("[IO.Path]::GetTempPath()", installer)
+        extension_verify = installer.index(
+            'Write-Host "Playwright Extension 已从迁移包离线安装并验证。"'
+        )
+        policy_attempt = installer.index("$PolicyInstallDeadline =")
+        manual_instructions = installer.index("加载已解压的扩展程序")
+        manual_detected = installer.index('Write-InstallLog "MANUAL EXTENSION LOAD DETECTED"')
         stage_preflight = installer.index('"--config-root", $StageDeploy')
         old_config_backup = installer.index(
             "Move-Item -LiteralPath $ConfigRoot -Destination $ConfigBackupPath"
@@ -236,6 +272,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         direct_cli_smoke = installer.index("$McpSmoke,", installed_preflight)
         registration = installer.index('"--server-name", $McpServerName')
         commit = installer.index("$ConfigCommitted = $true")
+        self.assertLess(policy_attempt, manual_instructions)
+        self.assertLess(manual_instructions, manual_detected)
+        self.assertLess(manual_detected, extension_verify)
+        self.assertLess(extension_verify, stage_preflight)
         self.assertLess(stage_preflight, old_config_backup)
         self.assertLess(old_config_backup, backup_complete)
         self.assertLess(backup_complete, config_publish)
@@ -251,6 +291,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         )
         self.assertIn(
             "ROLLBACK: restored previous pilot configuration directory", installer
+        )
+        self.assertIn(
+            "ROLLBACK: restored previous browser extension policy", installer
+        )
+        self.assertIn(
+            "ROLLBACK: removed newly added browser extension policy", installer
         )
         self.assertIn(
             "配置发布状态不明确；已保留当前目录和备份，未执行破坏性回滚。",
@@ -332,7 +378,6 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 runtime_root=user_root + r"\releases\runtime-1",
                 config_root=user_root + r"\config\pilot",
                 output_directory=user_root + r"\output\pilot",
-                profile_directory=user_root + r"\profiles\pilot",
                 profile_owner=r"CORP\pilot-user",
                 browser_channel="chrome",
                 node_executable=user_root
@@ -349,12 +394,16 @@ class WindowsPilotSetupTests(unittest.TestCase):
             self.assertTrue(
                 server["args"][0].endswith(r"node_modules\@playwright\mcp\cli.js")
             )
+            self.assertEqual("--browser=chrome", server["args"][1])
+            self.assertEqual("--config", server["args"][2])
             playwright = json.loads(
                 (root / "rendered" / "playwright.config.json").read_text(
                     encoding="utf-8"
                 )
             )
             self.assertNotIn("network", playwright)
+            self.assertTrue(playwright["extension"])
+            self.assertNotIn("browser", playwright)
 
 
 if __name__ == "__main__":

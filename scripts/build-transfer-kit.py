@@ -16,8 +16,20 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+if str(SCRIPT_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
-TOOLKIT_VERSION = "1.0.8"
+from validate_playwright_extension import (
+    ExtensionValidationError,
+    extract_crx_payload,
+    load_approval as load_extension_approval,
+    validate_crx,
+    validate_unpacked_against_crx,
+)
+
+
+TOOLKIT_VERSION = "1.0.9"
 RUNTIME_PREFIX = "browser-agent-runtime-"
 RUNTIME_SUFFIX = ".tar.gz"
 RUNTIME_NAME_PATTERN = re.compile(
@@ -37,6 +49,7 @@ EXACT_SOURCE_FILES = (
     "config/deployment.production.json.template",
     "config/deployment.windows-pilot.json.template",
     "config/deployment.windows-production.json.template",
+    "config/playwright-extension-source.json",
     "config/windows-mcp-environment.json",
     "config/windows-node-sources.json",
     "docs/acceptance.md",
@@ -67,6 +80,7 @@ EXACT_SOURCE_FILES = (
     "scripts/build-offline-bundle.ps1",
     "scripts/build-transfer-kit.py",
     "scripts/check_runtime_portability.py",
+    "scripts/check_playwright_extension.py",
     "scripts/configure_windows_pilot.py",
     "scripts/create_bundle_archive.py",
     "scripts/generate_sbom.py",
@@ -77,6 +91,7 @@ EXACT_SOURCE_FILES = (
     "scripts/register_claude_user_mcp.py",
     "scripts/smoke_playwright_mcp.py",
     "scripts/validate_node_distribution.py",
+    "scripts/validate_playwright_extension.py",
     "scripts/verify-bundle.py",
     "scripts/verify-windows-release.ps1",
     "scripts/write_archive_hash.py",
@@ -88,6 +103,7 @@ EXACT_SOURCE_FILES = (
     "tests/test_claude_mcp_registration.py",
     "tests/test_node_distribution.py",
     "tests/test_playwright_mcp_smoke.py",
+    "tests/test_playwright_extension.py",
     "tests/test_transfer_kit.py",
     "tests/test_windows_pilot_setup.py",
     "tools/browser_agent.py",
@@ -187,10 +203,10 @@ def start_here(kit_name: str, runtime_name: str, metadata: dict[str, object]) ->
 
 解压前先按 `.sha256` 校验迁移 archive；具体复制粘贴命令见 `toolkit/docs/windows-quickstart.md`。哈希不一致时，不要解压或运行任何文件。
 
-双击安装向导后，它会先在同一个窗口自动运行 Windows 发布门禁，在测试前后各校验一次解压目录，临时解压并校验包内运行 archive，再用包内 Node 完成真实 MCP stdio 握手；全部通过才开始安装，任一失败都会在安装前停止。"""
+双击安装向导后，它会先在同一个窗口自动运行 Windows 发布门禁，在测试前后各校验一次解压目录，校验包内固定哈希的官方 Playwright Extension，临时解压并校验包内运行 archive，再用包内 Node 完成真实 MCP stdio 握手；全部通过才开始安装，任一失败都会在安装前停止。"""
         deployment_section = """## 3. 双击安装
 
-双击本目录的 `INSTALL-WINDOWS-PILOT.cmd` 一次，无需 UAC，也无需填写任何内容。启动器先自动运行测试前后双重完整性校验、完整测试、全部 PowerShell 脚本语法检查、假 Claude CLI 回滚测试、包内 Node 来源/版本校验、真实 MCP stdio `initialize + tools/list` 握手和真实 Claude CLI 隔离探针；全部通过后在同一个窗口直接继续安装。向导把运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome 或 Edge，并用原生 `claude.exe` 把直接执行包内 `node.exe + 固定 cli.js` 的 MCP 注册到 Claude Code user scope；当前用户未被同名高优先级配置覆盖的项目都能使用。试点不配置网址白名单，Playwright MCP 按默认行为允许浏览当前网络可访问的全部网址。
+双击本目录的 `INSTALL-WINDOWS-PILOT.cmd` 一次，无需 UAC，也不填写项目目录、网址或审批字段。启动器先自动运行测试前后双重完整性校验、完整测试、全部 PowerShell 脚本语法检查、假 Claude CLI 回滚测试、包内 Node 与官方 Playwright Extension 来源/版本/哈希校验、真实 MCP stdio `initialize + tools/list` 握手和真实 Claude CLI 隔离探针；全部通过后在同一个窗口直接继续安装。向导把运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome 或 Edge；若浏览器尚无扩展，先用包内 CRX 和当前用户浏览器策略尝试全自动离线安装。浏览器拒绝该策略时，向导会自动打开扩展页、把包内已解压扩展目录复制到剪贴板并显示三步操作；原安装进程持续等待，检测到加载成功后自动继续，无需重跑。随后用原生 `claude.exe` 把直接执行包内 `node.exe + 固定 cli.js` 的 MCP 注册到 Claude Code user scope；当前用户未被同名高优先级配置覆盖的项目都能使用。试点不配置网址白名单，Playwright MCP 可以操作人通过扩展批准的现有浏览器标签页，并复用其中的登录态。
 
 向导会自动验证运行包、在同盘暂存后发布固定版本、生成清单并先暂存/preflight 再整目录切换配置。注册真实用户配置前，它先用假 Claude CLI 演练首次安装、升级、条目/环境错写和 `remove/add/get` 失败回滚；随后事务化备份、注册并直接核对用户级 MCP 命令、参数及固定环境。固定环境会阻止调用者遗留变量覆盖包内配置，不需要填写。首次安装明确没有旧 MCP 条目时会直接继续，其他删除错误会恢复并停止。它不会创建项目目录，也不会写项目 `.mcp.json`/`CLAUDE.md`。任何校验失败都会停止并恢复用户配置和旧部署配置；不会运行 `npm install`、`pnpm install` 或 `npx`。
 
@@ -198,7 +214,7 @@ def start_here(kit_name: str, runtime_name: str, metadata: dict[str, object]) ->
 
 ## 4. 第一次只读测试
 
-在向导显示完成后，重启 Claude Code，在任意项目输入 `/mcp` 确认 `intranet-browser-agent`，由人完成 SSO/MFA；第一次只读取页面标题，不提交、不上传、不删除。"""
+在向导显示完成后，重启 Claude Code，在任意项目输入 `/mcp` 确认 `intranet-browser-agent`。首次调用浏览器工具时，在 Playwright Extension 页面选择一个已经登录的现有标签页；第一次只读取页面标题，不提交、不上传、不删除。"""
     else:
         verification_section = f"""## 1. 导入后立即校验
 
@@ -262,6 +278,9 @@ def build_transfer_kit(
     runtime_archive: Path,
     output_dir: Path,
     force: bool,
+    extension_crx: Path | None = None,
+    *,
+    extension_approval: dict[str, object] | None = None,
 ) -> tuple[Path, Path]:
     project_root = project_root.resolve()
     runtime_archive = runtime_archive.resolve()
@@ -279,6 +298,28 @@ def build_transfer_kit(
     run_checked((sys.executable, str(verifier), str(runtime_archive)))
     metadata = runtime_metadata(runtime_archive)
     relative_sources = source_files(project_root)
+    target = metadata.get("target")
+    target_system = (
+        str(target.get("system", "")).lower() if isinstance(target, dict) else ""
+    )
+    browser_extension: dict[str, object] | None = None
+    if target_system == "windows":
+        if extension_crx is None:
+            raise TransferKitError(
+                "Windows transfer kits require --extension-crx for offline Chrome setup"
+            )
+        extension_crx = extension_crx.resolve()
+        try:
+            approved = (
+                load_extension_approval()
+                if extension_approval is None
+                else extension_approval
+            )
+            browser_extension = validate_crx(extension_crx, approved)
+        except ExtensionValidationError as exc:
+            raise TransferKitError(f"invalid Playwright Extension CRX: {exc}") from exc
+    elif extension_crx is not None:
+        raise TransferKitError("--extension-crx is only valid for Windows transfer kits")
 
     runtime_id = runtime_name[: -len(RUNTIME_SUFFIX)]
     kit_name = runtime_id.replace(RUNTIME_PREFIX, "intranet-browser-agent-transfer-", 1)
@@ -301,10 +342,24 @@ def build_transfer_kit(
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(project_root / relative, destination, follow_symlinks=False)
 
-        target = metadata.get("target")
-        if isinstance(target, dict) and str(target.get("system", "")).lower() == "windows":
+        if target_system == "windows":
             for launcher in ("INSTALL-WINDOWS-PILOT.cmd", "INSTALL-WINDOWS-PILOT.ps1"):
                 shutil.copy2(project_root / "scripts" / launcher, stage / launcher)
+            if browser_extension is None or extension_crx is None:
+                raise TransferKitError("validated browser extension metadata is missing")
+            browser_extension_root = stage / "browser-extension"
+            browser_extension_root.mkdir()
+            shutil.copy2(
+                extension_crx,
+                browser_extension_root / str(browser_extension["filename"]),
+                follow_symlinks=False,
+            )
+            unpacked_extension_root = browser_extension_root / "unpacked"
+            extract_crx_payload(extension_crx, unpacked_extension_root)
+            validate_unpacked_against_crx(
+                extension_crx,
+                unpacked_extension_root,
+            )
 
         shutil.copy2(runtime_archive, runtime_root / runtime_name)
         shutil.copy2(runtime_sidecar, runtime_root / runtime_sidecar.name)
@@ -321,6 +376,14 @@ def build_transfer_kit(
                 "buildMetadata": metadata,
             },
         }
+        if browser_extension is not None:
+            kit_metadata["browserExtension"] = {
+                **browser_extension,
+                "approval": "toolkit/config/playwright-extension-source.json",
+                "path": f"browser-extension/{browser_extension['filename']}",
+                "unpackedPath": "browser-extension/unpacked",
+                "installation": "offline-user-policy-with-manual-unpacked-fallback",
+            }
         (stage / "KIT-METADATA.json").write_text(
             json.dumps(kit_metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -360,13 +423,22 @@ def build_transfer_kit(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime-archive", required=True, type=Path)
+    parser.add_argument(
+        "--extension-crx",
+        type=Path,
+        help="approved Playwright Extension CRX; required for Windows targets",
+    )
     parser.add_argument("--output-dir", default=Path("dist"), type=Path)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     project_root = Path(__file__).resolve().parents[1]
     try:
         archive, sidecar = build_transfer_kit(
-            project_root, args.runtime_archive, args.output_dir, args.force
+            project_root,
+            args.runtime_archive,
+            args.output_dir,
+            args.force,
+            args.extension_crx,
         )
     except TransferKitError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

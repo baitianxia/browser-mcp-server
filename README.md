@@ -16,7 +16,7 @@ Claude Code ──stdio──> Playwright MCP ──local──> 企业 Chrome
 核心选择：
 
 - 默认 `persistent` 模式：独立 Chrome Profile，人完成 SSO/MFA，Agent 在认证后工作。
-- `extension` 模式：仅用于已经能通过 Chrome Enterprise 管理扩展的终端；默认保留每次连接的人为批准。
+- `extension` 模式：Windows 通用内网 pilot 固定采用此模式来连接用户批准的现有 Tab；生产仅用于已经能通过 Chrome Enterprise 管理扩展的终端。两者都默认保留每次连接的人为批准。
 - `cdp` 模式：只允许 Chrome channel 或 loopback endpoint，作为兼容性回退，不作为隔离边界。
 - MCP 只使用本机 `stdio`；不生成监听 `0.0.0.0` 的服务配置。
 - Playwright 的 origin 过滤只作为可选防误操作护栏；Windows 通用内网试点不生成该白名单，默认允许浏览当前网络可访问的全部网址。生产如需限制范围，仍应使用企业代理、主机防火墙或隔离 VDI 网络。
@@ -60,7 +60,7 @@ python3 tools/browser_agent.py render \
 
 推送到 GitHub 后，`Windows release validation` 会在 `windows-2022` 和 `windows-latest` 上用 Windows PowerShell 5.1 跑完整测试；随后在 `windows-latest` 原生构建 Windows 运行包，安装固定 Claude Code 2.1.84，并从解压后的迁移包执行顶层 `INSTALL-WINDOWS-PILOT.cmd`。只有发布门禁、MCP 握手、隔离 user-scope 注册、完整安装和安装后校验均通过，才上传可下载的 Windows 迁移包 artifact。GitHub 有网构建阶段安装固定 pnpm，不会把 npm、pnpm 或 npx 带入迁移包；内网目标机仍禁止用包管理器修复。
 
-Windows 内网测试不要直接使用 demo。正式放行仍要求发布方先在受控 Windows x64、Windows PowerShell 5.1 上运行 `scripts/verify-windows-release.ps1`。明确标记为“自检候选”的交叉构建包会把同一门禁强制串入顶层 `INSTALL-WINDOWS-PILOT.cmd`：一次双击先执行测试前后双重完整性校验、完整测试、全部 PowerShell 脚本 AST 解析、假 Claude CLI 失败回滚、内层运行时临时解压、包内 `node.exe` 来源/版本校验、真实 MCP stdio `initialize + tools/list` 握手，以及临时 `CLAUDE_CONFIG_DIR` 下的真实 Claude CLI 隔离探针；全部通过后才在同一窗口开始安装。向导不请求 UAC、不询问项目目录，会把固定运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome/Edge，并通过原生 Claude Code `claude.exe` 注册 user-scope MCP。实际 MCP 直接执行包内 `node.exe + 固定 cli.js`，不依赖 `.cmd` shell shim；固定环境映射会覆盖固定版本支持的 Playwright MCP 配置变量、`NODE_OPTIONS` 和 `NODE_PATH`，避免包内配置被调用者环境悄悄改写。安装后该用户的项目均可使用（同名的 local/project 配置按 Claude Code 自身优先级覆盖 user scope）；试点不要求网址白名单、防火墙配置、浏览器选择或审批单号。具体只看 `docs/windows-quickstart.md`。
+Windows 内网测试不要直接使用 demo。正式放行仍要求发布方先在受控 Windows x64、Windows PowerShell 5.1 上运行 `scripts/verify-windows-release.ps1`。明确标记为“自检候选”的交叉构建包会把同一门禁强制串入顶层 `INSTALL-WINDOWS-PILOT.cmd`：一次双击先执行测试前后双重完整性校验、完整测试、全部 PowerShell 脚本 AST 解析、假 Claude CLI 失败回滚、内层运行时临时解压、包内 `node.exe` 来源/版本校验、真实 MCP stdio `initialize + tools/list` 握手，以及临时 `CLAUDE_CONFIG_DIR` 下的真实 Claude CLI 隔离探针；全部通过后才在同一窗口开始安装。向导不请求 UAC、不询问项目目录，会把固定运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome/Edge，并通过原生 Claude Code `claude.exe` 注册 user-scope MCP。迁移包已携带固定官方 CRX 和逐文件一致的已解压扩展：浏览器接受本地策略时自动安装；拒绝时向导自动打开扩展页、复制唯一目录并等待用户加载，成功后原进程续跑，无需第二次启动。实际 MCP 直接执行包内 `node.exe + 固定 cli.js`，不依赖 `.cmd` shell shim；固定环境映射会覆盖固定版本支持的 Playwright MCP 配置变量、`NODE_OPTIONS` 和 `NODE_PATH`，避免包内配置被调用者环境悄悄改写。安装后该用户的项目均可使用（同名的 local/project 配置按 Claude Code 自身优先级覆盖 user scope）；试点不要求网址白名单、防火墙配置、浏览器选择或审批单号。具体只看 `docs/windows-quickstart.md`。
 
 Windows 生产部署则从 Windows 生产模板开始：
 
@@ -102,10 +102,11 @@ python3 scripts/verify-bundle.py dist/browser-agent-runtime-*.tar.gz
 ```bash
 python3 scripts/build-transfer-kit.py \
   --runtime-archive /absolute/path/to/browser-agent-runtime.tar.gz \
+  --extension-crx /absolute/path/to/playwright-extension-0.3.0.crx \
   --output-dir dist
 ```
 
-也可执行 `make transfer-kit RUNTIME_ARCHIVE=/absolute/path/to/runtime.tar.gz`。最终迁移 `dist/intranet-browser-agent-transfer-*.tar.gz` 及其相邻 `.sha256`；包内 `START-HERE.md` 是内网操作入口。迁移包不会收录真实部署清单、`.git`、构建缓存或已有 `build/`、`dist/`。
+也可执行 `make transfer-kit RUNTIME_ARCHIVE=/absolute/path/to/runtime.tar.gz EXTENSION_CRX=/absolute/path/to/playwright-extension-0.3.0.crx`。最终迁移 `dist/intranet-browser-agent-transfer-*.tar.gz` 及其相邻 `.sha256`；包内 `START-HERE.md` 是内网操作入口。迁移包不会收录真实部署清单、`.git`、构建缓存或已有 `build/`、`dist/`。
 
 Windows V1 仅支持 x64 和安全的本机盘符路径，不支持 Windows ARM64、UNC 或 `%LOCALAPPDATA%` 以下的 link/junction。Windows 一键包固定 `bundledNode=true`，向导在完整性、批准来源和目标机版本校验后直接使用包内 Node.js，不探测或修改系统 Node。
 

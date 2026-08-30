@@ -31,6 +31,10 @@ FAKE_SERVER = textwrap.dedent(
     if os.environ.get("NODE_OPTIONS") != "":
         print("inherited NODE_OPTIONS was not cleared", file=sys.stderr)
         raise SystemExit(11)
+    expected_browser = os.environ.get("EXPECT_BROWSER")
+    if expected_browser and f"--browser={expected_browser}" not in sys.argv[1:]:
+        print("expected browser channel was not forwarded", file=sys.stderr)
+        raise SystemExit(12)
 
     for line in sys.stdin:
         message = json.loads(line)
@@ -93,6 +97,19 @@ class PlaywrightMcpSmokeTests(unittest.TestCase):
             ):
                 version, tool_count = smoke_module.smoke(
                     Path(sys.executable), server, config
+                )
+            self.assertEqual("fixture", version)
+            self.assertEqual(2, tool_count)
+
+    def test_extension_browser_channel_is_forwarded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            server, config = self.fixture(Path(temporary))
+            with mock.patch.dict("os.environ", {"EXPECT_BROWSER": "chrome"}):
+                version, tool_count = smoke_module.smoke(
+                    Path(sys.executable),
+                    server,
+                    config,
+                    browser_channel="chrome",
                 )
             self.assertEqual("fixture", version)
             self.assertEqual(2, tool_count)

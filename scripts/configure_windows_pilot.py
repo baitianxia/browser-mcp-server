@@ -72,7 +72,6 @@ def build_manifest(
     runtime_root: str,
     config_root: str,
     output_directory: str,
-    profile_directory: str,
     profile_owner: str,
     browser_channel: str,
     node_executable: str,
@@ -95,7 +94,6 @@ def build_manifest(
     manifest["browser"].update(
         {
             "channel": browser_channel,
-            "userDataDir": profile_directory,
             "profileOwner": profile_owner,
         }
     )
@@ -117,7 +115,6 @@ def generate(args: argparse.Namespace) -> None:
         runtime_root=args.runtime_root,
         config_root=args.config_root,
         output_directory=args.output_directory,
-        profile_directory=args.profile_directory,
         profile_owner=args.profile_owner,
         browser_channel=args.browser_channel,
         node_executable=args.node_executable,
@@ -141,7 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--runtime-root", required=True)
     generate_parser.add_argument("--config-root", required=True)
     generate_parser.add_argument("--output-directory", required=True)
-    generate_parser.add_argument("--profile-directory", required=True)
     generate_parser.add_argument("--profile-owner", required=True)
     generate_parser.add_argument("--node-executable", required=True)
     generate_parser.add_argument(

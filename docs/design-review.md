@@ -28,7 +28,7 @@ Playwright MCP 官方明确说明 origin allow/block 规则不构成安全边界
 
 ### 3. Extension 模式不是天然离线
 
-官方安装入口是 Chrome Web Store。内网生产必须明确选择：受管浏览器通过 Web Store 强制安装，或经过企业签名和安全评审的自托管 CRX。扩展版本还要与 MCP 版本做兼容验证。没有扩展分发能力时，默认采用专用持久化 Profile，而不是临时放宽网络去访问商店。
+内网生产必须明确选择：受管浏览器通过 Web Store 强制安装，或经过企业签名和安全评审的自托管 CRX。扩展版本还要与 MCP 版本做兼容验证。Windows 通用 pilot 不临时放宽网络访问商店，而是在有网构建区固定并验证官方 CRX，迁移包同时携带逐文件一致的已解压 payload；目标机先尝试当前用户本地策略，浏览器拒绝时由同一个向导打开扩展页并等待用户加载本地目录。这个回退解决离线试点安装，不代替生产扩展治理。
 
 ### 4. 不能把扩展令牌提交到项目配置
 
@@ -51,6 +51,7 @@ Playwright MCP 官方明确说明 origin allow/block 规则不构成安全边界
 | 场景 | 模式 | 原因 |
 |---|---|---|
 | 内网 VDI/开发机生产基线 | `persistent` | 无 Chrome Store 前置；独立身份边界；可由人完成企业认证 |
+| Windows 通用内网 pilot | `extension` | 离线包携带固定官方扩展；逐次批准现有 Tab；可复用目标机当前登录态 |
 | 已有 Chrome Enterprise 扩展治理 | `extension` | 可选择允许的 Tab，并复用企业浏览器插件和现有会话 |
 | 兼容性排障 | `cdp` | 无扩展依赖，但权限面更广，只允许本机连接 |
 | 页面内部诊断 | 可选 DevTools | 获取 Network/Console/Runtime；默认不安装/不启用 |

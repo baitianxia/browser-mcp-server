@@ -9,11 +9,11 @@
 1. 使用隔离构建环境和固定的 Node.js 20.19+、pnpm 11.19.0、Python 3.10+。
 2. 检查 `runtime/package.json` 与 `runtime/pnpm-lock.yaml` 的变更评审记录。
 3. Windows 生产制品必须在 Windows x64 构建机运行 `powershell.exe -NoProfile -File .\scripts\build-offline-bundle.ps1 -Profile core -NodeDistribution <批准目录> -OutputDir .\dist`。执行策略必须由企业策略批准，不使用临时 bypass。macOS/Linux 仅为内网试点交叉组装 Windows 候选包时，运行 `scripts/build-offline-bundle.sh --profile core --target windows-x64 --node-distribution <批准目录>`。
-4. 先用 `scripts/verify-bundle.py` 校验运行包，再用 `scripts/build-transfer-kit.py --runtime-archive <runtime.tar.gz>` 组装完整迁移包。迁移包包含运行包、校验器、试点/生产模板、Schema、部署工具、测试和当前文档。
+4. 从 `config/playwright-extension-source.json` 记录的 URL 下载精确官方 CRX，用 `validate_playwright_extension.py` 校验批准元数据；再用 `scripts/verify-bundle.py` 校验运行包，并执行 `scripts/build-transfer-kit.py --runtime-archive <runtime.tar.gz> --extension-crx <approved.crx>` 组装完整迁移包。构建器安全提取 CRX payload 并逐文件反向核对，迁移包同时包含 CRX、可供离线人工加载的已解压副本、运行包、校验器、模板、Schema、部署工具、测试和当前文档。
 5. 将迁移包、相邻 `.sha256` 和包内 CycloneDX 清单送入企业 SCA/恶意代码扫描和签名流程。
 6. 只有扫描、签名和变更审批都通过的制品才能进入内网制品库。
 
-GitHub 仓库的 `.github/workflows/windows-release.yml` 是提交级 Windows 兼容性回归：先在 `windows-2022` 与 `windows-latest` 的 Windows PowerShell 5.1 上跑完整测试和脚本解析，再在 `windows-latest` 原生构建 Windows x64 包，安装固定 Claude Code 2.1.84，并对解压包执行顶层一次点击 launcher、发布门禁、隔离 user-scope 注册、完整安装和安装后完整性核对。成功 run 上传 Windows 原生迁移包及日志证据，失败 run 只保留可获得的诊断证据。该流程使用 GitHub 的临时有网 VM，不能替代企业 SCA、签名、终端策略、SSO/MFA、业务页面或生产审批验收。
+GitHub 仓库的 `.github/workflows/windows-release.yml` 是提交级 Windows 兼容性回归：先在 `windows-2022` 与 `windows-latest` 的 Windows PowerShell 5.1 上跑完整测试和脚本解析，再在 `windows-latest` 原生构建 Windows x64 包，安装固定 Claude Code 2.1.84，并对解压包执行顶层一次点击 launcher、发布门禁、隔离 user-scope 注册、完整安装和安装后完整性核对。运行 launcher 时为 Chrome 添加临时出站阻断；非受管 runner 进入人工扩展回退后，CI 专用脚本通过 Chrome 官方 remote-debugging-pipe `Extensions.loadUnpacked` 接口实际加载屏幕所指的同一本地目录，核对启用状态、固定 ID/版本以及关闭 Chrome 后的持久 Profile 记录，让等待中的原安装器自动续跑。这个探针只用于自动替代 CI 中不存在的人手，不进入目标迁移包，也不在内网安装器打开调试端口。成功 run 上传 Windows 原生迁移包及日志证据，失败 run 只保留可获得的诊断证据。该流程使用 GitHub 的临时有网 VM，不能替代企业 SCA、签名、终端策略、SSO/MFA、业务页面或生产审批验收。
 
 默认构建跳过 npm 安装脚本和 Playwright 浏览器下载。Windows 一键包强制通过 `--node-distribution`/`-NodeDistribution` 携带组织批准的最小目标运行时；该目录必须由 `prepare_windows_node_distribution.py` 从官方 Windows x64 ZIP 与同版本 `SHASUMS256.txt` 生成，并通过 `validate_node_distribution.py --approval-file config/windows-node-sources.json` 的四文件白名单、固定批准哈希、版本和 AMD64 PE 校验。禁止把构建主机 Node 或官方 ZIP 中的 npm、npx、corepack 一并带入。目标机不探测、不依赖系统 Node。
 
@@ -23,13 +23,13 @@ GitHub Actions 仅在上述有网构建 VM 中使用 npm 安装精确的 pnpm 11
 
 ## 2. 内网导入
 
-Windows 试点优先使用迁移包顶层 `INSTALL-WINDOWS-PILOT.cmd`。一次双击先自动运行 Windows PowerShell 5.1 门禁；门禁只接受并校验自身所在的同一解压目录，临时解压内层运行时，实际执行包内 `node.exe --version` 和无浏览器 MCP stdio `initialize + tools/list` 握手，并使用临时 `CLAUDE_CONFIG_DIR` 运行真实 Claude CLI 隔离探针。只有测试前后双重制品校验、完整测试、全部 PowerShell 语法解析、回滚自检、目标 Node/MCP 握手和真实 Claude 探针全部通过，才在同一个窗口开始安装。安装阶段在当前用户权限下检查原生 `claude.exe`、平台和 Python，验证迁移目录与运行包；包内 Node 会按固定批准哈希、来源、文件哈希、AMD64 PE 和实际版本再次验证，系统 Node 不参与。随后按 Chrome 优先、Edge 回退自动识别浏览器，将运行时先解压到 `%LOCALAPPDATA%\IntranetBrowserAgent\staging\r-*` 的短路径同盘暂存目录，校验后发布到版本目录。配置也先在该根目录内暂存/preflight，再整目录切换。Claude Code 注册由 Python 事务模块执行：先备份用户配置，按固定 user-scope `remove → add → get` 流程注册 `intranet-browser-agent`，并直接核对真实 user-scope 条目指向包内 `node.exe + cli.js` 且环境与 `config/windows-mcp-environment.json` 完全一致；任一步失败就恢复 Claude 用户配置和旧部署配置。固定环境会清除遗留 Playwright MCP 配置覆盖及 Node 注入变量，不需要用户填写。该 MCP 对当前用户所有未被同名更高优先级配置覆盖的项目生效；向导不请求 UAC、不接收项目路径、不写项目文件。
+Windows 试点优先使用迁移包顶层 `INSTALL-WINDOWS-PILOT.cmd`。一次双击先自动运行 Windows PowerShell 5.1 门禁；门禁只接受并校验自身所在的同一解压目录，临时解压内层运行时，实际执行包内 `node.exe --version` 和无浏览器 MCP stdio `initialize + tools/list` 握手，并使用临时 `CLAUDE_CONFIG_DIR` 运行真实 Claude CLI 隔离探针。只有测试前后双重制品校验、完整测试、全部 PowerShell 语法解析、回滚自检、目标 Node/MCP 握手和真实 Claude 探针全部通过，才在同一个窗口开始安装。安装阶段在当前用户权限下检查原生 `claude.exe`、平台和 Python，验证迁移目录、运行包、官方 CRX 及其已解压副本；包内 Node 会按固定批准哈希、来源、文件哈希、AMD64 PE 和实际版本再次验证，系统 Node 不参与。随后按 Chrome 优先、Edge 回退自动识别浏览器，将运行时先解压到 `%LOCALAPPDATA%\IntranetBrowserAgent\staging\r-*` 的短路径同盘暂存目录，校验后发布到版本目录。缺少扩展时先尝试本地 CRX 用户策略；30 秒内浏览器未确认安装，就恢复临时策略、打开扩展管理页、把 `%LOCALAPPDATA%` 下的已解压扩展目录复制到剪贴板并显示三步指引。用户加载后原进程自动检测并继续；默认持续等待，不要求重新运行。配置也先在该根目录内暂存/preflight，再整目录切换。Claude Code 注册由 Python 事务模块执行：先备份用户配置，按固定 user-scope `remove → add → get` 流程注册 `intranet-browser-agent`，并直接核对真实 user-scope 条目指向包内 `node.exe + cli.js` 且环境与 `config/windows-mcp-environment.json` 完全一致；任一步失败就恢复 Claude 用户配置和旧部署配置。固定环境会清除遗留 Playwright MCP 配置覆盖及 Node 注入变量，不需要用户填写。该 MCP 对当前用户所有未被同名更高优先级配置覆盖的项目生效；向导不请求 UAC、不接收项目路径、不写项目文件。
 
 试点不生成 origin 白名单，允许浏览目标机网络当前可达的全部网址；向导不询问或修改防火墙，也不收集生产治理字段。它不修改系统 Node、不运行 npm/pnpm/npx、不绕过执行策略、不下载依赖、不自动完成 SSO/MFA。
 
 自动门禁输出会写入 `%TEMP%\IntranetBrowserAgent\WINDOWS-RELEASE-GATE-*.log`；安装阶段的 Python、完整性验证、Claude Code CLI 和 preflight 输出会写入 `%TEMP%\IntranetBrowserAgent\INSTALL-WINDOWS-PILOT-*.log`。失败时外层 launcher 会显示对应日志路径，首次运行即可保留完整证据，不要求为采集日志重跑。故障报告必须包含 `FAILED`、紧邻的 `PYTHON`/`NATIVE` 行和 stack 行，不能只报告 exit code。
 
-首次安装没有旧的 `intranet-browser-agent` 条目时，只有 Claude 明确返回“user-scope 条目不存在”，注册模块才会继续 `mcp add`；权限、配置解析等其他 `remove` 错误会立即恢复并停止。成功命令即使写入 stderr，也只按退出码判断。注册模块按 UTF-8 容错读取 Claude 输出，并在 Windows 默认代码页无法表示中文状态文本时转义该文本而不中断注册。安装器在操作真实用户配置前，会先在临时目录使用假 Claude CLI 自动演练首次安装、升级、条目/环境错写和 `remove/add/get` 失败回滚；自动测试还会在严格 `cp1252` 输出和 Claude UTF-8 stderr 组合下运行真实注册子进程。写入前检查与 preflight 会自动拒绝 `%LOCALAPPDATA%` 外路径及其根以下的 link/junction，确认清单中的直接 Node 命令、固定 CLI、固定环境和专用非默认 Profile 与部署配置匹配。若用户已设置 `CLAUDE_CONFIG_DIR`，向导自动沿用，但只接受本机盘符绝对路径；相对路径、`~` 或 UNC 会在修改配置前失败关闭。
+首次安装没有旧的 `intranet-browser-agent` 条目时，只有 Claude 明确返回“user-scope 条目不存在”，注册模块才会继续 `mcp add`；权限、配置解析等其他 `remove` 错误会立即恢复并停止。成功命令即使写入 stderr，也只按退出码判断。注册模块按 UTF-8 容错读取 Claude 输出，并在 Windows 默认代码页无法表示中文状态文本时转义该文本而不中断注册。安装器在操作真实用户配置前，会先在临时目录使用假 Claude CLI 自动演练首次安装、升级、条目/环境错写和 `remove/add/get` 失败回滚；自动测试还会在严格 `cp1252` 输出和 Claude UTF-8 stderr 组合下运行真实注册子进程。写入前检查与 preflight 会自动拒绝 `%LOCALAPPDATA%` 外路径及其根以下的 link/junction，确认清单中的直接 Node 命令、固定 CLI、固定环境、extension 模式、浏览器 channel 和人工连接批准与部署配置匹配。若用户已设置 `CLAUDE_CONFIG_DIR`，向导自动沿用，但只接受本机盘符绝对路径；相对路径、`~` 或 UNC 会在修改配置前失败关闭。
 
 正式放行前，发布人员必须在受控 Windows x64、Windows PowerShell 5.1 Desktop 上执行：
 
@@ -48,7 +48,7 @@ powershell.exe -NoProfile -File .\toolkit\scripts\verify-windows-release.ps1 `
 2. 在解压前用 `Get-FileHash .\<transfer.tar.gz> -Algorithm SHA256` 与相邻 `.sha256` 比对。
 3. 用 Windows 自带 `tar.exe -xzf .\<transfer.tar.gz>` 解压迁移包，进入其顶层目录，先执行 `py -3 .\toolkit\scripts\verify-bundle.py .`，再执行 `py -3 .\toolkit\scripts\verify-bundle.py .\runtime\<runtime.tar.gz>`。Windows 运行包的 `SYMLINKS.json` 必须为空。
 4. 读取 `KIT-METADATA.json` 中嵌入的运行包构建元数据，确认目标为 `windows/x64` 且 `bundledNode=true`。验证解压目录的 `node` 子目录只含 `node.exe`、`LICENSE`、`VERSION`、`SOURCE.json`，并执行 `validate_node_distribution.py --approval-file .\toolkit\config\windows-node-sources.json`。若 `crossBuilt=true`，它只能进入试点验证，不能进入生产制品库。
-5. production 将运行包解压到新的版本目录，例如 `C:\ProgramData\IntranetBrowserAgent\releases\browser-agent-runtime-1.0.8-core-windows-x64`；user-scope pilot 则使用 `%LOCALAPPDATA%\IntranetBrowserAgent\releases\...`。再次对解压后的运行目录执行同一校验器，再与其 `BUILD-METADATA.json` 对照。
+5. production 将运行包解压到新的版本目录，例如 `C:\ProgramData\IntranetBrowserAgent\releases\browser-agent-runtime-1.0.9-core-windows-x64`；user-scope pilot 则使用 `%LOCALAPPDATA%\IntranetBrowserAgent\releases\...`。再次对解压后的运行目录执行同一校验器，再与其 `BUILD-METADATA.json` 对照。
 6. 不直接覆盖当前版本。完成预检后，再由配置管理把 `C:\ProgramData\IntranetBrowserAgent\current` junction 切到新版本目录。
 
 迁移包顶层 `START-HERE.md` 和 `toolkit/docs/windows-quickstart.md` 给出试点最短操作路径；若与本文冲突，以本文为准。
@@ -75,7 +75,7 @@ powershell.exe -NoProfile -File .\toolkit\scripts\verify-windows-release.ps1 `
 
 ### extension
 
-1. Pilot 可人工安装；production 必须通过 managed Web Store 或自托管 CRX 策略。
+1. Windows pilot 只使用迁移包内经固定哈希与逐文件校验的官方 CRX/已解压副本：优先自动策略安装，失败时在同一向导中人工“加载已解压的扩展程序”；production 必须通过 managed Web Store 或经组织批准的自托管 CRX 策略。
 2. 默认保留每次连接批准和 Tab 选择。
 3. 不把 `PLAYWRIGHT_MCP_EXTENSION_TOKEN` 写入仓库。无人值守例外需单独审批和秘密注入。
 

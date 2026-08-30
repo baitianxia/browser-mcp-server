@@ -14,4 +14,4 @@ render-demo:
 
 transfer-kit:
 	@test -n "$(RUNTIME_ARCHIVE)" || { echo "Set RUNTIME_ARCHIVE to a verified runtime .tar.gz" >&2; exit 2; }
-	$(PYTHON) scripts/build-transfer-kit.py --runtime-archive "$(RUNTIME_ARCHIVE)" --output-dir dist
+	$(PYTHON) scripts/build-transfer-kit.py --runtime-archive "$(RUNTIME_ARCHIVE)" $(if $(EXTENSION_CRX),--extension-crx "$(EXTENSION_CRX)",) --output-dir dist

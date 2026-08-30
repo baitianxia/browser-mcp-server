@@ -91,7 +91,7 @@ def generate(node_modules: Path) -> dict[str, Any]:
             "component": {
                 "type": "application",
                 "name": "intranet-browser-agent-runtime",
-                "version": "1.0.8",
+                "version": "1.0.9",
             }
         },
         "components": components,

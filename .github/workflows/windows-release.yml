@@ -171,6 +171,25 @@ jobs:
           "WINDOWS_NODE_DISTRIBUTION=$DistributionRoot" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Download and verify the approved Playwright Extension CRX
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Approval = Get-Content -LiteralPath `
+              .\config\playwright-extension-source.json -Raw | ConvertFrom-Json
+          $ExtensionCrx = Join-Path $env:RUNNER_TEMP $Approval.filename
+          Invoke-WebRequest -UseBasicParsing `
+              -Uri $Approval.downloadUrl `
+              -OutFile $ExtensionCrx
+          python .\scripts\validate_playwright_extension.py `
+              $ExtensionCrx `
+              --approval-file .\config\playwright-extension-source.json
+          if ($LASTEXITCODE -ne 0) {
+              throw "Approved Playwright Extension validation failed."
+          }
+          "PLAYWRIGHT_EXTENSION_CRX=$ExtensionCrx" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Build the runtime natively with Windows PowerShell 5.1
         shell: powershell
         run: |
@@ -189,7 +208,7 @@ jobs:
               throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
           }
           $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-agent-runtime-1.0.8-core-windows-x64.tar.gz")
+              -Filter "browser-agent-runtime-1.0.9-core-windows-x64.tar.gz")
           if ($RuntimeArchives.Count -ne 1) {
               throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
           }
@@ -202,12 +221,13 @@ jobs:
           $ErrorActionPreference = "Stop"
           python .\scripts\build-transfer-kit.py `
               --runtime-archive $env:RUNTIME_ARCHIVE `
+              --extension-crx $env:PLAYWRIGHT_EXTENSION_CRX `
               --output-dir .\dist
           if ($LASTEXITCODE -ne 0) {
               throw "Transfer-kit build failed."
           }
           $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "intranet-browser-agent-transfer-1.0.8-core-windows-x64.tar.gz")
+              -Filter "intranet-browser-agent-transfer-1.0.9-core-windows-x64.tar.gz")
           if ($TransferArchives.Count -ne 1) {
               throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
           }
@@ -285,22 +305,113 @@ jobs:
           if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
               throw "Transfer launcher is missing: $Launcher"
           }
-          $PreviousPreference = $ErrorActionPreference
-          $Output = @()
-          $ExitCode = 1
+          $PilotLocalAppData = Join-Path $env:RUNNER_TEMP "pilot-local-app-data"
+          New-Item -ItemType Directory -Path $PilotLocalAppData -Force | Out-Null
+          $env:LOCALAPPDATA = $PilotLocalAppData
+          "LOCALAPPDATA=$PilotLocalAppData" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $ChromeCandidates = @(
+              (Join-Path $env:ProgramFiles "Google\Chrome\Application\chrome.exe"),
+              (Join-Path ${env:ProgramFiles(x86)} "Google\Chrome\Application\chrome.exe"),
+              (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
+          )
+          $ChromeExe = $ChromeCandidates |
+              Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } |
+              Select-Object -First 1
+          if (-not $ChromeExe) {
+              throw "Chrome is required for the offline extension installation test."
+          }
+          $CdpProbe = Join-Path $env:GITHUB_WORKSPACE `
+              ".github\scripts\load-unpacked-extension-cdp.js"
+          & node.exe --check $CdpProbe
+          if ($LASTEXITCODE -ne 0) {
+              throw "The Chrome extension CDP probe has invalid JavaScript syntax."
+          }
+          $Wrapper = Join-Path $env:RUNNER_TEMP "run-one-click-pilot.cmd"
+          $WrapperBody = @"
+          @echo off
+          call "$Launcher" -ManualExtensionWaitSeconds 180 < nul
+          exit /b %errorlevel%
+          "@
+          [IO.File]::WriteAllText(
+              $Wrapper,
+              $WrapperBody,
+              (New-Object System.Text.ASCIIEncoding)
+          )
+          $LauncherStdout = Join-Path $env:RUNNER_TEMP "one-click-launcher.stdout.log"
+          $LauncherStderr = Join-Path $env:RUNNER_TEMP "one-click-launcher.stderr.log"
+          $FirewallRule = "IntranetBrowserAgent-CI-$env:GITHUB_RUN_ID"
+          $LauncherProcess = $null
+          $LauncherFinished = $false
           try {
-              $ErrorActionPreference = "Continue"
-              $Output = " " | & $Launcher 2>&1
-              $ExitCode = $LASTEXITCODE
-          } finally {
-              $ErrorActionPreference = $PreviousPreference
-          }
-          foreach ($Line in @($Output)) {
-              if ($null -ne $Line) {
-                  Write-Host $Line
+              New-NetFirewallRule -DisplayName $FirewallRule `
+                  -Direction Outbound -Program $ChromeExe -Action Block | Out-Null
+              $LauncherProcess = Start-Process -FilePath $env:ComSpec `
+                  -ArgumentList @("/d", "/c", $Wrapper) `
+                  -RedirectStandardOutput $LauncherStdout `
+                  -RedirectStandardError $LauncherStderr `
+                  -PassThru
+              $ManualMarker = "MANUAL EXTENSION LOAD REQUIRED:"
+              $MarkerDeadline = [DateTime]::UtcNow.AddMinutes(5)
+              $ManualFallbackReached = $false
+              while (-not $LauncherProcess.HasExited -and
+                  [DateTime]::UtcNow -lt $MarkerDeadline) {
+                  $InstallLogs = @(Get-ChildItem -LiteralPath `
+                      (Join-Path $env:TEMP "IntranetBrowserAgent") `
+                      -Filter "INSTALL-WINDOWS-PILOT-*.log" `
+                      -ErrorAction SilentlyContinue)
+                  if ($InstallLogs | Where-Object {
+                      Select-String -LiteralPath $_.FullName `
+                          -SimpleMatch $ManualMarker -Quiet
+                  }) {
+                      $ManualFallbackReached = $true
+                      break
+                  }
+                  Start-Sleep -Seconds 1
               }
+              if (-not $ManualFallbackReached -and -not $LauncherProcess.HasExited) {
+                  throw "The installer reached neither extension fallback nor completion."
+              }
+              if ($ManualFallbackReached) {
+                  $Approval = Get-Content -LiteralPath (Join-Path `
+                      $env:TRANSFER_ROOT `
+                      "toolkit\config\playwright-extension-source.json") `
+                      -Raw | ConvertFrom-Json
+                  $InstalledUnpacked = Join-Path $env:LOCALAPPDATA `
+                      "IntranetBrowserAgent\browser-extension\$($Approval.version)\unpacked"
+                  $ChromeUserData = Join-Path $env:LOCALAPPDATA `
+                      "Google\Chrome\User Data"
+                  & node.exe $CdpProbe `
+                      --chrome $ChromeExe `
+                      --profile $ChromeUserData `
+                      --extension $InstalledUnpacked `
+                      --expected-id $Approval.extensionId `
+                      --expected-version $Approval.version
+                  if ($LASTEXITCODE -ne 0) {
+                      throw "Chrome rejected the packaged unpacked extension CDP probe."
+                  }
+              }
+              if (-not $LauncherProcess.WaitForExit(300000)) {
+                  Stop-Process -Id $LauncherProcess.Id -Force -ErrorAction SilentlyContinue
+                  throw "One-click Windows launcher did not finish within five minutes."
+              }
+              $LauncherFinished = $true
+          } finally {
+              if ($LauncherProcess -and -not $LauncherFinished -and
+                  -not $LauncherProcess.HasExited) {
+                  Stop-Process -Id $LauncherProcess.Id -Force -ErrorAction SilentlyContinue
+              }
+              Remove-NetFirewallRule -DisplayName $FirewallRule `
+                  -ErrorAction SilentlyContinue
           }
-          if ($ExitCode -ne 0) {
+          if (Test-Path -LiteralPath $LauncherStdout) {
+              Get-Content -LiteralPath $LauncherStdout | Write-Host
+          }
+          if (Test-Path -LiteralPath $LauncherStderr) {
+              Get-Content -LiteralPath $LauncherStderr | Write-Host
+          }
+          if (-not $LauncherProcess -or $LauncherProcess.ExitCode -ne 0) {
+              $ExitCode = if ($LauncherProcess) { $LauncherProcess.ExitCode } else { -1 }
               throw "One-click Windows launcher failed with exit code $ExitCode"
           }
 
@@ -337,12 +448,70 @@ jobs:
                   throw "Expected installed-state evidence is missing: $Required"
               }
           }
+          $SummaryText = Get-Content -LiteralPath $Summary -Raw
           $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
           if ($Manifest.mcpScope -ne "user" -or @($Manifest.workspaceRoots).Count -ne 0) {
               throw "Installed manifest is not project-independent user scope."
           }
           if ($null -ne $Manifest.network) {
               throw "Windows pilot unexpectedly contains an origin allowlist."
+          }
+          if ($Manifest.mode -ne "extension" -or
+              $null -ne $Manifest.browser.userDataDir -or
+              $Manifest.browser.manualConnectionApproval -ne $true) {
+              throw "Windows pilot is not bound to approved existing-tab extension mode."
+          }
+          $ExtensionId = "mmlmfjhmonkocbjadbfplnigmagldckm"
+          $ExtensionApproval = Get-Content -LiteralPath (Join-Path `
+              $env:TRANSFER_ROOT "toolkit\config\playwright-extension-source.json") `
+              -Raw | ConvertFrom-Json
+          $ExtensionVersion = [string]$ExtensionApproval.version
+          $ApprovedUnpacked = Join-Path $env:LOCALAPPDATA `
+              "IntranetBrowserAgent\browser-extension\$ExtensionVersion\unpacked"
+          python (Join-Path $env:TRANSFER_ROOT `
+              "toolkit\scripts\check_playwright_extension.py") check `
+              --local-app-data $env:LOCALAPPDATA `
+              --browser-channel chrome `
+              --expected-version $ExtensionVersion `
+              --approved-unpacked-path $ApprovedUnpacked
+          if ($LASTEXITCODE -ne 0) {
+              throw "The packaged extension was not installed into Chrome."
+          }
+          $PlaywrightConfig = Join-Path (Split-Path -Parent $ManifestPath) `
+              "playwright.config.json"
+          $Rendered = Get-Content -LiteralPath $PlaywrightConfig -Raw | ConvertFrom-Json
+          if ($Rendered.extension -ne $true -or $null -ne $Rendered.browser) {
+              throw "Rendered Playwright config does not use extension mode."
+          }
+          $ClaudePayload = Get-Content -LiteralPath $UserConfig -Raw | ConvertFrom-Json
+          $RegisteredArgs = @(
+              $ClaudePayload.mcpServers.'intranet-browser-agent'.args
+          )
+          if ($RegisteredArgs -notcontains "--browser=chrome") {
+              throw "Registered MCP does not bind the selected Chrome channel."
+          }
+          $PolicyPath = "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
+          $PolicyValues = @()
+          if (Test-Path -LiteralPath $PolicyPath) {
+              $PolicyKey = Get-Item -LiteralPath $PolicyPath
+              $PolicyValues = @($PolicyKey.GetValueNames() | ForEach-Object {
+                  [string]$PolicyKey.GetValue($_, "")
+              })
+          }
+          if ($SummaryText -match "Extension install method: offline-user-policy") {
+              if (-not ($PolicyValues | Where-Object {
+                  $_ -match ("^" + $ExtensionId + ";file:///")
+              })) {
+                  throw "Offline local-file extension policy evidence is missing."
+              }
+          } elseif ($SummaryText -match "Extension install method: manual-unpacked") {
+              if ($PolicyValues | Where-Object {
+                  $_ -match ("^" + $ExtensionId + ";")
+              }) {
+                  throw "Manual fallback left the temporary extension policy behind."
+              }
+          } elseif ($SummaryText -notmatch "Extension install method: existing") {
+              throw "The installer did not record a valid extension installation method."
           }
           python (Join-Path $env:TRANSFER_ROOT "toolkit\scripts\verify-bundle.py") `
               $Manifest.installRoot
@@ -374,7 +543,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: intranet-browser-agent-transfer-1.0.8-windows-x64-${{ github.run_id }}
+          name: intranet-browser-agent-transfer-1.0.9-windows-x64-${{ github.run_id }}
           path: |
             ${{ env.TRANSFER_ARCHIVE }}
             ${{ env.TRANSFER_ARCHIVE }}.sha256

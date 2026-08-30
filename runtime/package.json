@@ -1,6 +1,6 @@
 {
   "name": "intranet-browser-agent-runtime",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "private": true,
   "description": "Pinned offline runtime for the intranet Browser Agent baseline",
   "engines": {

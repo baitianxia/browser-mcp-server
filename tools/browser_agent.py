@@ -18,7 +18,7 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 
-TOOL_VERSION = "1.0.8"
+TOOL_VERSION = "1.0.9"
 PLAYWRIGHT_MCP_VERSION = "0.0.79"
 CHROME_DEVTOOLS_MCP_VERSION = "1.8.0"
 MIN_NODE_VERSION = (20, 19, 0)
@@ -704,6 +704,7 @@ def _render_mcp(manifest: dict[str, Any]) -> dict[str, Any]:
         "type": "stdio",
         "command": playwright_command,
         "args": playwright_arguments
+        + ([f"--browser={manifest['browser']['channel']}"] if manifest["mode"] == "extension" else [])
         + [
             "--config",
             _join_target_path(
@@ -1298,9 +1299,12 @@ def preflight(
     if manifest["mode"] == "extension":
         checks.append(
             {
-                "name": "extension",
-                "status": "manual",
-                "detail": "verify managed installation, version compatibility, and connection approval in Chrome",
+                "name": "extension-config",
+                "status": "pass",
+                "detail": (
+                    f"existing {manifest['browser']['channel']} tabs with per-connection approval; "
+                    "target installer verifies the approved extension separately"
+                ),
             }
         )
     if manifest["environment"] == "production":
@@ -1318,6 +1322,14 @@ def preflight(
                 "name": "dedicated-profile",
                 "status": "pass",
                 "detail": f"dedicated non-default browser Profile configured: {profile_path}",
+            }
+        )
+    elif manifest["mode"] == "extension":
+        checks.append(
+            {
+                "name": "pilot-browser-boundary",
+                "status": "pass",
+                "detail": "tab access is granted through the Playwright Extension connection dialog",
             }
         )
     else:
