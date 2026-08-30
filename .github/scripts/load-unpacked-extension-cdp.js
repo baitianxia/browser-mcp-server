@@ -292,9 +292,9 @@ async function main() {
     if (!ready) {
       throw new Error('Chrome extensions page did not expose an enabled "Load unpacked" button');
     }
-    // The selector invokes the exact visible accessibility button on a
-    // dedicated STA runspace while its main runspace controls Chrome's modal
-    // native picker. This exercises the same user-visible persistent path.
+    // The selector proves that Chrome is the actual foreground/root hit-test
+    // window before generating desktop mouse input, then controls the native
+    // picker. This exercises the same user-visible persistent path.
     selectExtensionFolder();
     let lastExtensions = [];
     for (let attempt = 0; attempt < 300; attempt += 1) {

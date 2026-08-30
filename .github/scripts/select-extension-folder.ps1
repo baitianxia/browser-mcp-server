@@ -30,7 +30,42 @@ public static class IntranetDesktopInput
     public static extern bool SetForegroundWindow(IntPtr window);
 
     [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(
+        IntPtr window,
+        out uint processId
+    );
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    public static extern bool AttachThreadInput(
+        uint attachThread,
+        uint attachToThread,
+        bool attach
+    );
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetFocus(IntPtr window);
+
+    [DllImport("user32.dll")]
     public static extern bool SetCursorPos(int x, int y);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr window, uint flags);
 
     [DllImport("user32.dll")]
     public static extern void mouse_event(
@@ -58,24 +93,92 @@ function Invoke-DesktopElementClick {
     $ClickX = [int][Math]::Floor($Bounds.Left + ($Bounds.Width / 2))
     $ClickY = [int][Math]::Floor($Bounds.Top + ($Bounds.Height / 2))
     $ChromeHandle = [IntPtr]$Window.Current.NativeWindowHandle
-    $null = [IntranetDesktopInput]::ShowWindowAsync($ChromeHandle, 9)
-    $null = [IntranetDesktopInput]::BringWindowToTop($ChromeHandle)
-    $null = [IntranetDesktopInput]::SetForegroundWindow($ChromeHandle)
-    try {
-        $Window.SetFocus()
-    } catch {
-        # Chrome's top-level accessibility object can reject SetFocus even
-        # after user32 has successfully restored and foregrounded its HWND.
-        Write-Host "UIA_WINDOW_FOCUS action=win32-only"
+    [uint32]$TargetProcessId = 0
+    $TargetThread = [IntranetDesktopInput]::GetWindowThreadProcessId(
+        $ChromeHandle,
+        [ref]$TargetProcessId
+    )
+    $CurrentThread = [IntranetDesktopInput]::GetCurrentThreadId()
+    $PreviousForeground = [IntranetDesktopInput]::GetForegroundWindow()
+    [uint32]$PreviousProcessId = 0
+    $PreviousThread = if ($PreviousForeground -ne [IntPtr]::Zero) {
+        [IntranetDesktopInput]::GetWindowThreadProcessId(
+            $PreviousForeground,
+            [ref]$PreviousProcessId
+        )
+    } else {
+        0
     }
-    Start-Sleep -Milliseconds 400
+    $AttachedPrevious = $false
+    $AttachedTarget = $false
+    try {
+        if ($PreviousThread -ne 0 -and $PreviousThread -ne $CurrentThread) {
+            $AttachedPrevious = [IntranetDesktopInput]::AttachThreadInput(
+                $CurrentThread,
+                $PreviousThread,
+                $true
+            )
+        }
+        if ($TargetThread -ne 0 -and $TargetThread -ne $CurrentThread) {
+            $AttachedTarget = [IntranetDesktopInput]::AttachThreadInput(
+                $CurrentThread,
+                $TargetThread,
+                $true
+            )
+        }
+        $null = [IntranetDesktopInput]::ShowWindowAsync($ChromeHandle, 9)
+        $null = [IntranetDesktopInput]::BringWindowToTop($ChromeHandle)
+        $null = [IntranetDesktopInput]::SetForegroundWindow($ChromeHandle)
+        $null = [IntranetDesktopInput]::SetFocus($ChromeHandle)
+        Start-Sleep -Milliseconds 400
+    } finally {
+        if ($AttachedTarget) {
+            $null = [IntranetDesktopInput]::AttachThreadInput(
+                $CurrentThread,
+                $TargetThread,
+                $false
+            )
+        }
+        if ($AttachedPrevious) {
+            $null = [IntranetDesktopInput]::AttachThreadInput(
+                $CurrentThread,
+                $PreviousThread,
+                $false
+            )
+        }
+    }
+    $ActualForeground = [IntranetDesktopInput]::GetForegroundWindow()
+    if ($ActualForeground -ne $ChromeHandle) {
+        throw (
+            "Windows did not foreground the Chrome/Edge window; expected={0} " +
+            "actual={1}" -f `
+                $ChromeHandle.ToInt64(), $ActualForeground.ToInt64()
+        )
+    }
     if (-not [IntranetDesktopInput]::SetCursorPos($ClickX, $ClickY)) {
         throw "Windows refused to position the pointer over the Chrome/Edge control."
+    }
+    $Point = New-Object -TypeName "IntranetDesktopInput+POINT"
+    $Point.X = $ClickX
+    $Point.Y = $ClickY
+    $HitWindow = [IntranetDesktopInput]::WindowFromPoint($Point)
+    $HitRoot = [IntranetDesktopInput]::GetAncestor($HitWindow, 2)
+    if ($HitRoot -ne $ChromeHandle) {
+        throw (
+            "The UI Automation control coordinate does not hit Chrome/Edge; " +
+            "target={0} hit={1}" -f `
+                $ChromeHandle.ToInt64(), $HitRoot.ToInt64()
+        )
     }
     [IntranetDesktopInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
     Start-Sleep -Milliseconds 100
     [IntranetDesktopInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-    return @($ClickX, $ClickY)
+    return @(
+        $ClickX,
+        $ClickY,
+        $ActualForeground.ToInt64(),
+        $HitRoot.ToInt64()
+    )
 }
 
 $Desktop = [System.Windows.Automation.AutomationElement]::RootElement
@@ -202,34 +305,13 @@ if (-not $LoadButton -or -not $ChromeWindow) {
     )
 }
 
-$InvokerRunspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
-$InvokerRunspace.ApartmentState = [System.Threading.ApartmentState]::STA
-$InvokerRunspace.ThreadOptions = `
-    [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
-$InvokerRunspace.Open()
-$InvokerRunspace.SessionStateProxy.SetVariable(
-    "IntranetLoadButton",
-    $LoadButton
+$LoadClick = Invoke-DesktopElementClick `
+    -Window $ChromeWindow -Element $LoadButton
+Write-Host (
+    "UIA_LOAD_BUTTON name=Load unpacked x={0} y={1} foreground={2} " +
+    "hit={3} action=verified-desktop-click" -f `
+        $LoadClick[0], $LoadClick[1], $LoadClick[2], $LoadClick[3]
 )
-$LoadInvoker = [System.Management.Automation.PowerShell]::Create()
-$LoadInvoker.Runspace = $InvokerRunspace
-$null = $LoadInvoker.AddScript(@'
-$ErrorActionPreference = "Stop"
-$InvokeObject = $null
-if (-not $IntranetLoadButton.TryGetCurrentPattern(
-        [System.Windows.Automation.InvokePattern]::Pattern,
-        [ref]$InvokeObject
-    )) {
-    throw "Chrome/Edge Load unpacked button does not support InvokePattern."
-}
-"UIA_ASYNC_LOAD action=invoking"
-([System.Windows.Automation.InvokePattern]$InvokeObject).Invoke()
-"UIA_ASYNC_LOAD action=returned"
-'@)
-$LoadInvocation = $LoadInvoker.BeginInvoke()
-$LoadInvokerCompleted = $false
-$LoadInvokerOutput = @()
-Write-Host "UIA_LOAD_BUTTON name=Load unpacked action=sta-runspace-invoke"
 
 $Dialog = $null
 $TopWindows = @()
@@ -252,20 +334,6 @@ do {
             }
         } catch {
             # UI Automation elements can disappear while the desktop is scanned.
-        }
-    }
-    if (-not $LoadInvokerCompleted -and $LoadInvocation.IsCompleted) {
-        try {
-            $LoadInvokerOutput = @($LoadInvoker.EndInvoke($LoadInvocation))
-            $LoadInvokerCompleted = $true
-        } catch {
-            $InvokerErrors = @($LoadInvoker.Streams.Error | ForEach-Object {
-                $_.ToString()
-            }) -join " | "
-            throw (
-                "STA Load unpacked invoker failed before the dialog appeared: " +
-                $InvokerErrors
-            )
         }
     }
     if (-not $Dialog) {
@@ -355,27 +423,3 @@ Write-Host (
         $Accept.Current.AutomationId, $Accept.Current.Name
 )
 ([System.Windows.Automation.InvokePattern]$InvokeObject).Invoke()
-
-if (-not $LoadInvokerCompleted) {
-    if (-not $LoadInvocation.AsyncWaitHandle.WaitOne(20000)) {
-        throw "STA Load unpacked invoker did not return after the folder closed."
-    }
-    try {
-        $LoadInvokerOutput = @($LoadInvoker.EndInvoke($LoadInvocation))
-        $LoadInvokerCompleted = $true
-    } catch {
-        $InvokerErrors = @($LoadInvoker.Streams.Error | ForEach-Object {
-            $_.ToString()
-        }) -join " | "
-        throw "STA Load unpacked invoker failed after dialog close: $InvokerErrors"
-    }
-}
-if ($LoadInvoker.Streams.Error.Count -gt 0) {
-    $InvokerErrors = @($LoadInvoker.Streams.Error | ForEach-Object {
-        $_.ToString()
-    }) -join " | "
-    throw "STA Load unpacked invoker wrote errors: $InvokerErrors"
-}
-@($LoadInvokerOutput) | ForEach-Object { Write-Host ([string]$_) }
-$LoadInvoker.Dispose()
-$InvokerRunspace.Dispose()
