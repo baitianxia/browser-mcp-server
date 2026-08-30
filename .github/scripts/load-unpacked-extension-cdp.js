@@ -2,14 +2,14 @@
 "use strict";
 
 // CI-only Chrome probe. Chrome 137+ removed --load-extension from branded
-// builds. Drive Chrome's own "Load unpacked" UI over a pipe-only DevTools
-// connection so the result has the same restart persistence as the documented
-// manual fallback.
+// builds. Exercise Chrome's own extensions-page directory-drop handler over a
+// pipe-only DevTools connection. Unlike the session-only DevTools unpacked-load
+// command, this follows the persistent user-facing extension installation path.
 
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { spawn, spawnSync } = require("child_process");
+const { spawn } = require("child_process");
 
 const SESSION_COOKIE_NAME = "pilot_session";
 const SESSION_COOKIE_VALUE = "offline-ci-authenticated";
@@ -37,7 +37,7 @@ function parseArguments(argv) {
       throw new Error(`missing --${name}`);
     }
   }
-  if (!new Set(["install-ui", "seed-existing"]).has(result.mode)) {
+  if (!new Set(["install-drag", "seed-existing"]).has(result.mode)) {
     throw new Error(`invalid --mode: ${result.mode}`);
   }
   return result;
@@ -59,38 +59,6 @@ function waitForExit(child, timeoutMilliseconds) {
   });
 }
 
-function enableDeveloperMode(profile) {
-  const defaultProfile = path.join(profile, "Default");
-  const preferencesPath = path.join(defaultProfile, "Preferences");
-  fs.mkdirSync(defaultProfile, { recursive: true });
-  let preferences = {};
-  if (fs.existsSync(preferencesPath)) {
-    try {
-      preferences = JSON.parse(fs.readFileSync(preferencesPath, "utf8"));
-    } catch (error) {
-      throw new Error(`cannot read disposable Chrome Preferences: ${error}`);
-    }
-  }
-  if (!preferences || typeof preferences !== "object" || Array.isArray(preferences)) {
-    throw new Error("disposable Chrome Preferences root is not an object");
-  }
-  if (!preferences.extensions || typeof preferences.extensions !== "object") {
-    preferences.extensions = {};
-  }
-  if (
-    !preferences.extensions.ui ||
-    typeof preferences.extensions.ui !== "object"
-  ) {
-    preferences.extensions.ui = {};
-  }
-  // This is the exact browser preference changed by the user's first manual
-  // step and makes Chrome's own Load unpacked button available to the probe.
-  preferences.extensions.ui.developer_mode = true;
-  const temporary = `${preferencesPath}.tmp-${process.pid}`;
-  fs.writeFileSync(temporary, `${JSON.stringify(preferences)}\n`, "utf8");
-  fs.renameSync(temporary, preferencesPath);
-}
-
 async function main() {
   const args = parseArguments(process.argv.slice(2));
   const chrome = path.resolve(args.chrome);
@@ -103,7 +71,6 @@ async function main() {
     throw new Error(`unpacked extension is missing manifest.json: ${extension}`);
   }
   fs.mkdirSync(profile, { recursive: true });
-  enableDeveloperMode(profile);
 
   const child = spawn(
     chrome,
@@ -121,9 +88,8 @@ async function main() {
     ],
     {
       stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-      // The install-ui mode must expose Chrome's real native folder picker to
-      // the hosted runner desktop so UI Automation can perform the same action
-      // as the user. Hiding the browser makes SendKeys/UIA results ambiguous.
+      // Keep the real extensions page visible for diagnostics and screenshots
+      // when a hosted-runner Chrome regression rejects the directory drop.
       windowsHide: false,
     },
   );
@@ -207,56 +173,7 @@ async function main() {
     });
   }
 
-  function selectExtensionFolder() {
-    if (process.platform !== "win32") {
-      throw new Error(
-        `the native folder-dialog probe is Windows-only; platform=${process.platform}`,
-      );
-    }
-    // Do not race the native picker or assume that AppActivate(browserPid)
-    // focuses its modal child. Locate the actual Windows common-item dialog,
-    // set its address field through UI Automation, then invoke its accept
-    // button. This is the same user-visible picker opened by Chrome's own
-    // Load unpacked button; no extension/profile state is injected directly.
-    const selector = path.join(__dirname, "select-extension-folder.ps1");
-    if (!fs.statSync(selector).isFile()) {
-      throw new Error(`Windows folder-dialog selector is missing: ${selector}`);
-    }
-    const selection = spawnSync(
-      "powershell.exe",
-      [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        selector,
-        "-ExtensionDirectory",
-        extension,
-      ],
-      {
-        encoding: "utf8",
-        windowsHide: false,
-        timeout: 60000,
-        killSignal: "SIGKILL",
-      },
-    );
-    if (selection.error || selection.status !== 0) {
-      const diagnostics = [selection.stdout, selection.stderr]
-        .filter(Boolean)
-        .join("\n")
-        .trim();
-      throw new Error(
-        `could not select the unpacked extension in Chrome's folder dialog: ` +
-          `${selection.error || diagnostics || `exit=${selection.status}`}`,
-      );
-    }
-    if (selection.stdout) process.stdout.write(selection.stdout);
-    if (selection.stderr) process.stderr.write(selection.stderr);
-  }
-
-  async function loadUnpackedThroughChromeUi() {
+  async function loadUnpackedThroughChromeDrop() {
     const target = await send("Target.createTarget", { url: "chrome://extensions/" });
     const attached = await send("Target.attachToTarget", {
       targetId: target.targetId,
@@ -268,34 +185,70 @@ async function main() {
     const sessionId = attached.sessionId;
     await send("Page.enable", {}, sessionId);
     await send("Page.bringToFront", {}, sessionId);
-    let ready = false;
+    let dropPoint;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const probe = await send(
         "Runtime.evaluate",
         {
           expression: `(() => {
             const manager = document.querySelector("extensions-manager");
-            const toolbar = manager?.shadowRoot?.querySelector("extensions-toolbar");
-            const button = toolbar?.shadowRoot?.querySelector("#loadUnpacked");
-            return Boolean(button && !button.disabled);
+            if (!manager || !chrome?.developerPrivate?.updateProfileConfiguration) {
+              return null;
+            }
+            const bounds = manager.getBoundingClientRect();
+            return {
+              x: Math.max(1, Math.floor(bounds.left + bounds.width / 2)),
+              y: Math.max(1, Math.floor(bounds.top + bounds.height / 2)),
+            };
           })()`,
           returnByValue: true,
         },
         sessionId,
       );
-      if (probe.result?.value === true) {
-        ready = true;
+      if (probe.result?.value?.x && probe.result?.value?.y) {
+        dropPoint = probe.result.value;
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    if (!ready) {
-      throw new Error('Chrome extensions page did not expose an enabled "Load unpacked" button');
+    if (!dropPoint) {
+      throw new Error("Chrome extensions page did not expose its directory-drop surface");
     }
-    // The selector proves that Chrome is the actual foreground/root hit-test
-    // window before generating desktop mouse input, then controls the native
-    // picker. This exercises the same user-visible persistent path.
-    selectExtensionFolder();
+    const enabled = await send(
+      "Runtime.evaluate",
+      {
+        expression: `(async () => {
+          await chrome.developerPrivate.updateProfileConfiguration({
+            inDeveloperMode: true,
+          });
+          const profile = await chrome.developerPrivate.getProfileConfiguration();
+          return profile.inDeveloperMode === true;
+        })()`,
+        awaitPromise: true,
+        returnByValue: true,
+      },
+      sessionId,
+    );
+    if (enabled.exceptionDetails || enabled.result?.value !== true) {
+      throw new Error("Chrome did not enable developer mode for the disposable Profile");
+    }
+    const dragData = {
+      items: [],
+      files: [extension],
+      dragOperationsMask: 1,
+    };
+    for (const type of ["dragEnter", "dragOver", "drop"]) {
+      await send(
+        "Input.dispatchDragEvent",
+        {
+          type,
+          x: dropPoint.x,
+          y: dropPoint.y,
+          data: dragData,
+        },
+        sessionId,
+      );
+    }
     let lastExtensions = [];
     for (let attempt = 0; attempt < 300; attempt += 1) {
       const listed = await send("Extensions.getExtensions");
@@ -313,7 +266,7 @@ async function main() {
       path: item.path,
     }));
     throw new Error(
-      `Chrome UI did not load the approved unpacked extension; active=${JSON.stringify(active)}`,
+      `Chrome directory drop did not load the approved unpacked extension; active=${JSON.stringify(active)}`,
     );
   }
 
@@ -373,8 +326,8 @@ async function main() {
 
   try {
     const record =
-      args.mode === "install-ui"
-        ? await loadUnpackedThroughChromeUi()
+      args.mode === "install-drag"
+        ? await loadUnpackedThroughChromeDrop()
         : await findExistingExtension();
     if (record.enabled !== true || record.version !== args["expected-version"]) {
       throw new Error(
@@ -382,7 +335,7 @@ async function main() {
       );
     }
     if (
-      args.mode === "install-ui" &&
+      args.mode === "install-drag" &&
       path.resolve(record.path).toLowerCase() !== extension.toLowerCase()
     ) {
       throw new Error(`loaded extension path mismatch: ${record.path} != ${extension}`);

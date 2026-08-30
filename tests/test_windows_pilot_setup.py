@@ -223,7 +223,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertLess(verify_positions[2], probe)
         self.assertLess(probe, verify_positions[3])
 
-    def test_windows_ci_uses_persistent_ui_extension_and_session_e2e(self) -> None:
+    def test_windows_ci_uses_persistent_drop_extension_and_session_e2e(self) -> None:
         if not (ROOT / ".github").is_dir():
             self.skipTest("CI-only workflow files are not part of the transfer kit")
         workflow = (ROOT / ".github" / "workflows" / "windows-release.yml").read_text(
@@ -232,44 +232,21 @@ class WindowsPilotSetupTests(unittest.TestCase):
         loader = (
             ROOT / ".github" / "scripts" / "load-unpacked-extension-cdp.js"
         ).read_text(encoding="utf-8")
-        selector = (
-            ROOT / ".github" / "scripts" / "select-extension-folder.ps1"
-        ).read_text(encoding="utf-8")
         exercise = (
             ROOT / ".github" / "scripts" / "exercise-extension-mcp.py"
         ).read_text(encoding="utf-8")
 
         self.assertNotIn("Extensions.loadUnpacked", loader)
-        self.assertIn('querySelector("#loadUnpacked")', loader)
-        self.assertNotIn(".click();", loader)
-        self.assertNotIn('"Input.dispatchMouseEvent"', loader)
+        self.assertIn('"Input.dispatchDragEvent"', loader)
+        self.assertIn("updateProfileConfiguration", loader)
+        self.assertIn("getProfileConfiguration", loader)
+        self.assertIn("files: [extension]", loader)
+        self.assertIn('["dragEnter", "dragOver", "drop"]', loader)
         self.assertIn("windowsHide: false", loader)
-        self.assertIn("timeout: 60000", loader)
-        self.assertIn('killSignal: "SIGKILL"', loader)
-        self.assertIn('"powershell.exe"', loader)
-        self.assertIn("select-extension-folder.ps1", loader)
-        self.assertIn("System.Windows.Automation.AutomationElement", selector)
-        self.assertIn("System.Windows.Forms.SendKeys", selector)
-        self.assertIn("IntranetDesktopInput", selector)
-        self.assertIn("SetCursorPos", selector)
-        self.assertIn('Name -eq "Developer mode"', selector)
-        self.assertIn("UIA_DEVELOPER_MODE", selector)
-        self.assertIn("TogglePattern", selector)
-        self.assertIn("UIA_LOAD_BUTTON", selector)
-        self.assertIn("AttachThreadInput", selector)
-        self.assertIn("GetForegroundWindow", selector)
-        self.assertIn("WindowFromPoint", selector)
-        self.assertIn("GetAncestor", selector)
-        self.assertIn("action=verified-desktop-click", selector)
-        self.assertNotIn("RunspaceFactory", selector)
-        self.assertNotIn("Start-Process", selector)
-        self.assertIn("mouse_event(0x0002", selector)
-        self.assertIn("mouse_event(0x0004", selector)
-        self.assertIn('AutomationIdProperty, "1"', selector)
         self.assertIn('send("Browser.close")', loader)
         self.assertIn("SESSION_COOKIE_VALUE", loader)
         self.assertIn("seedExtensionAuthToken", loader)
-        self.assertIn('args.mode === "install-ui"', loader)
+        self.assertIn('args.mode === "install-drag"', loader)
         self.assertIn('await findExistingExtension()', loader)
         self.assertIn("process.exit(1)", loader)
 
@@ -278,7 +255,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('$ChromeExe = [string]$env:CHROME_EXE', workflow)
         self.assertIn("--browser-executable $ChromeExe", workflow)
         self.assertIn("Installed Playwright MCP could not reuse", workflow)
-        self.assertIn("--mode install-ui", workflow)
+        self.assertIn("--mode install-drag", workflow)
         self.assertIn("--mode seed-existing", workflow)
         self.assertIn("Get-Content -LiteralPath $LauncherStdout", workflow)
         self.assertIn("taskkill.exe", workflow)
