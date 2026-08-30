@@ -363,7 +363,7 @@ jobs:
 
       - name: Upload Windows validation evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-validation-evidence-${{ github.run_id }}
           path: ${{ runner.temp }}\windows-evidence
@@ -372,7 +372,7 @@ jobs:
 
       - name: Upload the gate-passed Windows transfer kit
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: intranet-browser-agent-transfer-1.0.8-windows-x64-${{ github.run_id }}
           path: |
