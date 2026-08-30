@@ -286,16 +286,6 @@ def exercise(args: argparse.Namespace) -> tuple[str, int]:
             )
         if not authenticated_request.wait(timeout=2):
             raise ExerciseError("offline test server did not receive the persisted session cookie")
-        if "browser_close" in names:
-            try:
-                mcp.request(
-                    5,
-                    "tools/call",
-                    {"name": "browser_close", "arguments": {}},
-                    20,
-                )
-            except ExerciseError:
-                pass
         server_info = initialized.get("serverInfo")
         version = (
             server_info.get("version", "unknown")

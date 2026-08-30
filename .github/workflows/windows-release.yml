@@ -329,6 +329,14 @@ jobs:
               ".github\scripts\exercise-extension-mcp.py"
           $ExtensionTokenFile = Join-Path $env:RUNNER_TEMP `
               "playwright-extension-ci-token.txt"
+          $CdpReadyFile = Join-Path $env:RUNNER_TEMP `
+              "playwright-extension-ci-ready.json"
+          $CdpStopFile = Join-Path $env:RUNNER_TEMP `
+              "playwright-extension-ci-stop.txt"
+          $CdpStdout = Join-Path $env:RUNNER_TEMP `
+              "playwright-extension-ci.stdout.log"
+          $CdpStderr = Join-Path $env:RUNNER_TEMP `
+              "playwright-extension-ci.stderr.log"
           $Approval = Get-Content -LiteralPath (Join-Path `
               $env:TRANSFER_ROOT `
               "toolkit\config\playwright-extension-source.json") `
@@ -352,11 +360,25 @@ jobs:
               $WrapperBody,
               (New-Object System.Text.ASCIIEncoding)
           )
+          $CdpWrapper = Join-Path $env:RUNNER_TEMP `
+              "run-playwright-extension-ci-session.cmd"
+          $CdpWrapperBody = @"
+          @echo off
+          node.exe "$CdpProbe" --chrome "$ChromeExe" --profile "$ChromeUserData" --extension "$InstalledUnpacked" --expected-id "$($Approval.extensionId)" --expected-version "$($Approval.version)" --token-file "$ExtensionTokenFile" --ready-file "$CdpReadyFile" --stop-file "$CdpStopFile" --maximum-seconds 600
+          exit /b %errorlevel%
+          "@
+          [IO.File]::WriteAllText(
+              $CdpWrapper,
+              $CdpWrapperBody,
+              (New-Object System.Text.ASCIIEncoding)
+          )
           $LauncherStdout = Join-Path $env:RUNNER_TEMP "one-click-launcher.stdout.log"
           $LauncherStderr = Join-Path $env:RUNNER_TEMP "one-click-launcher.stderr.log"
           $FirewallRule = "IntranetBrowserAgent-CI-$env:GITHUB_RUN_ID"
           $LauncherProcess = $null
+          $CdpProcess = $null
           $LauncherFinished = $false
+          $CdpFinished = $false
           function Stop-CiChrome {
               @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
                   Stop-Process -Force -ErrorAction SilentlyContinue
@@ -374,7 +396,8 @@ jobs:
           }
           try {
               New-NetFirewallRule -DisplayName $FirewallRule `
-                  -Direction Outbound -Program $ChromeExe -Action Block | Out-Null
+                  -Direction Outbound -Program $ChromeExe `
+                  -RemoteAddress Internet -Action Block | Out-Null
               $LauncherProcess = Start-Process -FilePath $env:ComSpec `
                   -ArgumentList @("/d", "/c", $Wrapper) `
                   -RedirectStandardOutput $LauncherStdout `
@@ -401,52 +424,65 @@ jobs:
               if (-not $ManualFallbackReached -and -not $LauncherProcess.HasExited) {
                   throw "The installer reached neither extension fallback nor completion."
               }
+              if (-not $ManualFallbackReached -and $LauncherProcess.ExitCode -ne 0) {
+                  throw "One-click Windows launcher failed before the manual fallback with exit code $($LauncherProcess.ExitCode)"
+              }
+
+              # The target flow leaves chrome://extensions open while the user
+              # follows the three displayed steps. A GitHub-hosted runner cannot
+              # provide trusted input to Chrome's native folder picker. Release
+              # only this disposable Profile, then keep a session-only load of
+              # the exact approved directory alive. This proves that the same
+              # installer process notices the extension and continues, without
+              # claiming that CI performed or persisted the human picker action.
+              Stop-CiChrome
+              foreach ($StaleMarker in @(
+                  $ExtensionTokenFile, $CdpReadyFile, $CdpStopFile
+              )) {
+                  Remove-Item -LiteralPath $StaleMarker -Force `
+                      -ErrorAction SilentlyContinue
+              }
+              $CdpProcess = Start-Process -FilePath $env:ComSpec `
+                  -ArgumentList @("/d", "/c", $CdpWrapper) `
+                  -RedirectStandardOutput $CdpStdout `
+                  -RedirectStandardError $CdpStderr `
+                  -PassThru
+              $CdpReadyDeadline = [DateTime]::UtcNow.AddSeconds(90)
+              while (-not $CdpProcess.HasExited -and
+                  -not (Test-Path -LiteralPath $CdpReadyFile -PathType Leaf) -and
+                  [DateTime]::UtcNow -lt $CdpReadyDeadline) {
+                  Start-Sleep -Milliseconds 250
+              }
+              if (-not (Test-Path -LiteralPath $CdpReadyFile -PathType Leaf)) {
+                  $CdpExit = if ($CdpProcess.HasExited) {
+                      $CdpProcess.ExitCode
+                  } else {
+                      "still-running"
+                  }
+                  throw "The Chrome CI session did not become ready; exit=$CdpExit"
+              }
+              $CdpReady = Get-Content -LiteralPath $CdpReadyFile -Raw |
+                  ConvertFrom-Json
+              if ($CdpReady.id -ne $Approval.extensionId -or
+                  $CdpReady.version -ne $Approval.version -or
+                  $CdpReady.enabled -ne $true) {
+                  throw "The Chrome CI session reported an unexpected extension."
+              }
+              if ($CdpReady.sessionOnly -eq $true -and
+                  [IO.Path]::GetFullPath([string]$CdpReady.path) -ine
+                  [IO.Path]::GetFullPath($InstalledUnpacked)) {
+                  throw "The session surrogate did not use the approved directory."
+              }
               if ($ManualFallbackReached) {
-                  # The real manual path deliberately leaves chrome://extensions
-                  # open while the user follows the three steps. GitHub's hosted
-                  # Windows runner has no trusted human desktop input, so the CI
-                  # substitute takes exclusive ownership of that same disposable
-                  # Profile, copies the displayed directory into Chrome's
-                  # temporary FileSystem, and invokes Chrome's persistent
-                  # developerPrivate Profile importer. Exit code 21 is
-                  # PROFILE_IN_USE, so release only the hosted runner's
-                  # disposable Chrome processes first.
-                  Stop-CiChrome
-                  & node.exe $CdpProbe `
-                      --chrome $ChromeExe `
-                      --profile $ChromeUserData `
-                      --extension $InstalledUnpacked `
-                      --expected-id $Approval.extensionId `
-                      --expected-version $Approval.version `
-                      --token-file $ExtensionTokenFile `
-                      --mode install-directory
-                  if ($LASTEXITCODE -ne 0) {
-                      throw "Chrome rejected the packaged unpacked extension CDP probe."
+                  if (-not $LauncherProcess.WaitForExit(300000)) {
+                      throw "One-click Windows launcher did not continue after the extension appeared."
                   }
               }
-              if (-not $LauncherProcess.WaitForExit(300000)) {
-                  Stop-Process -Id $LauncherProcess.Id -Force -ErrorAction SilentlyContinue
-                  throw "One-click Windows launcher did not finish within five minutes."
+              if (-not $LauncherProcess.HasExited) {
+                  throw "One-click Windows launcher is still running unexpectedly."
               }
               if ($LauncherProcess.ExitCode -ne 0) {
                   throw "One-click Windows launcher failed with exit code $($LauncherProcess.ExitCode)"
-              }
-              if (-not (Test-Path -LiteralPath $ExtensionTokenFile -PathType Leaf)) {
-                  # A managed/local policy may complete without entering the
-                  # manual fallback. Seed only disposable CI auth state after
-                  # the successful installer has proved that extension path.
-                  Stop-CiChrome
-                  & node.exe $CdpProbe `
-                      --chrome $ChromeExe `
-                      --profile $ChromeUserData `
-                      --extension $InstalledUnpacked `
-                      --expected-id $Approval.extensionId `
-                      --expected-version $Approval.version `
-                      --token-file $ExtensionTokenFile `
-                      --mode seed-existing
-                  if ($LASTEXITCODE -ne 0) {
-                      throw "Chrome could not seed the installed extension CI session."
-                  }
               }
               $InstalledManifestPath = Join-Path $env:LOCALAPPDATA `
                   "IntranetBrowserAgent\config\pilot\deployment.windows-pilot.json"
@@ -471,6 +507,18 @@ jobs:
               if ($LASTEXITCODE -ne 0) {
                   throw "Installed Playwright MCP could not reuse the offline Chrome session."
               }
+              [IO.File]::WriteAllText(
+                  $CdpStopFile,
+                  "stop",
+                  (New-Object System.Text.ASCIIEncoding)
+              )
+              if (-not $CdpProcess.WaitForExit(30000)) {
+                  throw "The Chrome CI session did not stop after the E2E completed."
+              }
+              if ($CdpProcess.ExitCode -ne 0) {
+                  throw "The Chrome CI session failed with exit code $($CdpProcess.ExitCode)"
+              }
+              $CdpFinished = $true
               $LauncherFinished = $true
           } finally {
               if ($LauncherProcess -and -not $LauncherFinished -and
@@ -486,12 +534,39 @@ jobs:
                   }
                   $null = $LauncherProcess.WaitForExit(5000)
               }
+              if ($CdpProcess -and -not $CdpFinished -and
+                  -not $CdpProcess.HasExited) {
+                  if (-not (Test-Path -LiteralPath $CdpStopFile -PathType Leaf)) {
+                      [IO.File]::WriteAllText(
+                          $CdpStopFile,
+                          "stop",
+                          (New-Object System.Text.ASCIIEncoding)
+                      )
+                  }
+                  if (-not $CdpProcess.WaitForExit(15000)) {
+                      & (Join-Path $env:SystemRoot "System32\taskkill.exe") `
+                          /PID $CdpProcess.Id /T /F 2>$null | Out-Null
+                      $null = $CdpProcess.WaitForExit(5000)
+                  }
+              }
               @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
                   Stop-Process -Force -ErrorAction SilentlyContinue
               Remove-NetFirewallRule -DisplayName $FirewallRule `
                   -ErrorAction SilentlyContinue
-              Remove-Item -LiteralPath $ExtensionTokenFile -Force `
-                  -ErrorAction SilentlyContinue
+              foreach ($Marker in @(
+                  $ExtensionTokenFile, $CdpReadyFile, $CdpStopFile
+              )) {
+                  Remove-Item -LiteralPath $Marker -Force `
+                      -ErrorAction SilentlyContinue
+              }
+              if (Test-Path -LiteralPath $CdpStdout) {
+                  Get-Content -LiteralPath $CdpStdout -ErrorAction SilentlyContinue |
+                      Write-Host
+              }
+              if (Test-Path -LiteralPath $CdpStderr) {
+                  Get-Content -LiteralPath $CdpStderr -ErrorAction SilentlyContinue |
+                      Write-Host
+              }
               if (Test-Path -LiteralPath $LauncherStdout) {
                   Get-Content -LiteralPath $LauncherStdout -ErrorAction SilentlyContinue |
                       Write-Host

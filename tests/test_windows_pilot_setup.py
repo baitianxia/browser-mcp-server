@@ -223,7 +223,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertLess(verify_positions[2], probe)
         self.assertLess(probe, verify_positions[3])
 
-    def test_windows_ci_uses_persistent_directory_extension_and_session_e2e(self) -> None:
+    def test_windows_ci_separates_manual_boundary_and_live_session_e2e(self) -> None:
         if not (ROOT / ".github").is_dir():
             self.skipTest("CI-only workflow files are not part of the transfer kit")
         workflow = (ROOT / ".github" / "workflows" / "windows-release.yml").read_text(
@@ -236,26 +236,21 @@ class WindowsPilotSetupTests(unittest.TestCase):
             ROOT / ".github" / "scripts" / "exercise-extension-mcp.py"
         ).read_text(encoding="utf-8")
 
-        self.assertNotIn("Extensions.loadUnpacked", loader)
+        self.assertIn("CI-only session surrogate", loader)
+        self.assertIn("not evidence that the manual load survives a restart", loader)
+        self.assertIn('send("Extensions.loadUnpacked"', loader)
+        self.assertIn("sessionOnly: loadedForSession", loader)
+        self.assertIn('source: loadedForSession ? "session-surrogate"', loader)
+        self.assertIn('"ready-file"', loader)
+        self.assertIn('"stop-file"', loader)
+        self.assertIn("waitForStop", loader)
         self.assertNotIn('"Input.dispatchDragEvent"', loader)
-        self.assertIn("updateProfileConfiguration", loader)
-        self.assertIn("getProfileConfiguration", loader)
-        self.assertIn('"DOM.setFileInputFiles"', loader)
-        self.assertIn("files: [extension]", loader)
-        self.assertIn("webkitdirectory = true", loader)
-        self.assertIn("webkitRequestFileSystem", loader)
-        self.assertIn("TEMPORARY", loader)
-        self.assertIn("file.webkitRelativePath", loader)
-        self.assertIn("chrome.developerPrivate.loadDirectory", loader)
-        self.assertIn('"Unpacked Extensions"', loader)
-        self.assertIn("assertSameDirectoryContents", loader)
-        self.assertIn("CHROME_PROFILE_IMPORT", loader)
-        self.assertIn("windowsHide: false", loader)
+        self.assertNotIn("chrome.developerPrivate.loadDirectory", loader)
+        self.assertNotIn("webkitRequestFileSystem", loader)
+        self.assertIn("windowsHide: true", loader)
         self.assertIn('send("Browser.close")', loader)
         self.assertIn("SESSION_COOKIE_VALUE", loader)
         self.assertIn("seedExtensionAuthToken", loader)
-        self.assertIn('args.mode === "install-directory"', loader)
-        self.assertIn('await findExistingExtension()', loader)
         self.assertIn("process.exit(1)", loader)
 
         self.assertIn("exercise-extension-mcp.py", workflow)
@@ -263,11 +258,19 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('$ChromeExe = [string]$env:CHROME_EXE', workflow)
         self.assertIn("--browser-executable $ChromeExe", workflow)
         self.assertIn("Installed Playwright MCP could not reuse", workflow)
-        self.assertIn("--mode install-directory", workflow)
-        self.assertIn("--mode seed-existing", workflow)
+        self.assertIn("playwright-extension-ci-ready.json", workflow)
+        self.assertIn("playwright-extension-ci-stop.txt", workflow)
+        self.assertIn("-RemoteAddress Internet", workflow)
+        self.assertIn("native folder picker", workflow)
+        self.assertIn("claiming that CI performed or persisted", workflow)
+        self.assertIn("One-click Windows launcher did not continue", workflow)
         self.assertIn("Get-Content -LiteralPath $LauncherStdout", workflow)
         self.assertIn("taskkill.exe", workflow)
         self.assertIn("/PID $LauncherProcess.Id /T /F", workflow)
+        self.assertLess(
+            workflow.index("$CdpReady = Get-Content"),
+            workflow.index("$LauncherProcess.WaitForExit(300000)"),
+        )
         self.assertLess(
             workflow.index("python $ExtensionExercise"),
             workflow.index("Remove-NetFirewallRule -DisplayName $FirewallRule"),
@@ -277,6 +280,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"browser_snapshot"', exercise)
         self.assertIn("OFFLINE-INTRANET-SESSION-REUSED", exercise)
         self.assertIn("session_cookie=reused", exercise)
+        self.assertNotIn('"browser_close"', exercise)
 
     def test_windows_installer_stages_and_rolls_back_runtime_and_config(self) -> None:
         installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(

@@ -60,7 +60,7 @@ Playwright 启动企业 Chrome，使用部署清单指定的专用 `userDataDir`
 
 ### extension
 
-Playwright Extension 接管用户明确允许的现有 Tab。生产扩展必须通过批准的企业分发渠道安装。Windows 通用内网 pilot 固定使用此模式，以复用目标机 Chrome/Edge 当前 Profile 的登录态：迁移包携带固定 ID、版本、大小、SHA-256、CRX3/manifest/Web Store 元数据均经过校验的官方 CRX，以及与 CRX payload 逐文件一致的已解压目录。安装器先尝试当前用户本地 `file:///` 策略安装；浏览器未实际确认安装时，必须恢复该临时策略，打开扩展管理页、显示唯一的包内目录并在原进程中等待人工“加载已解压的扩展程序”，检测成功后才继续。安装检测默认只接受该精确批准目录；为验证无人值守 CI 中 Chrome 自身的持久 Profile importer，也允许 last-used Profile 固定 `Unpacked Extensions/<批准目录名>` 下的绝对路径，但只有目录无 link/junction/reparse point 且文件类型、大小和 SHA-256 与批准目录完全一致时才能通过。Windows 清单和 MCP 参数还必须绑定安装器实际识别的 Chrome/Edge `.exe`；固定 MCP 版本在未指定该路径时不能完整识别只记录在 `Secure Preferences` 的手工 unpacked 扩展。指定路径后浏览器不传 `--profile-directory`，因此安装检测只允许浏览器 `Local State.profile.last_used` 指向的 Profile 通过，防止在休眠 Profile 中找到扩展却启动另一个 Profile。默认保留每次连接批准和 Tab 选择 UI；不在仓库或用户 MCP 配置中保存扩展 token。
+Playwright Extension 接管用户明确允许的现有 Tab。生产扩展必须通过批准的企业分发渠道安装。Windows 通用内网 pilot 固定使用此模式，以复用目标机 Chrome/Edge 当前 Profile 的登录态：迁移包携带固定 ID、版本、大小、SHA-256、CRX3/manifest/Web Store 元数据均经过校验的官方 CRX，以及与 CRX payload 逐文件一致的已解压目录。安装器先尝试当前用户本地 `file:///` 策略安装；浏览器未实际确认安装时，必须恢复该临时策略，打开扩展管理页、显示唯一的包内目录并在原进程中等待人工“加载已解压的扩展程序”，检测成功后才继续。人工回退的安装检测只接受指向该精确批准目录的扩展记录，不接受 CI 合成目录、复制目录或任意其他绝对路径。Windows 清单和 MCP 参数还必须绑定安装器实际识别的 Chrome/Edge `.exe`；固定 MCP 版本在未指定该路径时不能完整识别只记录在 `Secure Preferences` 的手工 unpacked 扩展。指定路径后浏览器不传 `--profile-directory`，因此安装检测只允许浏览器 `Local State.profile.last_used` 指向的 Profile 通过，防止在休眠 Profile 中找到扩展却启动另一个 Profile。默认保留每次连接批准和 Tab 选择 UI；不在仓库或用户 MCP 配置中保存扩展 token。
 
 ### cdp
 

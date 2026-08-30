@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
-import stat
 import sys
 import time
 from pathlib import Path
@@ -65,53 +63,6 @@ def _extension_record(path: Path) -> dict | None:
     return record if isinstance(record, dict) else None
 
 
-def _path_is_link_like(path: Path) -> bool:
-    try:
-        metadata = path.lstat()
-    except OSError:
-        return True
-    if stat.S_ISLNK(metadata.st_mode):
-        return True
-    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    return bool(getattr(metadata, "st_file_attributes", 0) & reparse_flag)
-
-
-def _directory_inventory(root: Path) -> dict[str, tuple[str, int, str]] | None:
-    if not root.is_dir() or _path_is_link_like(root):
-        return None
-    inventory: dict[str, tuple[str, int, str]] = {}
-    try:
-        for item in sorted(root.rglob("*"), key=lambda entry: entry.as_posix()):
-            relative = item.relative_to(root).as_posix()
-            if _path_is_link_like(item):
-                return None
-            if item.is_dir():
-                inventory[relative] = ("directory", 0, "")
-            elif item.is_file():
-                digest = hashlib.sha256()
-                with item.open("rb") as stream:
-                    for block in iter(lambda: stream.read(1024 * 1024), b""):
-                        digest.update(block)
-                inventory[relative] = ("file", item.stat().st_size, digest.hexdigest())
-            else:
-                return None
-    except OSError:
-        return None
-    return inventory
-
-
-def _is_verified_profile_copy(
-    profile: Path, candidate: Path, approved_unpacked_path: Path
-) -> bool:
-    expected = profile / "Unpacked Extensions" / approved_unpacked_path.name
-    if os.path.normcase(str(candidate.resolve())) != os.path.normcase(
-        str(expected.resolve())
-    ):
-        return False
-    approved_inventory = _directory_inventory(approved_unpacked_path)
-    return approved_inventory is not None and _directory_inventory(candidate) == approved_inventory
-
-
 def _resolved_extension_path(
     profile: Path, record: dict, approved_unpacked_path: Path
 ) -> Path | None:
@@ -120,21 +71,11 @@ def _resolved_extension_path(
         return None
     candidate = Path(raw_path)
     if candidate.is_absolute():
-        if os.path.normcase(str(candidate.resolve())) == os.path.normcase(
+        if os.path.normcase(str(candidate.resolve())) != os.path.normcase(
             str(approved_unpacked_path.resolve())
         ):
-            return candidate
-        # Chrome's developerPrivate.loadDirectory imports non-native browser
-        # filesystem entries into this fixed Profile-owned directory. CI uses
-        # that persistent implementation because hosted runners cannot provide
-        # trusted human input to the native folder picker. Accept only the exact
-        # last-used Profile location and only when every file is byte-identical
-        # to the already approved package directory.
-        return (
-            candidate
-            if _is_verified_profile_copy(profile, candidate, approved_unpacked_path)
-            else None
-        )
+            return None
+        return candidate
     profile_root = profile.resolve()
     for base in (profile, profile / "Extensions"):
         resolved = (base / candidate).resolve()

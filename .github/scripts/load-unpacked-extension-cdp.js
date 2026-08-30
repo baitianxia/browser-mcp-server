@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 "use strict";
 
-// CI-only Chrome probe. Chrome 137+ removed --load-extension from branded
-// builds. Copy the approved files into Chrome's temporary FileSystem and give
-// its DirectoryEntry to developerPrivate.loadDirectory. Chrome then exercises
-// its own persistent import implementation. Unlike the session-only DevTools
-// unpacked-load command, the imported extension survives a browser restart.
+// CI-only session surrogate for Chrome's human-only "Load unpacked" boundary.
+// GitHub-hosted Windows runners cannot provide trusted input to Chrome's native
+// folder picker. This probe therefore uses the pipe-only DevTools command to
+// load the exact approved directory for one live browser session. It keeps that
+// browser alive while the same installer process detects the extension and
+// continues, and while the installed MCP performs an authenticated offline E2E.
+// This is deliberately not evidence that the manual load survives a restart.
 
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
 const { spawn } = require("child_process");
 
 const SESSION_COOKIE_NAME = "pilot_session";
@@ -32,16 +34,24 @@ function parseArguments(argv) {
     "expected-id",
     "expected-version",
     "token-file",
-    "mode",
+    "ready-file",
+    "stop-file",
+    "maximum-seconds",
   ]) {
     if (!result[name]) {
       throw new Error(`missing --${name}`);
     }
   }
-  if (!new Set(["install-directory", "seed-existing"]).has(result.mode)) {
-    throw new Error(`invalid --mode: ${result.mode}`);
+  const maximumSeconds = Number(result["maximum-seconds"]);
+  if (!Number.isInteger(maximumSeconds) || maximumSeconds < 30) {
+    throw new Error("--maximum-seconds must be an integer of at least 30");
   }
+  result.maximumSeconds = maximumSeconds;
   return result;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function waitForExit(child, timeoutMilliseconds) {
@@ -64,59 +74,25 @@ function normalizedPath(value) {
   return path.resolve(value).toLowerCase();
 }
 
-function directoryInventory(root) {
-  const inventory = {};
-  function walk(directory, prefix) {
-    const entries = fs
-      .readdirSync(directory, { withFileTypes: true })
-      .sort((left, right) => left.name.localeCompare(right.name));
-    for (const entry of entries) {
-      const absolute = path.join(directory, entry.name);
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-      const metadata = fs.lstatSync(absolute);
-      if (metadata.isSymbolicLink()) {
-        throw new Error(`extension directory contains a link: ${relative}`);
-      }
-      if (metadata.isDirectory()) {
-        inventory[relative] = { type: "directory" };
-        walk(absolute, relative);
-      } else if (metadata.isFile()) {
-        inventory[relative] = {
-          type: "file",
-          size: metadata.size,
-          sha256: crypto
-            .createHash("sha256")
-            .update(fs.readFileSync(absolute))
-            .digest("hex"),
-        };
-      } else {
-        throw new Error(`extension directory contains an unsupported entry: ${relative}`);
-      }
+function writeAtomic(file, contents, options = {}) {
+  const temporary = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(temporary, contents, options);
+  fs.renameSync(temporary, file);
+}
+
+async function waitForStop(stopFile, child, maximumSeconds, stderrText) {
+  const deadline = Date.now() + maximumSeconds * 1000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(stopFile)) return;
+    if (child.exitCode !== null) {
+      throw new Error(
+        `Chrome exited before the CI E2E completed; code=${child.exitCode}; ` +
+          `stderr=${stderrText()}`,
+      );
     }
+    await delay(250);
   }
-  walk(path.resolve(root), "");
-  return inventory;
-}
-
-function assertSameDirectoryContents(actual, expected) {
-  const actualInventory = JSON.stringify(directoryInventory(actual));
-  const expectedInventory = JSON.stringify(directoryInventory(expected));
-  if (actualInventory !== expectedInventory) {
-    throw new Error(`Chrome Profile import differs from the approved directory: ${actual}`);
-  }
-}
-
-function lastUsedProfileName(userDataDir) {
-  try {
-    const state = JSON.parse(
-      fs.readFileSync(path.join(userDataDir, "Local State"), "utf8"),
-    );
-    const name = state?.profile?.last_used;
-    if (name === "Default" || /^Profile \d+$/.test(name)) return name;
-  } catch {
-    // A new disposable Profile defaults to "Default".
-  }
-  return "Default";
+  throw new Error(`CI did not create the stop marker within ${maximumSeconds} seconds`);
 }
 
 async function main() {
@@ -124,11 +100,20 @@ async function main() {
   const chrome = path.resolve(args.chrome);
   const profile = path.resolve(args.profile);
   const extension = path.resolve(args.extension);
+  const tokenFile = path.resolve(args["token-file"]);
+  const readyFile = path.resolve(args["ready-file"]);
+  const stopFile = path.resolve(args["stop-file"]);
   if (!fs.statSync(chrome).isFile()) {
     throw new Error(`Chrome executable is missing: ${chrome}`);
   }
   if (!fs.statSync(path.join(extension, "manifest.json")).isFile()) {
     throw new Error(`unpacked extension is missing manifest.json: ${extension}`);
+  }
+  for (const marker of [tokenFile, readyFile, stopFile]) {
+    if (fs.existsSync(marker)) {
+      throw new Error(`refusing a stale CI marker: ${marker}`);
+    }
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
   }
   fs.mkdirSync(profile, { recursive: true });
 
@@ -148,9 +133,7 @@ async function main() {
     ],
     {
       stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
-      // Keep the real extensions page visible for diagnostics and screenshots
-      // when a hosted-runner Chrome regression rejects the directory input.
-      windowsHide: false,
+      windowsHide: true,
     },
   );
   const protocolInput = child.stdio[3];
@@ -172,14 +155,10 @@ async function main() {
     buffer = Buffer.concat([buffer, chunk]);
     for (;;) {
       const separator = buffer.indexOf(0);
-      if (separator < 0) {
-        break;
-      }
+      if (separator < 0) break;
       const payload = buffer.subarray(0, separator).toString("utf8");
       buffer = buffer.subarray(separator + 1);
-      if (!payload) {
-        continue;
-      }
+      if (!payload) continue;
       let message;
       try {
         message = JSON.parse(payload);
@@ -226,233 +205,12 @@ async function main() {
       }, 45000);
       pending.set(id, { method, resolve, reject, timer });
       const message = { id, method, params };
-      if (sessionId) {
-        message.sessionId = sessionId;
-      }
+      if (sessionId) message.sessionId = sessionId;
       protocolInput.write(`${JSON.stringify(message)}\0`, "utf8");
     });
   }
 
-  async function loadUnpackedThroughProfileImport() {
-    const target = await send("Target.createTarget", { url: "chrome://extensions/" });
-    const attached = await send("Target.attachToTarget", {
-      targetId: target.targetId,
-      flatten: true,
-    });
-    if (!attached.sessionId) {
-      throw new Error("Chrome did not return an extensions-page CDP session");
-    }
-    const sessionId = attached.sessionId;
-    await send("Page.enable", {}, sessionId);
-    await send("Page.bringToFront", {}, sessionId);
-    let extensionsPageReady = false;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const probe = await send(
-        "Runtime.evaluate",
-        {
-          expression: `(() => {
-            const manager = document.querySelector("extensions-manager");
-            if (!manager || !chrome?.developerPrivate?.updateProfileConfiguration) {
-              return false;
-            }
-            return Boolean(document.body && globalThis.webkitRequestFileSystem);
-          })()`,
-          returnByValue: true,
-        },
-        sessionId,
-      );
-      if (probe.result?.value === true) {
-        extensionsPageReady = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    if (!extensionsPageReady) {
-      throw new Error("Chrome extensions page did not expose its FileSystem API");
-    }
-    const enabled = await send(
-      "Runtime.evaluate",
-      {
-        expression: `(async () => {
-          await chrome.developerPrivate.updateProfileConfiguration({
-            inDeveloperMode: true,
-          });
-          const profile = await chrome.developerPrivate.getProfileConfiguration();
-          return profile.inDeveloperMode === true;
-        })()`,
-        awaitPromise: true,
-        returnByValue: true,
-      },
-      sessionId,
-    );
-    if (enabled.exceptionDetails || enabled.result?.value !== true) {
-      throw new Error("Chrome did not enable developer mode for the disposable Profile");
-    }
-    await send("DOM.enable", {}, sessionId);
-    const input = await send(
-      "Runtime.evaluate",
-      {
-        expression: `(() => {
-          document.getElementById("ci-extension-directory")?.remove();
-          const element = document.createElement("input");
-          element.id = "ci-extension-directory";
-          element.type = "file";
-          element.webkitdirectory = true;
-          element.multiple = true;
-          element.hidden = true;
-          document.body.appendChild(element);
-          globalThis.__ciExtensionDirectoryInput = element;
-          globalThis.__ciExtensionDirectoryReady = new Promise((resolve) => {
-            element.addEventListener("input", () => resolve("input"), {once: true});
-          });
-          return element;
-        })()`,
-      },
-      sessionId,
-    );
-    const inputObjectId = input.result?.objectId;
-    if (input.exceptionDetails || !inputObjectId) {
-      throw new Error("Chrome did not create the CI directory input");
-    }
-    await send(
-      "DOM.setFileInputFiles",
-      {
-        files: [extension],
-        objectId: inputObjectId,
-      },
-      sessionId,
-    );
-    const loaded = await send(
-      "Runtime.evaluate",
-      {
-        expression: `(async () => {
-          const inputEvent = await Promise.race([
-            globalThis.__ciExtensionDirectoryReady,
-            new Promise((resolve) => setTimeout(() => resolve("timeout"), 15000)),
-          ]);
-          const input = globalThis.__ciExtensionDirectoryInput;
-          const files = Array.from(input?.files || []);
-          const diagnostic = {
-            inputEvent,
-            fileCount: files.length,
-            firstRelativePath: files[0]?.webkitRelativePath || null,
-            totalBytes: files.reduce((total, file) => total + file.size, 0),
-          };
-          if (inputEvent !== "input" || files.length === 0) {
-            return {
-              ok: false,
-              error: "Chrome did not enumerate the approved directory files",
-              ...diagnostic,
-            };
-          }
-          try {
-            const requestFileSystem = (size) => new Promise((resolve, reject) => {
-              webkitRequestFileSystem(TEMPORARY, size, resolve, reject);
-            });
-            const getDirectory = (parent, name) => new Promise((resolve, reject) => {
-              parent.getDirectory(name, {create: true}, resolve, reject);
-            });
-            const getFile = (parent, name) => new Promise((resolve, reject) => {
-              parent.getFile(name, {create: true}, resolve, reject);
-            });
-            const writeFile = async (entry, file) => {
-              const writer = await new Promise((resolve, reject) => {
-                entry.createWriter(resolve, reject);
-              });
-              await new Promise((resolve, reject) => {
-                writer.onerror = () => reject(writer.error || new Error("write failed"));
-                writer.onwriteend = resolve;
-                writer.write(file);
-              });
-            };
-            const relativePaths = files.map((file) => file.webkitRelativePath);
-            const rootName = relativePaths[0]?.split("/")[0] || "";
-            if (
-              !rootName ||
-              relativePaths.some((relativePath) =>
-                relativePath.includes("\\\\") ||
-                relativePath.split("/").includes("..") ||
-                !relativePath.startsWith(rootName + "/")
-              )
-            ) {
-              throw new Error("directory upload returned an unsafe relative path");
-            }
-            const fileSystem = await requestFileSystem(
-              Math.max(64 * 1024 * 1024, diagnostic.totalBytes * 2),
-            );
-            const project = await getDirectory(fileSystem.root, rootName);
-            for (const file of files) {
-              const parts = file.webkitRelativePath.split("/").slice(1);
-              const fileName = parts.pop();
-              if (!fileName) throw new Error("directory upload returned an empty filename");
-              let parent = project;
-              for (const directory of parts) {
-                parent = await getDirectory(parent, directory);
-              }
-              await writeFile(await getFile(parent, fileName), file);
-            }
-            const result = await chrome.developerPrivate.loadDirectory(project);
-            return {
-              ok: true,
-              result: result ?? null,
-              importedRoot: rootName,
-              ...diagnostic,
-            };
-          } catch (error) {
-            return {
-              ok: false,
-              error: String(error?.stack || error),
-              runtimeError: chrome.runtime?.lastError?.message || null,
-              ...diagnostic,
-            };
-          }
-        })()`,
-        awaitPromise: true,
-        returnByValue: true,
-      },
-      sessionId,
-    );
-    const loadResult = loaded.result?.value;
-    process.stdout.write(`CHROME_PROFILE_IMPORT ${JSON.stringify(loadResult)}\n`);
-    if (loaded.exceptionDetails || loadResult?.ok !== true) {
-      throw new Error(
-        `Chrome Profile import rejected the approved extension: ${JSON.stringify(loadResult)}`,
-      );
-    }
-    let lastExtensions = [];
-    for (let attempt = 0; attempt < 300; attempt += 1) {
-      const listed = await send("Extensions.getExtensions");
-      lastExtensions = listed.extensions || [];
-      const record = lastExtensions.find(
-        (item) => item.id === args["expected-id"],
-      );
-      if (record) return record;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    const active = lastExtensions.map((item) => ({
-      id: item.id,
-      version: item.version,
-      enabled: item.enabled,
-      path: item.path,
-    }));
-    throw new Error(
-      `Chrome Profile import did not load the approved unpacked extension; active=${JSON.stringify(active)}`,
-    );
-  }
-
-  async function findExistingExtension() {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const listed = await send("Extensions.getExtensions");
-      const record = (listed.extensions || []).find(
-        (item) => item.id === args["expected-id"],
-      );
-      if (record) return record;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    throw new Error("approved extension is not active in the restarted Chrome Profile");
-  }
-
-  async function seedExtensionAuthToken(extensionId, tokenFile) {
+  async function seedExtensionAuthToken(extensionId) {
     const extensionUrl = `chrome-extension://${extensionId}/status.html`;
     const target = await send("Target.createTarget", { url: extensionUrl });
     const attached = await send("Target.attachToTarget", {
@@ -470,10 +228,8 @@ async function main() {
         attached.sessionId,
       );
       currentUrl = location.result && location.result.value;
-      if (typeof currentUrl === "string" && currentUrl.startsWith(extensionUrl)) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (typeof currentUrl === "string" && currentUrl.startsWith(extensionUrl)) break;
+      await delay(100);
     }
     if (typeof currentUrl !== "string" || !currentUrl.startsWith(extensionUrl)) {
       throw new Error(`extension status page did not load: ${currentUrl}`);
@@ -490,36 +246,42 @@ async function main() {
     if (seeded.exceptionDetails || seeded.result?.value !== token) {
       throw new Error("could not seed the disposable extension authentication token");
     }
-    fs.writeFileSync(tokenFile, token, { encoding: "utf8", mode: 0o600 });
+    writeAtomic(tokenFile, token, { encoding: "utf8", mode: 0o600 });
     await send("Target.closeTarget", { targetId: target.targetId });
   }
 
   try {
-    const record =
-      args.mode === "install-directory"
-        ? await loadUnpackedThroughProfileImport()
-        : await findExistingExtension();
+    let listed = await send("Extensions.getExtensions");
+    let record = (listed.extensions || []).find(
+      (item) => item.id === args["expected-id"],
+    );
+    let loadedForSession = false;
+    if (!record) {
+      const loaded = await send("Extensions.loadUnpacked", {
+        path: extension,
+        enableInIncognito: false,
+      });
+      loadedForSession = true;
+      if (loaded.id !== args["expected-id"]) {
+        throw new Error(
+          `loaded extension ID mismatch: ${loaded.id} != ${args["expected-id"]}`,
+        );
+      }
+      listed = await send("Extensions.getExtensions");
+      record = (listed.extensions || []).find(
+        (item) => item.id === args["expected-id"],
+      );
+    }
+    if (!record) {
+      throw new Error("loaded extension is absent from Extensions.getExtensions");
+    }
     if (record.enabled !== true || record.version !== args["expected-version"]) {
       throw new Error(
         `loaded extension is not enabled at the approved version: ${JSON.stringify(record)}`,
       );
     }
-    if (args.mode === "install-directory") {
-      const recordPath = normalizedPath(record.path);
-      const approvedPath = normalizedPath(extension);
-      const importedPath = path.join(
-        profile,
-        lastUsedProfileName(profile),
-        "Unpacked Extensions",
-        path.basename(extension),
-      );
-      if (recordPath === normalizedPath(importedPath)) {
-        assertSameDirectoryContents(record.path, extension);
-      } else if (recordPath !== approvedPath) {
-        throw new Error(
-          `loaded extension path mismatch: ${record.path} != ${extension} or ${importedPath}`,
-        );
-      }
+    if (loadedForSession && normalizedPath(record.path) !== normalizedPath(extension)) {
+      throw new Error(`loaded extension path mismatch: ${record.path} != ${extension}`);
     }
     await send("Storage.setCookies", {
       cookies: [
@@ -535,10 +297,19 @@ async function main() {
         },
       ],
     });
-    await seedExtensionAuthToken(record.id, path.resolve(args["token-file"]));
-    process.stdout.write(
-      `${JSON.stringify({ id: record.id, version: record.version, enabled: record.enabled })}\n`,
-    );
+    await seedExtensionAuthToken(record.id);
+    const ready = {
+      sessionOnly: loadedForSession,
+      source: loadedForSession ? "session-surrogate" : "existing-installation",
+      id: record.id,
+      version: record.version,
+      enabled: record.enabled,
+      path: path.resolve(record.path),
+    };
+    writeAtomic(readyFile, `${JSON.stringify(ready)}\n`, "utf8");
+    process.stdout.write(`CI_SESSION_ONLY_EXTENSION_READY ${JSON.stringify(ready)}\n`);
+
+    await waitForStop(stopFile, child, args.maximumSeconds, () => stderr);
     await send("Browser.close");
     const exitCode = await waitForExit(child, 15000);
     if (exitCode !== 0 && exitCode !== null) {
@@ -552,8 +323,7 @@ async function main() {
 
 main().catch((error) => {
   process.stderr.write(`ERROR: ${error.stack || error}\n`);
-  // Chrome descendants can retain remote-debugging-pipe handles after the
-  // browser process is killed. A failed CI probe must not keep the Node event
-  // loop alive and strand the still-waiting one-click installer.
+  // A failed helper must never strand the real one-click installer at its
+  // intentionally unbounded manual wait.
   process.exit(1);
 });
