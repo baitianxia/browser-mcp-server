@@ -78,11 +78,10 @@ do {
             })
             $LoadButton = @($Buttons | Where-Object {
                 try {
-                    $_.Current.Name -in @(
-                        "Load unpacked",
-                        "加载已解压的扩展程序",
-                        "加载解压缩的扩展"
-                    )
+                    # GitHub's Windows runner and bundled Chrome use English.
+                    # Keep this CI-only PS 5.1 script ASCII so a BOM-less source
+                    # cannot be mis-decoded by a legacy Windows system code page.
+                    $_.Current.Name -eq "Load unpacked"
                 } catch {
                     $false
                 }
