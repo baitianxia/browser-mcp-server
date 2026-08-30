@@ -202,30 +202,32 @@ if (-not $LoadButton -or -not $ChromeWindow) {
     )
 }
 
-$LoadInvokeObject = $null
-if ($LoadButton.TryGetCurrentPattern(
-        [System.Windows.Automation.InvokePattern]::Pattern,
-        [ref]$LoadInvokeObject
-    )) {
-    try {
-        ([System.Windows.Automation.InvokePattern]$LoadInvokeObject).Invoke()
-        Write-Host "UIA_LOAD_BUTTON name=Load unpacked action=invoke-pattern"
-    } catch {
-        $LoadClick = Invoke-DesktopElementClick `
-            -Window $ChromeWindow -Element $LoadButton
-        Write-Host (
-            "UIA_LOAD_BUTTON x={0} y={1} name={2} action=desktop-fallback" -f `
-                $LoadClick[0], $LoadClick[1], $LoadButton.Current.Name
-        )
-    }
-} else {
-    $LoadClick = Invoke-DesktopElementClick `
-        -Window $ChromeWindow -Element $LoadButton
-    Write-Host (
-        "UIA_LOAD_BUTTON x={0} y={1} name={2} action=desktop-no-invoke-pattern" -f `
-            $LoadClick[0], $LoadClick[1], $LoadButton.Current.Name
-    )
+$AsyncInvokerScript = Join-Path $PSScriptRoot "invoke-load-unpacked.ps1"
+if (-not (Test-Path -LiteralPath $AsyncInvokerScript -PathType Leaf)) {
+    throw "The asynchronous Load unpacked invoker is missing: $AsyncInvokerScript"
 }
+$InvokerStdout = Join-Path $env:TEMP (
+    "intranet-load-unpacked-{0}.stdout.log" -f [guid]::NewGuid().ToString("N")
+)
+$InvokerStderr = Join-Path $env:TEMP (
+    "intranet-load-unpacked-{0}.stderr.log" -f [guid]::NewGuid().ToString("N")
+)
+$InvokerArguments = @(
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    ('"{0}"' -f $AsyncInvokerScript)
+)
+$LoadInvoker = Start-Process -FilePath "powershell.exe" `
+    -ArgumentList $InvokerArguments `
+    -RedirectStandardOutput $InvokerStdout `
+    -RedirectStandardError $InvokerStderr `
+    -WindowStyle Hidden `
+    -PassThru
+Write-Host "UIA_LOAD_BUTTON name=Load unpacked action=async-invoke-process"
 
 $Dialog = $null
 $TopWindows = @()
@@ -249,6 +251,14 @@ do {
         } catch {
             # UI Automation elements can disappear while the desktop is scanned.
         }
+    }
+    if ($LoadInvoker.HasExited -and $LoadInvoker.ExitCode -ne 0) {
+        $InvokerFailure = if (Test-Path -LiteralPath $InvokerStderr) {
+            Get-Content -LiteralPath $InvokerStderr -Raw
+        } else {
+            "exit=$($LoadInvoker.ExitCode)"
+        }
+        throw "Async Load unpacked invoker failed: $InvokerFailure"
     }
     if (-not $Dialog) {
         Start-Sleep -Milliseconds 200
@@ -337,3 +347,26 @@ Write-Host (
         $Accept.Current.AutomationId, $Accept.Current.Name
 )
 ([System.Windows.Automation.InvokePattern]$InvokeObject).Invoke()
+
+if (-not $LoadInvoker.WaitForExit(20000)) {
+    Stop-Process -Id $LoadInvoker.Id -Force -ErrorAction SilentlyContinue
+    throw "Async Load unpacked invoker did not return after the folder closed."
+}
+$InvokerOutput = if (Test-Path -LiteralPath $InvokerStdout) {
+    Get-Content -LiteralPath $InvokerStdout -Raw
+} else {
+    ""
+}
+$InvokerError = if (Test-Path -LiteralPath $InvokerStderr) {
+    Get-Content -LiteralPath $InvokerStderr -Raw
+} else {
+    ""
+}
+if ($InvokerOutput) {
+    Write-Host $InvokerOutput.Trim()
+}
+if ($LoadInvoker.ExitCode -ne 0) {
+    throw "Async Load unpacked invoker failed after dialog close: $InvokerError"
+}
+Remove-Item -LiteralPath $InvokerStdout, $InvokerStderr -Force `
+    -ErrorAction SilentlyContinue

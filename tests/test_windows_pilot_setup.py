@@ -235,6 +235,9 @@ class WindowsPilotSetupTests(unittest.TestCase):
         selector = (
             ROOT / ".github" / "scripts" / "select-extension-folder.ps1"
         ).read_text(encoding="utf-8")
+        async_invoker = (
+            ROOT / ".github" / "scripts" / "invoke-load-unpacked.ps1"
+        ).read_text(encoding="utf-8")
         exercise = (
             ROOT / ".github" / "scripts" / "exercise-extension-mcp.py"
         ).read_text(encoding="utf-8")
@@ -254,7 +257,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("UIA_DEVELOPER_MODE", selector)
         self.assertIn("TogglePattern", selector)
         self.assertIn("UIA_LOAD_BUTTON", selector)
-        self.assertIn("InvokePattern", selector)
+        self.assertIn("invoke-load-unpacked.ps1", selector)
+        self.assertIn("Start-Process", selector)
+        self.assertIn("WaitForExit(20000)", selector)
+        self.assertIn("InvokePattern", async_invoker)
+        self.assertIn("UIA_ASYNC_LOAD", async_invoker)
         self.assertIn("mouse_event(0x0002", selector)
         self.assertIn("mouse_event(0x0004", selector)
         self.assertIn('AutomationIdProperty, "1"', selector)
