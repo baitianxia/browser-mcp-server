@@ -483,7 +483,6 @@ jobs:
               "Software\Policies\Google\Chrome\ExtensionInstallForcelist"
           $CiExtensionPolicyPath = "HKCU:\$CiExtensionPolicySubKey"
           $script:CiExtensionPolicyKeyWasPresent = $false
-          $script:CiExtensionPolicyKeyCreated = $false
           $script:CiExtensionPolicyCreatedPaths = @()
           $script:CiExtensionPolicyOriginalAccessSddl = ""
           $script:CiExtensionPolicyAclArmed = $false
@@ -596,18 +595,41 @@ jobs:
                   return
               }
               if ($script:CiExtensionPolicyAclArmed) {
-                  $RestorePolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
-                  $RestorePolicyAcl.SetSecurityDescriptorSddlForm(
+                  $RestorePolicyKey =
+                      [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                          $CiExtensionPolicySubKey,
+                          [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+                          ([Security.AccessControl.RegistryRights]::ReadPermissions `
+                              -bor [Security.AccessControl.RegistryRights]::ChangePermissions)
+                      )
+                  if ($null -eq $RestorePolicyKey) {
+                      throw "CI could not reopen the extension-policy key to restore its ACL."
+                  }
+                  $RestorePolicySecurity = $RestorePolicyKey.GetAccessControl(
+                      [Security.AccessControl.AccessControlSections]::Access
+                  )
+                  $RestorePolicySecurity.SetSecurityDescriptorSddlForm(
                       $script:CiExtensionPolicyOriginalAccessSddl,
                       [Security.AccessControl.AccessControlSections]::Access
                   )
-                  Set-Acl -LiteralPath $CiExtensionPolicyPath `
-                      -AclObject $RestorePolicyAcl
-                  $RestoredPolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
-                  $RestoredPolicyAccessSddl = `
-                      $RestoredPolicyAcl.GetSecurityDescriptorSddlForm(
+                  $RestorePolicyKey.SetAccessControl($RestorePolicySecurity)
+                  $RestorePolicyKey.Dispose()
+                  $VerifyRestoredPolicyKey =
+                      [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                          $CiExtensionPolicySubKey,
+                          [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadSubTree,
+                          [Security.AccessControl.RegistryRights]::ReadPermissions
+                      )
+                  if ($null -eq $VerifyRestoredPolicyKey) {
+                      throw "CI could not reopen the restored extension-policy key."
+                  }
+                  $RestoredPolicyAccessSddl =
+                      $VerifyRestoredPolicyKey.GetAccessControl(
+                          [Security.AccessControl.AccessControlSections]::Access
+                      ).GetSecurityDescriptorSddlForm(
                           [Security.AccessControl.AccessControlSections]::Access
                       )
+                  $VerifyRestoredPolicyKey.Dispose()
                   if ($RestoredPolicyAccessSddl -cne `
                       $script:CiExtensionPolicyOriginalAccessSddl) {
                       throw "CI did not restore the exact extension-policy access ACL."
@@ -619,54 +641,90 @@ jobs:
                   $CiCreatedPolicyIndex -= 1) {
                   $CiCreatedPolicyPath =
                       $script:CiExtensionPolicyCreatedPaths[$CiCreatedPolicyIndex]
-                  if (-not (Test-Path -LiteralPath $CiCreatedPolicyPath `
-                      -PathType Container)) {
+                  $CiCreatedPolicyKey =
+                      [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                          $CiCreatedPolicyPath,
+                          $false
+                      )
+                  if ($null -eq $CiCreatedPolicyKey) {
                       continue
                   }
-                  $CiPolicyKey = Get-Item -LiteralPath $CiCreatedPolicyPath
-                  if (@($CiPolicyKey.GetValueNames()).Count -eq 0 -and
-                      $CiPolicyKey.SubKeyCount -eq 0) {
-                      Remove-Item -LiteralPath $CiCreatedPolicyPath -Force
+                  $CiCreatedPolicyKeyIsEmpty =
+                      @($CiCreatedPolicyKey.GetValueNames()).Count -eq 0 -and
+                      $CiCreatedPolicyKey.SubKeyCount -eq 0
+                  $CiCreatedPolicyKey.Dispose()
+                  if ($CiCreatedPolicyKeyIsEmpty) {
+                      [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey(
+                          $CiCreatedPolicyPath,
+                          $false
+                      )
                   }
               }
               $script:CiExtensionPolicyAclRestored = $true
               Write-Host "CI EXTENSION POLICY ACCESS DENIED RESTORED"
           }
           try {
-              $script:CiExtensionPolicyKeyWasPresent = `
-                  Test-Path -LiteralPath $CiExtensionPolicyPath
+              $CiExistingPolicyKey =
+                  [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                      $CiExtensionPolicySubKey,
+                      $false
+                  )
+              $script:CiExtensionPolicyKeyWasPresent =
+                  $null -ne $CiExistingPolicyKey
+              if ($null -ne $CiExistingPolicyKey) {
+                  $CiExistingPolicyKey.Dispose()
+              }
               if (-not $script:CiExtensionPolicyKeyWasPresent) {
-                  $CiCurrentPolicyPath = "HKCU:\"
+                  $CiCurrentPolicyPath = ""
                   foreach ($CiPolicyPathPart in @(
                       $CiExtensionPolicySubKey -split '\\')) {
                       if (-not $CiPolicyPathPart) {
                           continue
                       }
-                      $CiCurrentPolicyPath = Join-Path `
-                          $CiCurrentPolicyPath $CiPolicyPathPart
-                      if (-not (Test-Path -LiteralPath $CiCurrentPolicyPath `
-                          -PathType Container)) {
-                          New-Item -Path $CiCurrentPolicyPath -Force `
-                              -ErrorAction Stop | Out-Null
+                      $CiCurrentPolicyPath = if ($CiCurrentPolicyPath) {
+                          "$CiCurrentPolicyPath\$CiPolicyPathPart"
+                      } else {
+                          $CiPolicyPathPart
+                      }
+                      $CiCurrentPolicyKey =
+                          [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                              $CiCurrentPolicyPath,
+                              $false
+                          )
+                      if ($null -eq $CiCurrentPolicyKey) {
+                          $CiCurrentPolicyKey =
+                              [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
+                                  $CiCurrentPolicyPath,
+                                  [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree
+                              )
+                          if ($null -eq $CiCurrentPolicyKey) {
+                              throw (
+                                  "CI could not create extension policy segment: " +
+                                  $CiCurrentPolicyPath
+                              )
+                          }
                           $script:CiExtensionPolicyCreatedPaths += `
                               $CiCurrentPolicyPath
                       }
-                      if (-not (Test-Path -LiteralPath $CiCurrentPolicyPath `
-                          -PathType Container)) {
-                          throw (
-                              "CI extension policy segment is not visible: " +
-                              $CiCurrentPolicyPath
-                          )
-                      }
+                      $CiCurrentPolicyKey.Dispose()
                   }
-                  if ($CiCurrentPolicyPath -cne $CiExtensionPolicyPath) {
+                  if ($CiCurrentPolicyPath -cne $CiExtensionPolicySubKey) {
                       throw "CI extension policy path creation returned the wrong key."
                   }
-                  $script:CiExtensionPolicyKeyCreated =
-                      $script:CiExtensionPolicyCreatedPaths -contains `
-                          $CiExtensionPolicyPath
               }
-              $CiPolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
+              $CiPolicyKey =
+                  [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                      $CiExtensionPolicySubKey,
+                      [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree,
+                      ([Security.AccessControl.RegistryRights]::ReadPermissions `
+                          -bor [Security.AccessControl.RegistryRights]::ChangePermissions)
+                  )
+              if ($null -eq $CiPolicyKey) {
+                  throw "CI could not open the extension policy test key for ACL changes."
+              }
+              $CiPolicyAcl = $CiPolicyKey.GetAccessControl(
+                  [Security.AccessControl.AccessControlSections]::Access
+              )
               $script:CiExtensionPolicyOriginalAccessSddl = `
                   $CiPolicyAcl.GetSecurityDescriptorSddlForm(
                       [Security.AccessControl.AccessControlSections]::Access
@@ -682,26 +740,51 @@ jobs:
                       [Security.AccessControl.AccessControlType]::Deny
                   )
               $null = $CiPolicyAcl.AddAccessRule($CiPolicyDeny)
-              Set-Acl -LiteralPath $CiExtensionPolicyPath `
-                  -AclObject $CiPolicyAcl
+              $CiPolicyKey.SetAccessControl($CiPolicyAcl)
               $script:CiExtensionPolicyAclArmed = $true
+              $CiPolicyKey.Dispose()
               $CiPolicyProbeName = "ci-access-denied-probe"
               $CiPolicyWriteDenied = $false
+              $CiPolicyProbeKey = $null
               try {
-                  New-ItemProperty -LiteralPath $CiExtensionPolicyPath `
-                      -Name $CiPolicyProbeName -Value "must-not-write" `
-                      -PropertyType String -Force | Out-Null
+                  $CiPolicyProbeKey =
+                      [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                          $CiExtensionPolicySubKey,
+                          $true
+                      )
+                  if ($null -eq $CiPolicyProbeKey) {
+                      throw [UnauthorizedAccessException]::new(
+                          "The extension policy key was not writable."
+                      )
+                  }
+                  $CiPolicyProbeKey.SetValue(
+                      $CiPolicyProbeName,
+                      "must-not-write",
+                      [Microsoft.Win32.RegistryValueKind]::String
+                  )
               } catch {
-                  if ($_.CategoryInfo.Category -ne `
-                          [Management.Automation.ErrorCategory]::PermissionDenied -and
-                      $_.Exception -isnot [System.UnauthorizedAccessException]) {
+                  $CiPolicyProbeError = $_.Exception
+                  $CiPolicyProbePermissionDenied = $false
+                  while ($null -ne $CiPolicyProbeError) {
+                      if ($CiPolicyProbeError -is `
+                              [System.UnauthorizedAccessException] -or
+                          $CiPolicyProbeError -is `
+                              [System.Security.SecurityException]) {
+                          $CiPolicyProbePermissionDenied = $true
+                          break
+                      }
+                      $CiPolicyProbeError = $CiPolicyProbeError.InnerException
+                  }
+                  if (-not $CiPolicyProbePermissionDenied -and
+                      $_.CategoryInfo.Category -ne `
+                          [Management.Automation.ErrorCategory]::PermissionDenied) {
                       throw
                   }
                   $CiPolicyWriteDenied = $true
               } finally {
-                  Remove-ItemProperty -LiteralPath $CiExtensionPolicyPath `
-                      -Name $CiPolicyProbeName -Force `
-                      -ErrorAction SilentlyContinue
+                  if ($null -ne $CiPolicyProbeKey) {
+                      $CiPolicyProbeKey.Dispose()
+                  }
               }
               if (-not $CiPolicyWriteDenied) {
                   throw "CI could not deny the exact extension policy SetValue operation."
