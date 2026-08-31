@@ -66,20 +66,33 @@ class TransferKitTests(unittest.TestCase):
         target_system: str = "linux",
         target_machine: str = "x64",
         bundled_node: bool | None = None,
+        cross_built: bool | None = None,
     ) -> Path:
         runtime_name = (
             f"browser-agent-runtime-{RUNTIME_VERSION}-core-{target_system}-{target_machine}"
         )
         runtime_root = root / runtime_name
         runtime_root.mkdir()
+        is_cross_built = (
+            target_system.lower() == "windows"
+            if cross_built is None
+            else cross_built
+        )
+        build_host = (
+            {"system": "linux", "machine": "x64"}
+            if is_cross_built
+            else {"system": target_system, "machine": target_machine}
+        )
         (runtime_root / "BUILD-METADATA.json").write_text(
             json.dumps(
                 {
                     "schemaVersion": 1,
                     "runtimeVersion": RUNTIME_VERSION,
                     "profile": "core",
+                    "buildHost": build_host,
                     "target": {"system": target_system, "machine": target_machine},
-                    "crossBuilt": target_system.lower() == "windows",
+                    "crossBuilt": is_cross_built,
+                    "targetCliSmokeTested": not is_cross_built,
                     "tools": {"node": "v24.0.0", "pnpm": "11.19.0"},
                     "bundledNode": (
                         target_system.lower() == "windows"
@@ -113,7 +126,12 @@ class TransferKitTests(unittest.TestCase):
     def test_builds_verified_allowlisted_transfer_archive(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            runtime = self.make_runtime(root, target_system="windows", target_machine="x64")
+            runtime = self.make_runtime(
+                root,
+                target_system="windows",
+                target_machine="x64",
+                cross_built=False,
+            )
             extension, extension_approval = self.make_extension(root)
             output = root / "output"
             build_transfer.build_transfer_kit(
@@ -144,15 +162,11 @@ class TransferKitTests(unittest.TestCase):
                 kit_metadata = json.loads(metadata_handle.read().decode("utf-8"))
             self.assertIn("INSTALL-WINDOWS-PILOT.cmd", start_here)
             self.assertIn("双击安装", start_here)
-            self.assertIn(
-                "演练首次安装、升级、条目/环境错写和 `remove/add/get` 失败回滚",
-                start_here,
-            )
             self.assertIn("首次安装明确没有旧 MCP 条目时会直接继续", start_here)
             self.assertIn("双击本目录的 `INSTALL-WINDOWS-PILOT.cmd` 一次", start_here)
-            self.assertIn("真实 Claude CLI 隔离探针", start_here)
-            self.assertIn("真实 MCP stdio", start_here)
-            self.assertIn("全部通过后才开始持久化安装", start_here)
+            self.assertIn("最终 MCP stdio", start_here)
+            self.assertIn("启动器只启动一个安装事务", start_here)
+            self.assertIn("不运行单元测试或注册器自检", start_here)
             self.assertIn(f"{prefix}/START-HERE.md", names)
             self.assertIn(f"{prefix}/INSTALL-WINDOWS-PILOT.cmd", names)
             self.assertIn(f"{prefix}/INSTALL-WINDOWS-PILOT.ps1", names)
@@ -197,6 +211,10 @@ class TransferKitTests(unittest.TestCase):
                 f"{prefix}/toolkit/scripts/verify-windows-release.ps1", names
             )
             self.assertIn(
+                f"{prefix}/toolkit/docs/adr/0008-publisher-gate-and-single-pass-target-install.md",
+                names,
+            )
+            self.assertIn(
                 f"{prefix}/toolkit/scripts/windows-tool-discovery.ps1", names
             )
             self.assertIn(
@@ -206,10 +224,33 @@ class TransferKitTests(unittest.TestCase):
             self.assertIn(
                 f"{prefix}/toolkit/scripts/validate_node_distribution.py", names
             )
+            self.assertIn(
+                f"{prefix}/toolkit/scripts/validate_windows_release_metadata.py",
+                names,
+            )
+            self.assertIn(
+                f"{prefix}/toolkit/tests/test_windows_release_metadata.py", names
+            )
             self.assertIn(f"{prefix}/runtime/{runtime.name}", names)
             self.assertFalse(any("/.git/" in name for name in names))
             self.assertFalse(any("/__pycache__/" in name for name in names))
             self.assertNotIn(f"{prefix}/toolkit/config/deployment.production.json", names)
+
+    def test_cross_built_windows_start_here_refuses_target_install(self) -> None:
+        start_here = build_transfer.start_here(
+            "candidate",
+            f"browser-agent-runtime-{RUNTIME_VERSION}-core-windows-x64.tar.gz",
+            {
+                "target": {"system": "windows", "machine": "x64"},
+                "crossBuilt": True,
+                "targetCliSmokeTested": False,
+                "bundledNode": True,
+            },
+        )
+        self.assertIn("仅供发布侧结构审查", start_here)
+        self.assertIn("不要在目标机双击", start_here)
+        self.assertIn("目标安装器会拒绝", start_here)
+        self.assertNotIn("双击本目录的 `INSTALL-WINDOWS-PILOT.cmd` 一次", start_here)
 
     def test_windows_transfer_requires_approved_extension_crx(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

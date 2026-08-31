@@ -4,7 +4,7 @@
 
 这是一套面向 Claude Code + Playwright MCP 的可审计、可离线交付基线。它不是另造一个浏览器 Agent；它把浏览器接入、部署前置条件、安全门禁、配置生成和验收固化成代码。
 
-只做 Windows 内网测试时，拿到已校验并解压的目录后只需双击一次 `INSTALL-WINDOWS-PILOT.cmd`；自动门禁和安装会在同一个窗口连续完成。最短说明见 [`docs/windows-quickstart.md`](docs/windows-quickstart.md)，`docs/operations.md` 是生产、回滚和故障处理用的完整手册。
+只做 Windows 内网测试时，拿到发布流水线验证并解压的正式包后只需双击一次 `INSTALL-WINDOWS-PILOT.cmd`；目标机只运行一个安装事务，不重复发布测试。最短说明见 [`docs/windows-quickstart.md`](docs/windows-quickstart.md)，`docs/operations.md` 是生产、回滚和故障处理用的完整手册。
 
 默认生产拓扑是：
 
@@ -60,7 +60,7 @@ python3 tools/browser_agent.py render \
 
 推送到 GitHub 后，`Windows release validation` 会在 `windows-2022` 和 `windows-latest` 上用 Windows PowerShell 5.1 跑完整测试；随后在 `windows-latest` 原生构建 Windows 运行包。一次性有网 CI VM 会准备固定 Claude Code 2.1.84 的原生和 npm 两种测试夹具：原生入口完成隔离门禁，真实 npm `claude.cmd` 入口完成顶层 `INSTALL-WINDOWS-PILOT.cmd` 的单次全流程。只有两种入口、MCP 握手、隔离 user-scope 注册、完整安装和安装后页面/Cookie 校验均通过，才上传可下载的 Windows 迁移包 artifact。CI 中安装固定 pnpm/Claude 测试夹具不属于目标机步骤，也不会被带入迁移包；内网安装器只复用已有 Claude Code，绝不安装或修复它，且不运行 npm、pnpm 或 npx。
 
-Windows 内网测试不要直接使用 demo。正式放行仍要求发布方先在受控 Windows x64、Windows PowerShell 5.1 上运行 `scripts/verify-windows-release.ps1`。明确标记为“自检候选”的交叉构建包会把同一门禁强制串入顶层 `INSTALL-WINDOWS-PILOT.cmd`：一次双击先执行测试前后双重完整性校验、完整测试、全部 PowerShell 脚本 AST 解析、假 Claude CLI 失败回滚、内层运行时临时解压、包内 `node.exe` 来源/版本校验、真实 MCP stdio `initialize + tools/list` 握手，以及临时 `CLAUDE_CONFIG_DIR` 下的真实 Claude CLI 隔离探针；全部通过后才在同一窗口开始安装。门禁与安装器共用 Claude 探测器，复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`；npm 入口会安全解析为其现有 `node.exe + 已安装 cli.js`，不会运行包管理器。找不到可用 Claude 时在任何真实配置变更前停止，不会擅自安装。向导不请求 UAC、不询问项目目录，会把固定运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome/Edge，并注册 user-scope MCP。迁移包已携带固定官方 CRX 和逐文件一致的已解压扩展：浏览器接受本地策略时自动安装；拒绝时向导自动打开扩展页、复制唯一目录并等待用户加载，成功后原进程续跑，无需第二次启动。实际 MCP 直接执行包内 `node.exe + 固定 cli.js + --browser=<channel> + --executable-path=<自动识别的 browser.exe> + config`，不依赖 `.cmd` shell shim；这里的 `.cmd` 禁止项是 MCP 服务命令，不妨碍安装器识别 npm 版 Claude Code。显式浏览器路径既固定实际启动程序，也避开固定 MCP 版本对手工 unpacked 扩展 Profile 记录的不完整预检，浏览器仍按自身 `last_used` Profile 复用当前登录态。固定环境映射会覆盖固定版本支持的 Playwright MCP 配置变量、`NODE_OPTIONS` 和 `NODE_PATH`，避免包内配置被调用者环境悄悄改写。安装后该用户的项目均可使用（同名的 local/project 配置按 Claude Code 自身优先级覆盖 user scope）；试点不要求网址白名单、防火墙配置、浏览器选择或审批单号。具体只看 `docs/windows-quickstart.md`。
+Windows 内网测试不要直接使用 demo，也不要使用交叉构建候选。完整测试、PowerShell AST 解析、假 Claude CLI 失败回滚和真实隔离探针只由发布方在受控 Windows x64 流水线运行；只有该门禁和随后的一键安装回归都通过，流水线才上传正式包。目标机一次双击 `INSTALL-WINDOWS-PILOT.cmd` 只启动一个安装事务，不再重复发布测试。安装器验证包来自 Windows x64 原生构建并已完成目标 CLI 冒烟，复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`；npm 入口安全解析为其现有 `node.exe + 已安装 cli.js`，不会运行包管理器。找不到可用 Claude 时在任何真实配置变更前停止，不会擅自安装。向导不请求 UAC、不询问项目目录，会把固定运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome/Edge，并事务化注册 user-scope MCP。迁移包已携带固定官方 CRX 和逐文件一致的已解压扩展：浏览器接受本地策略时自动安装；拒绝时向导自动打开扩展页、复制唯一目录并等待用户加载，成功后原进程续跑，无需第二次启动。实际 MCP 直接执行包内 `node.exe + 固定 cli.js + --browser=<channel> + --executable-path=<browser.exe> + config`，不依赖 `.cmd` shell shim；浏览器按自身 `last_used` Profile 复用用户明确批准标签页的登录态。固定环境映射会阻止遗留 Playwright MCP 配置变量、`NODE_OPTIONS` 和 `NODE_PATH` 改写包内配置。安装后该用户的项目均可使用（同名的 local/project 配置按 Claude Code 自身优先级覆盖 user scope）；试点不要求网址白名单、防火墙配置、浏览器选择或审批单号。具体只看 `docs/windows-quickstart.md`。
 
 Windows 生产部署则从 Windows 生产模板开始：
 

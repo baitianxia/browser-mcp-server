@@ -2,7 +2,15 @@
 
 状态：2026-08-31 的验证证据快照，不是规范性设计文档。
 
-## 1.0.11 Windows 验证状态
+## 1.0.12 Windows 验证状态（候选，尚未放行）
+
+目标机对 1.0.11 的实测撤回了该制品：Claude Code 本身可以正常使用，但顶层 launcher 在安装前运行了完整发布测试；其中 `test_self_test_runs_as_a_real_subprocess` 又以 30 秒硬超时启动注册器 `self-test`，目标 Python 子进程超过时限后以 `Python release check failed with exit code 1` 停止。该失败发生在开发测试，不是 MCP、Claude Code 或安装事务的功能失败。此前 GitHub Runner 在 30 秒内通过只能证明该 runner 足够快，不能证明把发布测试放到任意内网终端是可靠设计。
+
+1.0.12 按 ADR 0008 拆分职责：`verify-windows-release.ps1` 保留完整单元测试、AST 解析、假 Claude 注册故障矩阵、真实隔离注册和 MCP 握手，但只由发布方 Windows CI 调用；目标 `INSTALL-WINDOWS-PILOT.cmd` 只启动一次安装器，安装器不再调用发布门禁或注册器 `self-test`。目标仍验证迁移包完整性、Windows/Python/现有 Claude、离线扩展、包内 Node、最终 MCP 握手和事务化真实 user-scope 注册，并在持久化变更前拒绝非 Windows x64 原生构建、`crossBuilt=true` 或 `targetCliSmokeTested=false` 的候选包。Windows CI 必须分别保留发布门禁与单次安装日志，并断言安装日志没有发布自检标记。
+
+本地已执行 89 项完整测试：87 项通过，2 项仅因需要 Windows PowerShell 5.1 而跳过；新增用例还以真实校验器子进程实际接受原生正式元数据，并拒绝交叉构建、字符串伪装布尔值、未完成目标 CLI 冒烟、版本/archive 漂移和低于要求的 Node 元数据。Bash、全部 JSON、GitHub Actions YAML、全部 Python AST 与 `git diff --check` 也已通过。尚未记录 1.0.12 的 Windows PowerShell 5.1 run、artifact 哈希或四层下载复核，因此此处仍不能声称 Windows 已通过，也不能交付候选包。
+
+## 1.0.11 Windows 历史验证状态（已撤回）
 
 1.0.11 修复目标机已经完成运行包和包内 Node 验证后，`staging\r-*` 到最终版本目录的发布因 Defender/EDR 短暂持有目录句柄而第一次访问被拒绝时立即退出的问题。Windows 实机 #44 进一步证明 PowerShell FileSystem provider 的 `Move-Item` 会在拒绝后留下源、目标同时存在的中间态，现改用 Windows PowerShell 5.1 中由 Win32 `MoveFile` 支撑的 `[IO.Directory]::Move` 保持同盘发布的原子失败语义。安装器只在源仍存在、目标尚未出现且错误属于访问拒绝、共享冲突或等价目录移动 I/O 错误时，在原安装进程内有界退避重试；释放后继续并再次验证最终目录，目标已出现或状态不明确时仍失败关闭。Windows package job 必须保存运行时目录和其唯一暂存父目录的原 ACL，在完整解压前对当前用户同时真实拒绝运行时目录的 `Delete` 与父目录的 `DeleteSubdirectoriesAndFiles`，以强制首次移动返回操作系统访问拒绝；观察到首次重试后逐字恢复两份原 ACL，并证明同一个 launcher/installer 记录 `RUNTIME PUBLISH RETRY` 与 `RUNTIME PUBLISH RECOVERED` 后完成安装、注册和登录态 E2E。
 
@@ -100,4 +108,4 @@
 - 企业目标机上的 Chrome/Edge、企业证书、PAC/代理、SSO/MFA 与真实业务页面读写行为；GitHub 托管 Chrome 的本地离线页面和 Cookie 登录态复用已通过，但不能替代这些组织特定条件。
 - 企业 SCA、恶意代码扫描、制品签名、制品库导入及生产审批证据。
 
-因此，内网测试只需运行顶层 `INSTALL-WINDOWS-PILOT.cmd` 一次；不再需要用内网机器替代通用 Windows 兼容性测试。该单次流程仍会先在本机完成同一门禁，以捕获组织环境差异；门禁不过则安装不开始，门禁通过后同一窗口继续安装。生产放行仍需完成 `docs/acceptance.md` 的企业扫描、签名、浏览器/SSO 和生产治理项。
+因此，1.0.12 及后续正式包的内网测试只运行顶层 `INSTALL-WINDOWS-PILOT.cmd` 一次；目标机不再替发布方运行通用 Windows 单元测试、AST 扫描或假 Claude 故障矩阵。单次安装事务仍会验证与目标实际状态有关的制品、现有 Claude、浏览器、Node、MCP 握手和真实注册，并在失败时回滚。生产放行仍需完成 `docs/acceptance.md` 的企业扫描、签名、浏览器/SSO 和生产治理项。

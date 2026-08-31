@@ -209,7 +209,7 @@ jobs:
               throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
           }
           $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-agent-runtime-1.0.11-core-windows-x64.tar.gz")
+              -Filter "browser-agent-runtime-1.0.12-core-windows-x64.tar.gz")
           if ($RuntimeArchives.Count -ne 1) {
               throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
           }
@@ -228,7 +228,7 @@ jobs:
               throw "Transfer-kit build failed."
           }
           $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "intranet-browser-agent-transfer-1.0.11-core-windows-x64.tar.gz")
+              -Filter "intranet-browser-agent-transfer-1.0.12-core-windows-x64.tar.gz")
           if ($TransferArchives.Count -ne 1) {
               throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
           }
@@ -343,12 +343,17 @@ jobs:
           $ErrorActionPreference = "Stop"
           $Gate = Join-Path $env:TRANSFER_ROOT `
               "toolkit\scripts\verify-windows-release.ps1"
+          $PublisherGateLog = Join-Path $env:RUNNER_TEMP `
+              "WINDOWS-PUBLISHER-RELEASE-GATE.log"
           & powershell.exe -NoLogo -NoProfile -File $Gate `
               -ClaudeExecutable $env:NATIVE_CLAUDE_EXECUTABLE `
-              -TransferPath $env:TRANSFER_ROOT
+              -TransferPath $env:TRANSFER_ROOT `
+              -LogPath $PublisherGateLog
           if ($LASTEXITCODE -ne 0) {
               throw "The isolated native Claude release gate failed with exit code $LASTEXITCODE"
           }
+          "PUBLISHER_GATE_LOG=$PublisherGateLog" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run the exact one-click package launcher
         shell: powershell
@@ -754,7 +759,7 @@ jobs:
               }
               if ($LauncherProcess -and -not $LauncherFinished -and
                   -not $LauncherProcess.HasExited) {
-                  # The launcher is cmd -> release gate -> installer. Kill the
+                  # The launcher is cmd -> one installer process. Kill the
                   # disposable CI process tree so a failed browser probe cannot
                   # leave the installer waiting and keep redirected handles open.
                   & (Join-Path $env:SystemRoot "System32\taskkill.exe") `
@@ -819,7 +824,7 @@ jobs:
               }
           }
 
-      - name: Verify release-gate and installed-state evidence
+      - name: Verify publisher-gate and installed-state evidence
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -830,23 +835,41 @@ jobs:
           }
           $EvidenceRoot = Join-Path $env:RUNNER_TEMP "windows-evidence"
           New-Item -ItemType Directory -Path $EvidenceRoot -Force | Out-Null
+          $PublisherGateLog = [string]$env:PUBLISHER_GATE_LOG
+          if (-not $PublisherGateLog -or
+              -not (Test-Path -LiteralPath $PublisherGateLog -PathType Leaf)) {
+              throw "The publisher release-gate log is missing."
+          }
           $LogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
-          $GateLogs = @(Get-ChildItem -LiteralPath $LogRoot `
-              -Filter "WINDOWS-RELEASE-GATE-*.log" -ErrorAction Stop |
-              Sort-Object LastWriteTime -Descending)
           $InstallLogs = @(Get-ChildItem -LiteralPath $LogRoot `
               -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
               Sort-Object LastWriteTime -Descending)
-          if ($GateLogs.Count -lt 1 -or $InstallLogs.Count -lt 1) {
-              throw "The launcher did not preserve both release-gate and installer logs."
+          if ($InstallLogs.Count -lt 1) {
+              throw "The launcher did not preserve its installer log."
           }
-          if (-not (Select-String -LiteralPath $GateLogs[0].FullName `
+          if (-not (Select-String -LiteralPath $PublisherGateLog `
               -SimpleMatch "WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED" -Quiet)) {
-              throw "The release-gate PASS marker is missing."
+              throw "The publisher release-gate PASS marker is missing."
+          }
+          if (-not (Select-String -LiteralPath $PublisherGateLog `
+              -SimpleMatch "CLAUDE MCP REGISTRATION SELF-TEST PASSED" -Quiet)) {
+              throw "The publisher release gate did not run the registration self-test."
+          }
+          if (-not (Select-String -LiteralPath $PublisherGateLog `
+              -SimpleMatch "test_self_test_runs_as_a_real_subprocess" -Quiet)) {
+              throw "The publisher release gate did not run the complete Python suite."
           }
           if (-not (Select-String -LiteralPath $InstallLogs[0].FullName `
               -SimpleMatch "SUCCESS: installation and preflight completed" -Quiet)) {
               throw "The installer success marker is missing."
+          }
+          if (Select-String -LiteralPath $InstallLogs[0].FullName `
+              -SimpleMatch "CLAUDE MCP REGISTRATION SELF-TEST" -Quiet) {
+              throw "The target installer unexpectedly ran the publisher-only self-test."
+          }
+          if (Select-String -LiteralPath $InstallLogs[0].FullName `
+              -SimpleMatch "test_self_test_runs_as_a_real_subprocess" -Quiet) {
+              throw "The target installer unexpectedly ran the publisher-only unit suite."
           }
           if (-not (Select-String -LiteralPath $InstallLogs[0].FullName `
               -SimpleMatch "RUNTIME PUBLISH RETRY" -Quiet) -or
@@ -946,8 +969,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
               throw "Installed runtime verification failed."
           }
-          Copy-Item -LiteralPath $GateLogs[0].FullName `
-              -Destination (Join-Path $EvidenceRoot "WINDOWS-RELEASE-GATE.log")
+          Copy-Item -LiteralPath $PublisherGateLog `
+              -Destination (Join-Path $EvidenceRoot `
+                  "WINDOWS-PUBLISHER-RELEASE-GATE.log")
           Copy-Item -LiteralPath $InstallLogs[0].FullName `
               -Destination (Join-Path $EvidenceRoot "INSTALL-WINDOWS-PILOT.log")
           Copy-Item -LiteralPath $Summary `
@@ -956,7 +980,7 @@ jobs:
               -Destination (Join-Path $EvidenceRoot "deployment.windows-pilot.json")
           Copy-Item -LiteralPath "$env:TRANSFER_ARCHIVE.sha256" `
               -Destination (Join-Path $EvidenceRoot "transfer.tar.gz.sha256")
-          Write-Host "Windows package, release gate, and one-click install all passed."
+          Write-Host "Windows publisher gate and single-pass one-click install both passed."
 
       - name: Upload Windows validation evidence
         if: always()
@@ -971,7 +995,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: intranet-browser-agent-transfer-1.0.11-windows-x64-${{ github.run_id }}
+          name: intranet-browser-agent-transfer-1.0.12-windows-x64-${{ github.run_id }}
           path: |
             ${{ env.TRANSFER_ARCHIVE }}
             ${{ env.TRANSFER_ARCHIVE }}.sha256

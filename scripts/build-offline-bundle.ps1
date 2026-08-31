@@ -135,7 +135,7 @@ switch ($Architecture) {
 
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
-$ArtifactName = "browser-agent-runtime-1.0.11-$Profile-windows-$TargetMachine"
+$ArtifactName = "browser-agent-runtime-1.0.12-$Profile-windows-$TargetMachine"
 $Archive = Join-Path $OutputDir "$ArtifactName.tar.gz"
 $ArchiveSidecar = "$Archive.sha256"
 if ((Test-Path -LiteralPath $Archive) -or (Test-Path -LiteralPath $ArchiveSidecar)) {

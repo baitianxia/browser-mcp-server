@@ -29,7 +29,7 @@ from validate_playwright_extension import (
 )
 
 
-TOOLKIT_VERSION = "1.0.11"
+TOOLKIT_VERSION = "1.0.12"
 RUNTIME_PREFIX = "browser-agent-runtime-"
 RUNTIME_SUFFIX = ".tar.gz"
 RUNTIME_NAME_PATTERN = re.compile(
@@ -66,6 +66,7 @@ EXACT_SOURCE_FILES = (
     "docs/adr/0005-windows-pilot-user-scope.md",
     "docs/adr/0006-transactional-mcp-registration-and-windows-gate.md",
     "docs/adr/0007-direct-windows-mcp-executable-and-release-hardening.md",
+    "docs/adr/0008-publisher-gate-and-single-pass-target-install.md",
     "examples/chrome-policy/extension-settings-self-hosted.json.template",
     "examples/chrome-policy/extension-settings-web-store.json",
     "runtime/bin/chrome-devtools-mcp",
@@ -92,6 +93,7 @@ EXACT_SOURCE_FILES = (
     "scripts/smoke_playwright_mcp.py",
     "scripts/validate_node_distribution.py",
     "scripts/validate_playwright_extension.py",
+    "scripts/validate_windows_release_metadata.py",
     "scripts/verify-bundle.py",
     "scripts/verify-windows-release.ps1",
     "scripts/windows-tool-discovery.ps1",
@@ -107,6 +109,7 @@ EXACT_SOURCE_FILES = (
     "tests/test_playwright_extension.py",
     "tests/test_transfer_kit.py",
     "tests/test_windows_pilot_setup.py",
+    "tests/test_windows_release_metadata.py",
     "tools/browser_agent.py",
 )
 
@@ -199,23 +202,30 @@ def start_here(kit_name: str, runtime_name: str, metadata: dict[str, object]) ->
         if bundled_node
         else "运行包未携带 Node.js；目标机必须提供组织批准的 Node.js 20.19+，并可通过 BROWSER_AGENT_NODE 指定。"
     )
-    if target_system == "windows":
+    if target_system == "windows" and not cross_built:
         verification_section = """## 1. 导入后校验
 
 解压前先按 `.sha256` 校验迁移 archive；具体复制粘贴命令见 `toolkit/docs/windows-quickstart.md`。哈希不一致时，不要解压或运行任何文件。
 
-双击安装向导后，它会先在同一个窗口自动运行 Windows 发布门禁，在测试前后各校验一次解压目录，校验包内固定哈希的官方 Playwright Extension，临时解压并校验包内运行 archive，再用包内 Node 完成真实 MCP stdio 握手；全部通过才开始安装，任一失败都会在安装前停止。"""
+完整测试、PowerShell 语法检查、注册故障矩阵和真实隔离探针已经由发布方 Windows 流水线完成。目标机不重复开发测试；安装器仍会校验当前解压目录、内层运行包、固定哈希的官方 Playwright Extension、包内 Node 和最终 MCP stdio 握手。"""
         deployment_section = """## 3. 双击安装
 
-双击本目录的 `INSTALL-WINDOWS-PILOT.cmd` 一次，无需 UAC，也不填写项目目录、网址或审批字段。启动器先自动运行测试前后双重完整性校验、完整测试、全部 PowerShell 脚本语法检查、假 Claude CLI 回滚测试、包内 Node 与官方 Playwright Extension 来源/版本/哈希校验、真实 MCP stdio `initialize + tools/list` 握手和真实 Claude CLI 隔离探针；全部通过后在同一个窗口直接继续安装。向导把运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome 或 Edge；若浏览器尚无扩展，先用包内 CRX 和当前用户浏览器策略尝试全自动离线安装。浏览器拒绝该策略时，向导会自动打开扩展页、把包内已解压扩展目录复制到剪贴板并显示三步操作；原安装进程持续等待，检测到加载成功后自动继续，无需重跑。随后复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，把直接执行包内 `node.exe + 固定 cli.js` 的 MCP 注册到 Claude Code user scope；当前用户未被同名高优先级配置覆盖的项目都能使用。npm 入口只解析现有安装并直接运行其 Node/CLI，不执行 npm；找不到可用 Claude 时安全停止，绝不安装、升级或修复 Claude Code。试点不配置网址白名单，Playwright MCP 可以操作人通过扩展批准的现有浏览器标签页，并复用其中的登录态。
+双击本目录的 `INSTALL-WINDOWS-PILOT.cmd` 一次，无需 UAC，也不填写项目目录、网址或审批字段。启动器只启动一个安装事务，不运行单元测试或注册器自检。向导验证 Windows 原生发布元数据和所有包内制品，把运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome 或 Edge；若浏览器尚无扩展，先用包内 CRX 和当前用户浏览器策略尝试全自动离线安装。浏览器拒绝该策略时，向导会自动打开扩展页、把包内已解压扩展目录复制到剪贴板并显示三步操作；原安装进程持续等待，检测到加载成功后自动继续，无需重跑。随后复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，把直接执行包内 `node.exe + 固定 cli.js` 的 MCP 注册到 Claude Code user scope；当前用户未被同名高优先级配置覆盖的项目都能使用。npm 入口只解析现有安装并直接运行其 Node/CLI，不执行 npm；找不到可用 Claude 时安全停止，绝不安装、升级或修复 Claude Code。试点不配置网址白名单，Playwright MCP 可以操作人通过扩展批准的现有浏览器标签页，并复用其中的登录态。
 
-向导会自动验证运行包、在同盘暂存后发布固定版本、生成清单并先暂存/preflight 再整目录切换配置。注册真实用户配置前，它先用假 Claude CLI 演练首次安装、升级、条目/环境错写和 `remove/add/get` 失败回滚；随后事务化备份、注册并直接核对用户级 MCP 命令、参数及固定环境。固定环境会阻止调用者遗留变量覆盖包内配置，不需要填写。首次安装明确没有旧 MCP 条目时会直接继续，其他删除错误会恢复并停止。它不会创建项目目录，也不会写项目 `.mcp.json`/`CLAUDE.md`。任何校验失败都会停止并恢复用户配置和旧部署配置；不会运行 `npm install`、`pnpm install` 或 `npx`。
+向导会自动验证运行包、在同盘暂存后发布固定版本、生成清单并先暂存/preflight 再整目录切换配置。随后逐字节备份真实 Claude 用户配置，事务化注册并核对用户级 MCP 命令、参数及固定环境。首次安装明确没有旧 MCP 条目时会直接继续，其他删除错误会恢复并停止。安装后还会以最终命令完成 MCP stdio `initialize + tools/list` 握手。它不会创建项目目录，也不会写项目 `.mcp.json`/`CLAUDE.md`。任何校验失败都会停止并恢复用户配置和旧部署配置；不会运行 `npm install`、`pnpm install` 或 `npx`。
 
 完整操作说明见 `toolkit/docs/windows-quickstart.md`；只有生产部署、回滚或故障处理才需要阅读 `toolkit/docs/operations.md`。
 
 ## 4. 第一次只读测试
 
 在向导显示完成后，重启 Claude Code，在任意项目输入 `/mcp` 确认 `intranet-browser-agent`。首次调用浏览器工具时，在 Playwright Extension 页面选择一个已经登录的现有标签页；第一次只读取页面标题，不提交、不上传、不删除。"""
+    elif target_system == "windows":
+        verification_section = """## 1. 仅供发布侧结构审查
+
+本包是非 Windows 主机生成的交叉构建候选，没有完成目标 CLI 冒烟和受控 Windows 发布门禁。它不能交给内网用户安装，也不能通过在目标机补跑开发测试变成正式制品。请在 Windows x64 发布流水线重新构建。"""
+        deployment_section = """## 3. 不可安装
+
+不要在目标机双击 `INSTALL-WINDOWS-PILOT.cmd`。安装器会在任何持久化变更前拒绝 `crossBuilt=true` 或 `targetCliSmokeTested=false` 的包。只有发布流水线上传的 Windows x64 原生正式包可以进入内网试点。"""
     else:
         verification_section = f"""## 1. 导入后立即校验
 
@@ -242,7 +252,7 @@ python3 toolkit/tools/browser_agent.py render --manifest /path/to/deployment.pil
 
 完整路径、权限、人工登录、回滚和验收步骤见 `toolkit/docs/operations.md` 与 `toolkit/docs/acceptance.md`。首次只做只读测试，SSO/MFA 由人完成。"""
     cross_build_note = (
-        "\n> **Windows 自检候选包：** 本运行包在非 Windows 构建主机交叉组装，不能冒充已经过 Windows 验证的正式制品。顶层 `INSTALL-WINDOWS-PILOT.cmd` 会在一次双击流程中强制运行同一 Windows 门禁；门禁只使用临时 Claude 配置，全部通过后才开始持久化安装。完成受控 Windows 与目标业务验收前不得作为生产制品。\n"
+        "\n> **Windows 交叉构建候选：** 仅供发布侧结构审查；目标安装器会拒绝。请从受控 Windows x64 流水线重新构建并验证正式包。\n"
         if cross_built
         else ""
     )

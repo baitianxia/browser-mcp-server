@@ -162,6 +162,10 @@ try {
         (Join-Path $PSScriptRoot "verify-bundle.py"),
         $ResolvedTransferPath
     )
+    Invoke-PythonChecked @(
+        (Join-Path $PSScriptRoot "validate_windows_release_metadata.py"),
+        (Join-Path $ResolvedTransferPath "KIT-METADATA.json")
+    )
 
     Invoke-PythonChecked @("-m", "unittest", "discover", "-s", "tests", "-v")
     Invoke-PythonChecked @(

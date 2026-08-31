@@ -77,7 +77,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         discovery = (
             ROOT / "scripts" / "windows-tool-discovery.ps1"
         ).read_text(encoding="utf-8")
-        target_automation = installer + launcher + registrar + discovery
+        metadata_validator = (
+            ROOT / "scripts" / "validate_windows_release_metadata.py"
+        ).read_text(encoding="utf-8")
+        target_automation = (
+            installer + launcher + registrar + discovery + metadata_validator
+        )
         self.assertNotIn("ExecutionPolicy", installer + launcher)
         self.assertNotIn("ProjectRoot", installer)
         self.assertNotIn("--project-root", installer)
@@ -98,7 +103,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("smoke_playwright_mcp.py", installer)
         self.assertIn("check_playwright_extension.py", installer)
         self.assertIn("validate_playwright_extension.py", installer)
-        self.assertIn('Invoke-Python @($McpRegistrar, "self-test")', installer)
+        self.assertIn("validate_windows_release_metadata.py", installer)
+        self.assertNotIn('Invoke-Python @($McpRegistrar, "self-test")', installer)
         self.assertIn(
             '"--claude-executable", [string]$ClaudeInvocation.Executable', installer
         )
@@ -162,16 +168,23 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("npx.cmd", target_automation)
         self.assertIn("不会安装、升级或修复 Claude Code", installer)
         self.assertIn('-LogPath "%INSTALL_LOG%" %*', launcher)
-        self.assertIn("toolkit\\scripts\\verify-windows-release.ps1", launcher)
-        self.assertIn('set "TRANSFER_ROOT=%%~fI"', launcher)
-        self.assertIn('-TransferPath "%TRANSFER_ROOT%"', launcher)
-        self.assertIn('-LogPath "%GATE_LOG%"', launcher)
-        self.assertIn("Gate log:", launcher)
-        self.assertIn("Detailed gate error log:", launcher)
-        self.assertIn("Installation was not started", launcher)
+        self.assertNotIn("verify-windows-release.ps1", launcher)
+        self.assertNotIn("TRANSFER_ROOT", launcher)
+        self.assertNotIn("GATE_LOG", launcher)
+        self.assertNotIn("Gate log:", launcher)
+        self.assertNotIn('"unittest"', installer + launcher)
+        self.assertNotIn('"self-test"', installer + launcher)
+        self.assertEqual(1, launcher.count("powershell.exe -NoProfile -File"))
+        self.assertIn(
+            'powershell.exe -NoProfile -File "%~dp0INSTALL-WINDOWS-PILOT.ps1"',
+            launcher,
+        )
+        self.assertIn("targetCliSmokeTested", metadata_validator)
+        self.assertIn("crossBuilt must be false", metadata_validator)
+        self.assertIn("buildHost must be exactly windows/x64", metadata_validator)
         self.assertLess(
-            launcher.index("verify-windows-release.ps1"),
-            launcher.index('powershell.exe -NoProfile -File "%~dp0INSTALL-WINDOWS-PILOT.ps1"'),
+            installer.index("Invoke-Python @($ReleaseMetadataVerifier, $KitMetadataPath)"),
+            installer.index('"--approval-file", $ExtensionApproval'),
         )
 
         function_ranges = (
@@ -188,7 +201,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 "$ErrorActionPreference = $PreviousErrorActionPreference", function_body
             )
 
-    def test_windows_release_gate_requires_powershell_51_and_registration_self_test(
+    def test_publisher_windows_release_gate_is_full_and_not_a_target_launcher_step(
         self,
     ) -> None:
         gate = (ROOT / "scripts" / "verify-windows-release.ps1").read_text(
@@ -226,6 +239,19 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED", gate)
         self.assertIn('Join-Path $PSScriptRoot "windows-tool-discovery.ps1"', gate)
         self.assertIn("Resolve-ClaudeCodeInvocation", gate)
+        self.assertIn('"validate_windows_release_metadata.py"', gate)
+        self.assertLess(
+            gate.index('"validate_windows_release_metadata.py"'),
+            gate.index('"unittest", "discover"'),
+        )
+        launcher = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.cmd").read_text(
+            encoding="utf-8"
+        )
+        installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("verify-windows-release.ps1", launcher)
+        self.assertNotIn('Invoke-Python @($McpRegistrar, "self-test")', installer)
 
         verify_call = '(Join-Path $PSScriptRoot "verify-bundle.py")'
         verify_positions: list[int] = []
@@ -295,6 +321,13 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("CI-only native Claude Code", workflow)
         self.assertIn("CI-only npm Claude Code", workflow)
         self.assertIn("Prove native Claude compatibility", workflow)
+        self.assertIn("PUBLISHER_GATE_LOG", workflow)
+        self.assertIn("WINDOWS-PUBLISHER-RELEASE-GATE.log", workflow)
+        self.assertIn("publisher release gate did not run the registration self-test", workflow)
+        self.assertIn("target installer unexpectedly ran the publisher-only self-test", workflow)
+        self.assertIn("publisher release gate did not run the complete Python suite", workflow)
+        self.assertIn("target installer unexpectedly ran the publisher-only unit suite", workflow)
+        self.assertIn("single-pass one-click install both passed", workflow)
         self.assertIn("Resolve-ClaudeCodeInvocation", workflow)
         self.assertIn("The shared resolver did not select the existing npm", workflow)
         self.assertIn("NPM_CLAUDE_COMMAND", workflow)

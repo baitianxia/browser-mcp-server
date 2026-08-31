@@ -417,6 +417,8 @@ try {
 
     $ToolkitRoot = Join-Path $PSScriptRoot "toolkit"
     $Verifier = Join-Path $ToolkitRoot "scripts\verify-bundle.py"
+    $ReleaseMetadataVerifier = Join-Path $ToolkitRoot `
+        "scripts\validate_windows_release_metadata.py"
     $NodeDistributionVerifier = Join-Path $ToolkitRoot "scripts\validate_node_distribution.py"
     $NodeSourceApprovals = Join-Path $ToolkitRoot "config\windows-node-sources.json"
     $Configurator = Join-Path $ToolkitRoot "scripts\configure_windows_pilot.py"
@@ -429,6 +431,7 @@ try {
     $KitMetadataPath = Join-Path $PSScriptRoot "KIT-METADATA.json"
     foreach ($RequiredPath in @(
         $Verifier,
+        $ReleaseMetadataVerifier,
         $NodeDistributionVerifier,
         $NodeSourceApprovals,
         $Configurator,
@@ -445,13 +448,11 @@ try {
         }
     }
     Invoke-Python @($Verifier, $PSScriptRoot)
-    Invoke-Python @($McpRegistrar, "self-test")
+    Invoke-Python @($ReleaseMetadataVerifier, $KitMetadataPath)
 
     $KitMetadata = Get-Content -LiteralPath $KitMetadataPath -Raw | ConvertFrom-Json
-    if ($KitMetadata.runtime.buildMetadata.target.system -ne "windows" -or
-        $KitMetadata.runtime.buildMetadata.target.machine -ne "x64") {
-        throw "迁移包目标不是 Windows x64。"
-    }
+    $RuntimeMetadata = $KitMetadata.runtime
+    $BuildMetadata = $RuntimeMetadata.buildMetadata
     $BrowserExtensionProperty = $KitMetadata.PSObject.Properties["browserExtension"]
     if ($null -eq $BrowserExtensionProperty -or
         $null -eq $BrowserExtensionProperty.Value) {
@@ -492,24 +493,20 @@ try {
         "--approval-file", $ExtensionApproval,
         "--unpacked-directory", $ExtensionUnpackedSourcePath
     )
-    $RuntimeArchiveName = [string]$KitMetadata.runtime.archive
+    $RuntimeArchiveName = [string]$RuntimeMetadata.archive
     if ($RuntimeArchiveName -notmatch '^browser-agent-runtime-[a-zA-Z0-9._-]+\.tar\.gz$') {
         throw "运行包文件名不合法：$RuntimeArchiveName"
     }
     $RuntimeArchive = Join-Path (Join-Path $PSScriptRoot "runtime") $RuntimeArchiveName
     Invoke-Python @($Verifier, $RuntimeArchive)
-    $BundledNode = $KitMetadata.runtime.buildMetadata.bundledNode -eq $true
-    $ExpectedNodeVersion = [string]$KitMetadata.runtime.buildMetadata.tools.node
+    $BundledNode = $BuildMetadata.bundledNode -eq $true
+    $ExpectedNodeVersion = [string]$BuildMetadata.tools.node
     if (-not $BundledNode) {
         throw "Windows 一键试点包必须携带已校验的 Node.js；当前运行包未携带。"
     }
     if ($ExpectedNodeVersion -notmatch '^v\d+\.\d+\.\d+$') {
         throw "运行包记录的 Node.js 版本不合法：$ExpectedNodeVersion"
     }
-    if ($KitMetadata.runtime.buildMetadata.crossBuilt -eq $true) {
-        Write-Host "注意：这是交叉构建的试点候选包，不能作为生产制品。" -ForegroundColor Yellow
-    }
-
     $NodeExe = ""
     Write-Host "系统 Node.js 不参与安装；将使用迁移包内的 $ExpectedNodeVersion。"
 
