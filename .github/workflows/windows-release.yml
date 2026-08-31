@@ -630,8 +630,9 @@ jobs:
                           [Security.AccessControl.AccessControlSections]::Access
                       )
                   $VerifyRestoredPolicyKey.Dispose()
-                  if ($RestoredPolicyAccessSddl -cne `
-                      $script:CiExtensionPolicyOriginalAccessSddl) {
+                  if ($script:CiExtensionPolicyKeyWasPresent -and
+                      $RestoredPolicyAccessSddl -cne `
+                          $script:CiExtensionPolicyOriginalAccessSddl) {
                       throw "CI did not restore the exact extension-policy access ACL."
                   }
               }
@@ -658,6 +659,23 @@ jobs:
                           $CiCreatedPolicyPath,
                           $false
                       )
+                  }
+              }
+              if (-not $script:CiExtensionPolicyKeyWasPresent) {
+                  foreach ($CiCreatedPolicyPath in
+                      $script:CiExtensionPolicyCreatedPaths) {
+                      $CiRemainingPolicyKey =
+                          [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
+                              $CiCreatedPolicyPath,
+                              $false
+                          )
+                      if ($null -ne $CiRemainingPolicyKey) {
+                          $CiRemainingPolicyKey.Dispose()
+                          throw (
+                              "CI did not restore the absent extension-policy path: " +
+                              $CiCreatedPolicyPath
+                          )
+                      }
                   }
               }
               $script:CiExtensionPolicyAclRestored = $true

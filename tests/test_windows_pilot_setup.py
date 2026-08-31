@@ -421,6 +421,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("CiExtensionPolicyOriginalAccessSddl", workflow)
         self.assertIn("RestoredPolicyAccessSddl", workflow)
         self.assertIn("did not restore the exact extension-policy access ACL", workflow)
+        self.assertIn("did not restore the absent extension-policy path", workflow)
         self.assertIn("ci-invalid-extension-leftover.txt", workflow)
         self.assertIn("EXTENSION INVALID DIRECTORY QUARANTINED", workflow)
         self.assertIn("was not preserved exactly once", workflow)
