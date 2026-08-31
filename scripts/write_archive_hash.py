@@ -16,8 +16,8 @@ def main() -> int:
     with args.archive.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    Path(f"{args.archive}.sha256").write_text(
-        f"{digest.hexdigest()}  {args.archive.name}\n", encoding="utf-8"
+    Path(f"{args.archive}.sha256").write_bytes(
+        f"{digest.hexdigest()}  {args.archive.name}\n".encode("utf-8")
     )
     return 0
 

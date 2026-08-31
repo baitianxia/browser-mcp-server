@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import os
@@ -148,6 +149,30 @@ class ArtifactIntegrityTests(unittest.TestCase):
                 check=True,
             )
             self.assertEqual([], verify_bundle.verify_archive(archive))
+
+    def test_archive_sidecar_is_exact_utf8_lf_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "fixture.tar.gz"
+            archive.write_bytes(b"archive fixture")
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "write_archive_hash.py"),
+                    str(archive),
+                ],
+                check=True,
+            )
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            sidecar = Path(f"{archive}.sha256")
+            expected = f"{digest}  {archive.name}\n".encode("utf-8")
+            self.assertEqual(expected, sidecar.read_bytes())
+            self.assertEqual([], verify_bundle.verify_sidecar(archive))
+
+            sidecar.write_bytes(expected[:-1] + b"\r\n")
+            self.assertEqual(
+                ["invalid or non-canonical archive checksum sidecar"],
+                verify_bundle.verify_sidecar(archive),
+            )
 
     def test_archive_rejects_symlinked_integrity_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -175,13 +175,12 @@ def verify_sidecar(archive: Path) -> list[str]:
     if not sidecar.exists():
         return [f"missing archive checksum sidecar: {sidecar}"]
     try:
-        tokens = sidecar.read_text(encoding="utf-8").strip().split()
+        raw = sidecar.read_bytes()
     except OSError as exc:
         return [str(exc)]
-    if len(tokens) != 2 or tokens[1] != archive.name:
-        return ["invalid archive checksum sidecar"]
     actual = digest_path(archive)
-    return [] if tokens[0] == actual else ["archive SHA-256 mismatch"]
+    expected = f"{actual}  {archive.name}\n".encode("utf-8")
+    return [] if raw == expected else ["invalid or non-canonical archive checksum sidecar"]
 
 
 def verify_archive(archive: Path) -> list[str]:

@@ -6,7 +6,7 @@
 
 1.0.11 修复目标机已经完成运行包和包内 Node 验证后，`staging\r-*` 到最终版本目录的发布因 Defender/EDR 短暂持有目录句柄而第一次访问被拒绝时立即退出的问题。Windows 实机 #44 进一步证明 PowerShell FileSystem provider 的 `Move-Item` 会在拒绝后留下源、目标同时存在的中间态，现改用 Windows PowerShell 5.1 中由 Win32 `MoveFile` 支撑的 `[IO.Directory]::Move` 保持同盘发布的原子失败语义。安装器只在源仍存在、目标尚未出现且错误属于访问拒绝、共享冲突或等价目录移动 I/O 错误时，在原安装进程内有界退避重试；释放后继续并再次验证最终目录，目标已出现或状态不明确时仍失败关闭。Windows package job 必须保存运行时目录和其唯一暂存父目录的原 ACL，在完整解压前对当前用户同时真实拒绝运行时目录的 `Delete` 与父目录的 `DeleteSubdirectoriesAndFiles`，以强制首次移动返回操作系统访问拒绝；观察到首次重试后逐字恢复两份原 ACL，并证明同一个 launcher/installer 记录 `RUNTIME PUBLISH RETRY` 与 `RUNTIME PUBLISH RECOVERED` 后完成安装、注册和登录态 E2E。
 
-当前源码已经通过本地完整回归；在新的 GitHub Windows 原生打包和上述故障注入门禁完成前，1.0.11 仍是不可交付候选。不得用本地交叉构建或旧 1.0.10 制品冒充本次修复。
+[Windows release validation #45](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33357277418) 已用上述两层 ACL 制造真实操作系统访问拒绝，并在同一个 launcher/installer 中观察到 `RUNTIME PUBLISH RETRY` 后恢复两份 ACL，随后记录 `RUNTIME PUBLISH RECOVERED`、完成安装及 `PLAYWRIGHT EXTENSION MCP E2E PASSED: ... tools=30, session_cookie=reused`；行为修复已经实机通过。下载制品时继续执行跨平台复核，发现 Windows 文本模式把 `.sha256` 末尾 LF 转成 CRLF，虽然 archive 实际 SHA-256 `4ab966d7453456fc3c50b2cede4158d4477ee85659f7b2d60df8297491270f69` 与 sidecar 内容一致，但标准 `shasum -c` 会把 `\r` 解析进文件名。该 run 因此只作为行为证据，不作为最终交付；哈希写入和校验现收紧为精确 UTF-8/ASCII LF 字节，并等待下一次 Windows 原生制品验证。不得用本地交叉构建、#45 制品或旧 1.0.10 制品冒充本次最终放行。
 
 ## 1.0.10 Windows 验证状态
 
