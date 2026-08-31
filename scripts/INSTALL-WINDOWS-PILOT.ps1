@@ -166,7 +166,13 @@ function Publish-StagedRuntime {
     $DelayMilliseconds = 250
     for ($Attempt = 1; $Attempt -le $MaximumAttempts; $Attempt++) {
         try {
-            Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+            # PowerShell's FileSystem provider may create the destination
+            # directory before a denied move finishes, leaving both paths
+            # present and making a safe retry impossible. Directory.Move on
+            # Windows PowerShell 5.1 delegates to the native same-volume
+            # MoveFile operation, so a denied rename leaves the destination
+            # absent and the retry state remains unambiguous.
+            [IO.Directory]::Move($Source, $Destination)
             if (Test-Path -LiteralPath $Source) {
                 throw "运行时发布返回成功，但暂存源目录仍然存在：$Source"
             }

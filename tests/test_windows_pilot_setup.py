@@ -550,10 +550,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertLess(staged_node_verify, runtime_publish)
         self.assertIn("function Test-RetryableRuntimePublishError", installer)
         self.assertIn("function Publish-StagedRuntime", installer)
-        self.assertIn(
-            "Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop",
-            installer,
-        )
+        publish_start = installer.index("function Publish-StagedRuntime")
+        publish_end = installer.index("function Get-NodeInfo", publish_start)
+        publish_function = installer[publish_start:publish_end]
+        self.assertIn("[IO.Directory]::Move($Source, $Destination)", publish_function)
+        self.assertNotIn("Move-Item", publish_function)
         self.assertIn("RUNTIME PUBLISH RETRY", installer)
         self.assertIn("RUNTIME PUBLISH RECOVERED", installer)
         self.assertIn("[Math]::Min($DelayMilliseconds * 2, 5000)", installer)
