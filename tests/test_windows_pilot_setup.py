@@ -293,6 +293,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("The shared resolver did not select the existing npm", workflow)
         self.assertIn("NPM_CLAUDE_COMMAND", workflow)
         self.assertIn("NPM_CLAUDE_NODE", workflow)
+        fixture_step = workflow.split(
+            "- name: Prepare exact native and npm Claude Code CI fixtures", 1
+        )[1].split("- name: Prove native Claude compatibility", 1)[0]
+        self.assertIn("Select-Object -First 1", fixture_step)
+        self.assertIn("$ActualNpmNode", fixture_step)
+        self.assertIn("$env:CLAUDE_NPM_NODE_VERSION", fixture_step)
         self.assertIn("$ClaudeFirewallRule", workflow)
         self.assertIn('"CHROME_EXE=$ChromeExe"', workflow)
         self.assertIn('$ChromeExe = [string]$env:CHROME_EXE', workflow)

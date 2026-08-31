@@ -306,8 +306,11 @@ jobs:
               $ActualNpmClaude -notmatch ("^" + [regex]::Escape($env:CLAUDE_CODE_VERSION) + "(?:\s|$)")) {
               throw "Expected npm Claude Code $env:CLAUDE_CODE_VERSION; found $ActualNpmClaude"
           }
+          # Windows PowerShell can return every matching application here.
+          # setup-node prepends the requested target-like Node, so select that
+          # first PATH entry explicitly and verify its version below.
           $NpmClaudeNode = (Get-Command node.exe -CommandType Application `
-              -ErrorAction Stop).Source
+              -ErrorAction Stop | Select-Object -First 1).Source
           $ActualNpmNode = ((& $NpmClaudeNode --version 2>&1) -join "`n").Trim()
           if ($LASTEXITCODE -ne 0 -or
               $ActualNpmNode -ne "v$env:CLAUDE_NPM_NODE_VERSION") {
