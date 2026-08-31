@@ -4,7 +4,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$StagingRoot,
     [Parameter(Mandatory = $true)][string]$MarkerPath,
-    [ValidateRange(1, 60)][int]$HoldSeconds = 30,
+    [Parameter(Mandatory = $true)][string]$InstallLogRoot,
+    [ValidateRange(10, 300)][int]$RetryWaitSeconds = 180,
     [ValidateRange(10, 600)][int]$WaitSeconds = 300
 )
 
@@ -32,6 +33,7 @@ public static class IntranetBrowserAgentDirectoryLock {
 $Deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
 $LockedPath = $null
 $Handle = $null
+$RetryObserved = $false
 try {
     while ([DateTime]::UtcNow -lt $Deadline) {
         $Candidates = @(Get-ChildItem -LiteralPath $StagingRoot `
@@ -84,9 +86,37 @@ try {
         $LockedPath,
         (New-Object System.Text.UTF8Encoding($false))
     )
+    $LockAcquiredAtUtc = [DateTime]::UtcNow
     Write-Host ("CI RUNTIME PUBLISH DIRECTORY LOCKED {0}: {1}" -f `
         (Get-Date -Format "o"), $LockedPath)
-    Start-Sleep -Seconds $HoldSeconds
+    $RetryDeadline = $LockAcquiredAtUtc.AddSeconds($RetryWaitSeconds)
+    while ([DateTime]::UtcNow -lt $RetryDeadline) {
+        $InstallLogs = @(Get-ChildItem -LiteralPath $InstallLogRoot `
+            -Filter "INSTALL-WINDOWS-PILOT-*.log" -File `
+            -ErrorAction SilentlyContinue | Where-Object {
+                $_.LastWriteTimeUtc -ge $LockAcquiredAtUtc
+            })
+        foreach ($InstallLog in $InstallLogs) {
+            if (Select-String -LiteralPath $InstallLog.FullName `
+                -SimpleMatch "RUNTIME PUBLISH RETRY" -Quiet `
+                -ErrorAction SilentlyContinue) {
+                $RetryObserved = $true
+                break
+            }
+        }
+        if ($RetryObserved) {
+            break
+        }
+        if (-not (Test-Path -LiteralPath $LockedPath -PathType Container)) {
+            throw "The staged runtime moved without the expected sharing violation."
+        }
+        Start-Sleep -Milliseconds 25
+    }
+    if (-not $RetryObserved) {
+        throw "The installer did not attempt runtime publish while the directory handle was held."
+    }
+    Write-Host ("CI RUNTIME PUBLISH RETRY OBSERVED {0}: {1}" -f `
+        (Get-Date -Format "o"), $LockedPath)
 } finally {
     if ($Handle) {
         $Handle.Dispose()

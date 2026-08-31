@@ -473,6 +473,7 @@ jobs:
               ".github\scripts\hold-runtime-publish-directory.ps1"
           $RuntimeLockStagingRoot = Join-Path $PilotLocalAppData `
               "IntranetBrowserAgent\staging"
+          $InstallLogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
           $Approval = Get-Content -LiteralPath (Join-Path `
               $env:TRANSFER_ROOT `
               "toolkit\config\playwright-extension-source.json") `
@@ -516,7 +517,7 @@ jobs:
               "run-runtime-publish-directory-lock.cmd"
           $RuntimeLockWrapperBody = @"
           @echo off
-          powershell.exe -NoLogo -NoProfile -NonInteractive -File "$RuntimeLockScript" -StagingRoot "$RuntimeLockStagingRoot" -MarkerPath "$RuntimeLockMarker" -HoldSeconds 30
+          powershell.exe -NoLogo -NoProfile -NonInteractive -File "$RuntimeLockScript" -StagingRoot "$RuntimeLockStagingRoot" -MarkerPath "$RuntimeLockMarker" -InstallLogRoot "$InstallLogRoot"
           set "RUNTIME_LOCK_EXIT=%errorlevel%"
           > "$RuntimeLockExitFile" echo %RUNTIME_LOCK_EXIT%
           exit /b %RUNTIME_LOCK_EXIT%
@@ -687,8 +688,12 @@ jobs:
               if (-not (Test-Path -LiteralPath $RuntimeLockMarker -PathType Leaf)) {
                   throw "The runtime publish fault injector did not acquire its directory handle."
               }
+              if (-not (Select-String -LiteralPath $RuntimeLockStdout `
+                  -SimpleMatch "CI RUNTIME PUBLISH RETRY OBSERVED" -Quiet)) {
+                  throw "The runtime publish fault injector did not observe the blocked move."
+              }
               $CurrentInstallLog = Get-ChildItem -LiteralPath `
-                  (Join-Path $env:TEMP "IntranetBrowserAgent") `
+                  $InstallLogRoot `
                   -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
                   Sort-Object LastWriteTime -Descending |
                   Select-Object -First 1
