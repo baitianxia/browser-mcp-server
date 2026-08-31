@@ -479,8 +479,9 @@ jobs:
           $RuntimeLockStagingRoot = Join-Path $PilotLocalAppData `
               "IntranetBrowserAgent\staging"
           $InstallLogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
-          $CiExtensionPolicyPath = `
-              "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
+          $CiExtensionPolicySubKey = `
+              "Software\Policies\Google\Chrome\ExtensionInstallForcelist"
+          $CiExtensionPolicyPath = "HKCU:\$CiExtensionPolicySubKey"
           $script:CiExtensionPolicyKeyWasPresent = $false
           $script:CiExtensionPolicyKeyCreated = $false
           $script:CiExtensionPolicyOriginalAccessSddl = ""
@@ -625,8 +626,20 @@ jobs:
               $script:CiExtensionPolicyKeyWasPresent = `
                   Test-Path -LiteralPath $CiExtensionPolicyPath
               if (-not $script:CiExtensionPolicyKeyWasPresent) {
-                  New-Item -Path $CiExtensionPolicyPath -Force | Out-Null
+                  $CiCreatedPolicyKey = `
+                      [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
+                          $CiExtensionPolicySubKey,
+                          [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree
+                      )
+                  if ($null -eq $CiCreatedPolicyKey) {
+                      throw "CI could not create the extension policy test key."
+                  }
                   $script:CiExtensionPolicyKeyCreated = $true
+                  $CiCreatedPolicyKey.Dispose()
+                  if (-not (Test-Path -LiteralPath $CiExtensionPolicyPath `
+                      -PathType Container)) {
+                      throw "CI extension policy test key is not visible after creation."
+                  }
               }
               $CiPolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
               $script:CiExtensionPolicyOriginalAccessSddl = `

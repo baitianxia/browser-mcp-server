@@ -799,11 +799,12 @@ try {
             "--unpacked-directory", $InstalledExtensionUnpacked
         )
 
-        $ExtensionPolicyPath = if ($BrowserChannel -eq "chrome") {
-            "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
+        $ExtensionPolicySubKey = if ($BrowserChannel -eq "chrome") {
+            "Software\Policies\Google\Chrome\ExtensionInstallForcelist"
         } else {
-            "HKCU:\Software\Policies\Microsoft\Edge\ExtensionInstallForcelist"
+            "Software\Policies\Microsoft\Edge\ExtensionInstallForcelist"
         }
+        $ExtensionPolicyPath = "HKCU:\$ExtensionPolicySubKey"
         $PolicyAttemptAvailable = $false
         try {
             $CrxUri = ([Uri]$InstalledExtensionCrx).AbsoluteUri
@@ -823,8 +824,20 @@ try {
             $ExtensionPolicyKeyWasPresent = Test-Path `
                 -LiteralPath $ExtensionPolicyPath
             if (-not $ExtensionPolicyKeyWasPresent) {
-                New-Item -Path $ExtensionPolicyPath -Force | Out-Null
+                $CreatedExtensionPolicyKey = `
+                    [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
+                        $ExtensionPolicySubKey,
+                        [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree
+                    )
+                if ($null -eq $CreatedExtensionPolicyKey) {
+                    throw "浏览器扩展策略键创建失败。"
+                }
                 $ExtensionPolicyKeyCreated = $true
+                $CreatedExtensionPolicyKey.Dispose()
+                if (-not (Test-Path -LiteralPath $ExtensionPolicyPath `
+                    -PathType Container)) {
+                    throw "浏览器扩展策略键创建后不可见。"
+                }
             }
             $PolicyKey = Get-Item -LiteralPath $ExtensionPolicyPath
             $PolicyValueNames = @($PolicyKey.GetValueNames())

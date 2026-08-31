@@ -10,6 +10,8 @@
 
 本地已执行 90 项完整测试：88 项通过，2 项仅因需要 Windows PowerShell 5.1 而跳过；GitHub Actions YAML、全部 Python AST、shell 语法和 `git diff --check` 通过。新增 Windows package 验收会先预置并核对自动隔离的不完整扩展遗留目录，再对精确 Chrome 策略键真实添加当前用户 `SetValue` 拒绝 ACL，证明操作系统确实拒绝写值后，要求同一 launcher 依次记录策略不可用、人工等待、目录 ACL 自动恢复、安装成功和实际 MCP/Cookie 登录态复用 E2E，并逐字恢复原策略 ACL。该 Windows PowerShell 5.1 验收尚未运行完成前，本候选不得交付。
 
+[Windows release validation #50](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33372817902) 的 `windows-2022`、`windows-latest` 两套源码/AST job 已通过；package job 在启动目标 launcher 前由新增故障注入夹具失败，未生成 artifact。GitHub Runner 原本没有 Chrome 策略父键，PowerShell Registry provider 的 `New-Item -Force` 没有递归创建完整子键，随后 `Get-Acl` 得到路径不存在。候选现让夹具和安装器都使用 Windows `RegistryKey.CreateSubKey` 递归创建：夹具必须先创建成功才能施加真实拒绝；安装器创建失败仍属于可选策略不可用并直接人工回退。该失败没有冒充安装通过，同时提前修正了普通机器上策略父键完全不存在时的自动安装机会。
+
 ## 1.0.12 Windows 历史验证状态（已撤回）
 
 目标机对 1.0.11 的实测撤回了该制品：Claude Code 本身可以正常使用，但顶层 launcher 在安装前运行了完整发布测试；其中 `test_self_test_runs_as_a_real_subprocess` 又以 30 秒硬超时启动注册器 `self-test`，目标 Python 子进程超过时限后以 `Python release check failed with exit code 1` 停止。该失败发生在开发测试，不是 MCP、Claude Code 或安装事务的功能失败。此前 GitHub Runner 在 30 秒内通过只能证明该 runner 足够快，不能证明把发布测试放到任意内网终端是可靠设计。
