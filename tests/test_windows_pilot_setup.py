@@ -273,6 +273,54 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertLess(verify_positions[2], probe)
         self.assertLess(probe, verify_positions[3])
 
+    def test_optional_browser_automation_failures_use_manual_fallback(self) -> None:
+        installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        policy_start = installer.index("$PolicyAttemptAvailable = $false")
+        policy_end = installer.index("if ($PolicyAttemptAvailable)", policy_start)
+        policy_block = installer[policy_start:policy_end]
+        policy_write = policy_block.index("New-ItemProperty")
+        change_recorded = policy_block.index(
+            "$ExtensionPolicyChangeStarted = $true"
+        )
+        self.assertLess(policy_write, change_recorded)
+        self.assertIn("} catch {", policy_block)
+        self.assertIn("OFFLINE EXTENSION POLICY UNAVAILABLE", policy_block)
+        self.assertIn("Restore-ExtensionPolicyChange", policy_block)
+        self.assertIn("不会中止或要求重新运行", policy_block)
+        self.assertNotIn("exit ", policy_block)
+
+        manual_start = installer.index(
+            "Start-Process -FilePath $BrowserExecutable",
+            policy_end,
+        )
+        manual_marker = installer.index(
+            '"MANUAL EXTENSION LOAD REQUIRED:', manual_start
+        )
+        manual_block = installer[manual_start:manual_marker]
+        self.assertIn("} catch {", manual_block)
+        self.assertIn("WARNING: could not open browser extension page", manual_block)
+        self.assertIn("请在浏览器地址栏手动打开", manual_block)
+        self.assertIn("WARNING: clip.exe returned exit code", manual_block)
+        self.assertIn("WARNING: clip.exe is unavailable", manual_block)
+        self.assertIn("安装器正在等待", manual_block)
+        self.assertNotIn("throw ", manual_block)
+
+        restore_start = installer.index("function Restore-ExtensionPolicyChange")
+        restore_end = installer.index("\ntry {", restore_start)
+        restore_block = installer[restore_start:restore_end]
+        self.assertIn("$script:ExtensionPolicyKeyCreated", restore_block)
+        self.assertIn("$script:ExtensionPolicyPreviousValueKind", restore_block)
+        self.assertIn("浏览器扩展策略原值恢复后核对不一致", restore_block)
+        self.assertIn("浏览器扩展策略新增值删除后仍然存在", restore_block)
+        self.assertIn("Remove-ItemProperty", restore_block)
+        self.assertIn(
+            "WARNING: could not remove empty browser extension policy key",
+            restore_block,
+        )
+
     def test_windows_ci_separates_manual_boundary_and_live_session_e2e(self) -> None:
         if not (ROOT / ".github").is_dir():
             self.skipTest("CI-only workflow files are not part of the transfer kit")
@@ -351,6 +399,17 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("inject-runtime-publish-access-denied.ps1", workflow)
         self.assertIn("RUNTIME PUBLISH RETRY", workflow)
         self.assertIn("RUNTIME PUBLISH RECOVERED", workflow)
+        self.assertIn("CI EXTENSION POLICY ACCESS DENIED ARMED", workflow)
+        self.assertIn("CI EXTENSION POLICY ACCESS DENIED RESTORED", workflow)
+        self.assertIn("OFFLINE EXTENSION POLICY UNAVAILABLE", workflow)
+        self.assertIn("RegistryAccessRule", workflow)
+        self.assertIn("RegistryRights]::SetValue", workflow)
+        self.assertIn("CiExtensionPolicyOriginalAccessSddl", workflow)
+        self.assertIn("RestoredPolicyAccessSddl", workflow)
+        self.assertIn("did not restore the exact extension-policy access ACL", workflow)
+        self.assertIn("ci-invalid-extension-leftover.txt", workflow)
+        self.assertIn("EXTENSION INVALID DIRECTORY QUARANTINED", workflow)
+        self.assertIn("was not preserved exactly once", workflow)
         self.assertIn("exactly one installer process", workflow)
         self.assertIn("Read-CiExitCode", workflow)
         self.assertNotIn("$LauncherProcess.ExitCode", workflow)
@@ -581,15 +640,17 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertLess(staged_runtime_verify, runtime_publish)
         self.assertLess(staged_runtime_verify, staged_node_verify)
         self.assertLess(staged_node_verify, runtime_publish)
-        self.assertIn("function Test-RetryableRuntimePublishError", installer)
+        self.assertIn("function Test-RetryableDirectoryMoveError", installer)
+        self.assertIn("function Move-DirectoryAtomicallyWithRetry", installer)
         self.assertIn("function Publish-StagedRuntime", installer)
-        publish_start = installer.index("function Publish-StagedRuntime")
-        publish_end = installer.index("function Get-NodeInfo", publish_start)
+        publish_start = installer.index("function Move-DirectoryAtomicallyWithRetry")
+        publish_end = installer.index("function Publish-StagedRuntime", publish_start)
         publish_function = installer[publish_start:publish_end]
         self.assertIn("[IO.Directory]::Move($Source, $Destination)", publish_function)
         self.assertNotIn("Move-Item", publish_function)
-        self.assertIn("RUNTIME PUBLISH RETRY", installer)
-        self.assertIn("RUNTIME PUBLISH RECOVERED", installer)
+        self.assertIn('-LogPrefix "RUNTIME PUBLISH"', installer)
+        self.assertIn('"{0} RETRY {1}/{2}: {3}"', installer)
+        self.assertIn('"{0} RECOVERED: attempts={1}; destination={2}"', installer)
         self.assertIn("[Math]::Min($DelayMilliseconds * 2, 5000)", installer)
         self.assertIn("无需重新运行", installer)
         self.assertIn(
@@ -609,11 +670,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         manual_detected = installer.index('Write-InstallLog "MANUAL EXTENSION LOAD DETECTED"')
         stage_preflight = installer.index('"--config-root", $StageDeploy')
         old_config_backup = installer.index(
-            "Move-Item -LiteralPath $ConfigRoot -Destination $ConfigBackupPath"
+            '"CONFIG BACKUP"'
         )
         backup_complete = installer.index("$ConfigBackupComplete = $true")
         config_publish = installer.index(
-            "Move-Item -LiteralPath $StageDeploy -Destination $ConfigRoot"
+            '"CONFIG PUBLISH"'
         )
         publish_complete = installer.index("$ConfigPublished = $true")
         installed_preflight = installer.index(
@@ -635,10 +696,13 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertLess(installed_preflight, direct_cli_smoke)
         self.assertLess(direct_cli_smoke, registration)
         self.assertLess(registration, commit)
-        self.assertIn(
-            "Move-Item -LiteralPath $ConfigBackupPath -Destination $ConfigRoot",
-            installer,
-        )
+        self.assertNotIn("Move-Item", installer)
+        self.assertIn('"EXTENSION PUBLISH"', installer)
+        self.assertIn('"EXTENSION QUARANTINE"', installer)
+        self.assertIn("EXTENSION INVALID DIRECTORY QUARANTINED", installer)
+        self.assertIn("发现上次遗留的不完整扩展目录", installer)
+        self.assertIn('"CONFIG ROLLBACK QUARANTINE"', installer)
+        self.assertIn('"CONFIG ROLLBACK RESTORE"', installer)
         self.assertIn(
             "ROLLBACK: restored previous pilot configuration directory", installer
         )

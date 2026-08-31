@@ -4,14 +4,14 @@
 
 目标机只需准备：Windows x64、当前用户已经能正常运行的 Claude Code、Chrome（优先）或 Edge、Python 3.10+。Claude Code 可以来自原生安装的 `claude.exe`，也可以来自 npm 全局安装生成的 `claude.cmd`。向导只复用现有安装，绝不安装、升级、替换或修复 Claude Code。目标机可以完全离线；迁移包同时携带固定 Node.js、固定哈希的官方 Playwright Extension CRX 和经逐文件核对的已解压副本。系统已有的 v20.18.3 可以保留；包内 Playwright MCP 使用自己的固定 Node，npm 版 Claude 继续使用它现有安装本来使用的 Node。整个目标机流程不会运行 npm、pnpm 或 npx。原生 Claude 已安装到 `%USERPROFILE%\.local\bin\claude.exe` 时，即使 Explorer 或当前 PowerShell 的 `PATH` 尚未刷新也能识别；npm 版要求当前用户环境能从 `PATH` 找到 `claude.cmd` 及其现有 `node.exe`。迁移包必须放在本机盘符目录，不使用 UNC。
 
-若目标浏览器尚未安装 Playwright Extension，向导先写入当前用户的 Chrome/Edge `ExtensionInstallForcelist`，尝试从包内 `file:///` CRX 全自动离线安装，不访问 Chrome Web Store。Chrome 对本地 CRX 的静默安装可能要求设备受企业管理；若浏览器没有实际安装，向导会恢复临时策略、自动打开 `chrome://extensions`/`edge://extensions`、把包内已解压目录复制到剪贴板并显示三步指引。此时保持安装窗口打开，按提示开启开发者模式、点击“加载已解压的扩展程序”并选择该目录；安装器会持续检测，成功后在同一进程自动继续，不需要再运行一次。
+若目标浏览器尚未安装 Playwright Extension，向导先尝试写入当前用户的 Chrome/Edge `ExtensionInstallForcelist`，从包内 `file:///` CRX 全自动离线安装，不访问 Chrome Web Store。Chrome 对本地 CRX 的静默安装可能要求设备受企业管理；注册表策略键被企业 ACL 拒绝、不可读/不可写、更新清单不可写或无法自动启动浏览器时，向导会把这项自动化记为不可用并立即转入手动加载，不会停止安装。若临时策略已经写入但浏览器没有实际安装，向导会先恢复原策略。随后它会尽力打开 `chrome://extensions`/`edge://extensions`、把包内已解压目录复制到剪贴板并显示三步指引；页面或剪贴板自动化失败时，屏幕仍会显示扩展页地址和完整目录。保持安装窗口打开，按提示开启开发者模式、点击“加载已解压的扩展程序”并选择该目录；安装器会持续检测，成功后在同一进程自动继续，不需要再运行一次。
 
 ## 文件准备：校验并解压
 
 把迁移包和相邻 `.sha256` 放进一个新的空目录，在该目录打开 PowerShell：
 
 ```powershell
-$Archive = Resolve-Path .\intranet-browser-agent-transfer-1.0.12-core-windows-x64.tar.gz
+$Archive = Resolve-Path .\intranet-browser-agent-transfer-1.0.13-core-windows-x64.tar.gz
 $Expected = (((Get-Content "$($Archive.Path).sha256" -Raw) -split '\s+')[0]).ToLowerInvariant()
 $Actual = (Get-FileHash -LiteralPath $Archive.Path -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($Actual -ne $Expected) { throw "迁移包 SHA-256 不匹配" }
@@ -22,7 +22,7 @@ tar.exe -xzf $Archive.Path
 
 ## 安装：只双击一次
 
-进入解压出的 `intranet-browser-agent-transfer-1.0.12-core-windows-x64` 目录，只双击下面这一个文件：
+进入解压出的 `intranet-browser-agent-transfer-1.0.13-core-windows-x64` 目录，只双击下面这一个文件：
 
 ```text
 INSTALL-WINDOWS-PILOT.cmd
@@ -37,9 +37,9 @@ INSTALL-WINDOWS-PILOT.cmd
 向导会自动完成以下工作：
 
 1. 检查 Windows x64、Python 和当前用户已有的 Claude Code，校验迁移包来自 Windows x64 原生发布流水线；交叉构建或未完成目标 CLI 验证的包会在写入前拒绝。
-2. 校验迁移目录、内层运行包以及官方 Playwright Extension CRX 的固定 ID、版本、哈希和已解压副本；已安装扩展则直接复用。未安装时先尝试本机离线策略；未生效就恢复临时策略、打开扩展页、显示唯一目录并等待人工加载，成功后在同一进程继续。
-3. 在 `%LOCALAPPDATA%\IntranetBrowserAgent\staging\r-*` 的短路径同盘目录解压固定运行时，校验包内 Windows x64 Node.js 的批准来源、逐文件哈希、PE 架构和实际版本，通过后才原子发布。若安全软件短暂占用目录，原进程自动退避重试并继续，无需重新双击。
-4. 自动生成 `extension` 模式部署清单和 Playwright 配置，绑定自动识别出的 `chrome`/`msedge` 及实际浏览器 `.exe`，在 `%LOCALAPPDATA%` 内暂存、preflight 后整目录切换。浏览器使用自己的 last-used Profile，无需填写 Profile 或项目目录。
+2. 校验迁移目录、内层运行包以及官方 Playwright Extension CRX 的固定 ID、版本、哈希和已解压副本；已安装扩展则直接复用。未安装时先尝试本机离线策略；策略访问被拒绝等准备失败会直接降级，已写策略未生效则先恢复，再显示扩展页地址和唯一目录并等待人工加载，成功后在同一进程继续。自动打开页面或复制路径失败不影响等待。
+3. 在 `%LOCALAPPDATA%\IntranetBrowserAgent\staging\r-*` 的短路径同盘目录解压固定运行时，校验包内 Windows x64 Node.js 的批准来源、逐文件哈希、PE 架构和实际版本，通过后才原子发布。运行时、扩展和配置的整目录切换使用同一套原子移动与自动退避重试；安全软件短暂占用时原进程等待释放后继续，无需重新双击。若发现上次遗留的扩展目录不完整，向导会先把它保留到唯一备份目录，再自动重建。
+4. 自动生成 `extension` 模式部署清单和 Playwright 配置，绑定自动识别出的 `chrome`/`msedge` 及实际浏览器 `.exe`，在 `%LOCALAPPDATA%` 内暂存、preflight 后整目录切换。浏览器使用自己的 last-used Profile，无需填写 Profile 或项目目录；后续失败时本次配置会被隔离到备份目录，再恢复旧配置。
 5. 备份真实 Claude Code 用户配置，通过 `--scope user` 事务化执行 `remove → add → get`；注册项直接执行包内 `node.exe + 固定 cli.js + --browser=<channel> + --executable-path=<browser.exe> + config`，并核对实际命令、参数和固定环境。失败时逐字节恢复用户配置、旧部署配置和本次新增的浏览器策略。
 6. 对最终路径再次执行 preflight，并用与最终注册一致的直接命令完成 MCP stdio `initialize` 和 `tools/list` 握手；出现任何 `FAIL` 就停止。全程不修改项目 `.mcp.json` 或 `CLAUDE.md`。
 

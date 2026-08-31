@@ -2,7 +2,15 @@
 
 状态：2026-08-31 的验证证据快照，不是规范性设计文档。
 
-## 1.0.12 Windows 验证状态（Windows CI 已验证）
+## 1.0.13 Windows 验证状态（候选，尚未放行）
+
+目标机对 1.0.12 的实测再次撤回了该制品：运行时目录的访问拒绝已经由同一个安装进程自动恢复，但随后当前用户对 `HKCU\Software\Policies\Google\Chrome\ExtensionInstallForcelist` 没有写权限。安装器把本来只是便利项的本地 CRX 策略写入放在全局致命错误域中，因而没有进入既有的人工“加载已解压的扩展程序”等待，直接以访问拒绝停止。这是可选自动化与安装前提分类错误；目标机不应承担发现该分支的职责。
+
+1.0.13 候选把更新清单、策略键读/建/写、策略写后核对和自动启动浏览器统一限制在可选策略尝试内。未发生策略变更时，任一失败都记录 `OFFLINE EXTENSION POLICY UNAVAILABLE` 并直接显示扩展页地址与完整目录，在原安装进程等待人工加载；自动打开扩展页和 `clip.exe` 失败也只是警告。策略值已经实际写入时仍必须恢复原值，只有恢复失败才因状态不安全停止。为避免继续逐项暴露同类问题，运行时、扩展、配置备份/发布和配置回滚现共用 `[IO.Directory]::Move` 原子移动与有界重试；旧版留下的无效扩展目录会先保留到唯一备份路径再自动重建，失败配置也隔离而不递归删除。
+
+本地已执行 90 项完整测试：88 项通过，2 项仅因需要 Windows PowerShell 5.1 而跳过；GitHub Actions YAML、全部 Python AST、shell 语法和 `git diff --check` 通过。新增 Windows package 验收会先预置并核对自动隔离的不完整扩展遗留目录，再对精确 Chrome 策略键真实添加当前用户 `SetValue` 拒绝 ACL，证明操作系统确实拒绝写值后，要求同一 launcher 依次记录策略不可用、人工等待、目录 ACL 自动恢复、安装成功和实际 MCP/Cookie 登录态复用 E2E，并逐字恢复原策略 ACL。该 Windows PowerShell 5.1 验收尚未运行完成前，本候选不得交付。
+
+## 1.0.12 Windows 历史验证状态（已撤回）
 
 目标机对 1.0.11 的实测撤回了该制品：Claude Code 本身可以正常使用，但顶层 launcher 在安装前运行了完整发布测试；其中 `test_self_test_runs_as_a_real_subprocess` 又以 30 秒硬超时启动注册器 `self-test`，目标 Python 子进程超过时限后以 `Python release check failed with exit code 1` 停止。该失败发生在开发测试，不是 MCP、Claude Code 或安装事务的功能失败。此前 GitHub Runner 在 30 秒内通过只能证明该 runner 足够快，不能证明把发布测试放到任意内网终端是可靠设计。
 
@@ -10,7 +18,7 @@
 
 本地已执行 89 项完整测试：87 项通过，2 项仅因需要 Windows PowerShell 5.1 而跳过；新增用例还以真实校验器子进程实际接受原生正式元数据，并拒绝交叉构建、字符串伪装布尔值、未完成目标 CLI 冒烟、版本/archive 漂移和低于要求的 Node 元数据。Bash、全部 JSON、GitHub Actions YAML、全部 Python AST 与 `git diff --check` 也已通过。
 
-[Windows release validation #48](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33367097614) 已在提交 `e29f7d5b630f0974bc0b6051977408a5c49380fc` 上全绿，总耗时 4 分 49 秒；两套 Windows PowerShell 5.1 源码 job 与 Windows 原生 package/单次安装 job 全部成功。下载的发布者门禁日志在 Windows PowerShell 5.1 下运行 89 项测试，87 项通过、2 项按迁移包边界跳过，并继续通过注册器真实子进程 `self-test`、现有原生 Claude Code、三层 bundle、包内 Node 和 MCP stdio 门禁。目标安装日志只出现一次 `Windows pilot installer started`，先记录 `WINDOWS RELEASE METADATA: VALID`，在真实 ACL 访问拒绝后由同一安装进程记录 `RUNTIME PUBLISH RETRY 1/25` 与 `RUNTIME PUBLISH RECOVERED: attempts=2`，最后记录 `SUCCESS: installation and preflight completed`；该日志逐字检查不含 `self-test`、`test_self_test_runs_as_a_real_subprocess` 或 `unittest`。package job 还以实际安装的 Node + Playwright MCP 完成离线 Chrome 页面和 Cookie 登录态复用 E2E。结论为 **WINDOWS CI-VERIFIED PILOT 1.0.12**。
+[Windows release validation #48](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33367097614) 曾在提交 `e29f7d5b630f0974bc0b6051977408a5c49380fc` 上全绿，总耗时 4 分 49 秒；两套 Windows PowerShell 5.1 源码 job 与 Windows 原生 package/单次安装 job 全部成功。下载的发布者门禁日志在 Windows PowerShell 5.1 下运行 89 项测试，87 项通过、2 项按迁移包边界跳过，并继续通过注册器真实子进程 `self-test`、现有原生 Claude Code、三层 bundle、包内 Node 和 MCP stdio 门禁。目标安装日志只出现一次 `Windows pilot installer started`，先记录 `WINDOWS RELEASE METADATA: VALID`，在真实目录 ACL 访问拒绝后由同一安装进程记录 `RUNTIME PUBLISH RETRY 1/25` 与 `RUNTIME PUBLISH RECOVERED: attempts=2`，最后记录 `SUCCESS: installation and preflight completed`；该日志逐字检查不含 `self-test`、`test_self_test_runs_as_a_real_subprocess` 或 `unittest`。package job 还以实际安装的 Node + Playwright MCP 完成离线 Chrome 页面和 Cookie 登录态复用 E2E。该 run 没有锁定扩展策略注册表 ACL，目标机随后证明它漏掉了系统性分支，因此此前的 **WINDOWS CI-VERIFIED PILOT 1.0.12** 结论已撤回。
 
 该 run 的 GitHub 迁移 artifact ZIP SHA-256 为 `1bd8e795d07d4973adcb5d461f6a83e9241ea13c523d0343363ba2bd5f2be066`，证据 artifact ZIP 为 `813e7e112a8491b842b04081766ad8abd2a3738f0de3bb04db3c180a6ccb3180`；下载后迁移 archive SHA-256 为 `5c836dc781a8c174577b3f3b14911f97078f10c52b53aaaee621f26119bd7b68`，包内 Windows 原生 runtime archive 为 `fc13c913e7e5e5101b1b8fc2cf6c4661a2526a05fedbc62db2fc9cc8760161e5`。迁移 archive、解压迁移目录、runtime archive、解压 runtime 目录四层均由当前验证器返回 `VALID`；两级 sidecar 均以单个 LF 结尾并实际通过 `shasum -a 256 -c`。元数据记录 69 个审查白名单文件，`buildHost=windows/x64`、`target=windows/x64`、`crossBuilt=false`、`targetCliSmokeTested=true`、`bundledNode=true`，包内 Node 为 v24.19.0、pnpm 为 11.19.0。
 
@@ -44,7 +52,7 @@
 
 ## 已执行并通过
 
-- 源码测试：当前本地构建环境执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`，89 项中 87 项通过、2 项仅因需要 Windows PowerShell 5.1 而跳过。run #48 的 `windows-2022`、`windows-latest` 两个源码 job 均成功；迁移包内发布门在 Windows PowerShell 5.1 下再次运行 89 项，87 项通过、2 项按迁移包边界跳过。新增覆盖明确断言目标 launcher/installer 不调用发布门禁、`unittest` 或注册器 `self-test`，顶层 launcher 只产生一个安装器进程；其余覆盖包括 Windows 路径、user scope、版本一致性、LF/CRLF 逐字节备份、规范 LF archive sidecar、`remove/add/get` 注册失败回滚、条目/环境错写、窄 Windows 代码页与 Claude UTF-8 输出组合、遗留环境清理、Node 来源、archive 路径、扩展 CRX/Profile/人工等待、休眠 Profile 防误判、显式 browser `.exe`、配置漂移、发布顺序、发布访问拒绝恢复和 MCP stdio 握手。
+- 源码测试：当前本地构建环境执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`，90 项中 88 项通过、2 项仅因需要 Windows PowerShell 5.1 而跳过。新增覆盖明确断言策略访问、浏览器自动启动和剪贴板失败进入同一进程人工回退，扩展与配置所有目录切换共用原子重试且安装器不含 `Move-Item`；其余覆盖包括目标 launcher/installer 不调用发布门禁、`unittest` 或注册器 `self-test`，顶层 launcher 只产生一个安装器进程，以及 Windows 路径、user scope、版本一致性、LF/CRLF 逐字节备份、规范 LF archive sidecar、`remove/add/get` 注册失败回滚、条目/环境错写、窄 Windows 代码页与 Claude UTF-8 输出组合、遗留环境清理、Node 来源、archive 路径、扩展 CRX/Profile/人工等待、休眠 Profile 防误判、显式 browser `.exe`、配置漂移、发布顺序、发布访问拒绝恢复和 MCP stdio 握手。run #48 的 89 项 Windows 结果仅属于已撤回的 1.0.12 历史证据；1.0.13 的 Windows 结果待本节候选门禁完成后补充。
 - 语法与格式：全部 Python 文件通过编译检查；shell 入口通过 `bash -n`；12 个 JSON/JSON template 通过标准 JSON 解析；`git diff --check` 通过。
 - PowerShell 解析：`build-offline-bundle.ps1`、`INSTALL-WINDOWS-PILOT.ps1`、`verify-windows-release.ps1` 均由官方 PowerShell 7.6.5 parser 返回无 AST 错误；GitHub Actions 的 `windows-2022`、`windows-latest` 两个 job 又分别使用 Windows PowerShell 5.1 Desktop 解析仓库内全部 PowerShell 脚本并通过。
 - 清单与渲染：本地 demo 返回 `VALID`。Windows pilot 模板固定 `mcpScope=user`、`workspaceRoots=[]`，省略 `network`/`dataBoundary`，只因明确占位符而失败关闭；production 模板继续因未批准字段和占位符失败关闭。Windows `.mcp.json` 的命令直接指向包内 `node.exe`，首个参数指向固定 Playwright CLI，不使用 `.cmd` shell shim；环境与 `config/windows-mcp-environment.json` 完全一致且不含扩展 token。
@@ -112,4 +120,4 @@
 - 企业目标机上的 Chrome/Edge、企业证书、PAC/代理、SSO/MFA 与真实业务页面读写行为；GitHub 托管 Chrome 的本地离线页面和 Cookie 登录态复用已通过，但不能替代这些组织特定条件。
 - 企业 SCA、恶意代码扫描、制品签名、制品库导入及生产审批证据。
 
-因此，1.0.12 及后续正式包的内网测试只运行顶层 `INSTALL-WINDOWS-PILOT.cmd` 一次；目标机不再替发布方运行通用 Windows 单元测试、AST 扫描或假 Claude 故障矩阵。单次安装事务仍会验证与目标实际状态有关的制品、现有 Claude、浏览器、Node、MCP 握手和真实注册，并在失败时回滚。生产放行仍需完成 `docs/acceptance.md` 的企业扫描、签名、浏览器/SSO 和生产治理项。
+因此，1.0.13 及后续正式包的内网测试只运行顶层 `INSTALL-WINDOWS-PILOT.cmd` 一次；目标机不再替发布方运行通用 Windows 单元测试、AST 扫描或假 Claude 故障矩阵。单次安装事务仍会验证与目标实际状态有关的制品、现有 Claude、浏览器、Node、MCP 握手和真实注册，并在失败时回滚。生产放行仍需完成 `docs/acceptance.md` 的企业扫描、签名、浏览器/SSO 和生产治理项。

@@ -18,7 +18,7 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 
-TOOL_VERSION = "1.0.12"
+TOOL_VERSION = "1.0.13"
 PLAYWRIGHT_MCP_VERSION = "0.0.79"
 CHROME_DEVTOOLS_MCP_VERSION = "1.8.0"
 MIN_NODE_VERSION = (20, 19, 0)

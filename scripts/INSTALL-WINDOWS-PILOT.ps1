@@ -28,6 +28,7 @@ $script:PythonPrefix = @()
 $script:LogPath = $LogPath
 $StageRoot = $null
 $RuntimeExtractionRoot = $null
+$ExtensionStagingRoot = $null
 $BackupRoot = $null
 $ConfigBackupPath = $null
 $ConfigWasPresent = $false
@@ -45,8 +46,10 @@ $InstallLockStream = $null
 $ExtensionPolicyPath = $null
 $ExtensionPolicyValueName = $null
 $ExtensionPolicyPreviousValue = $null
+$ExtensionPolicyPreviousValueKind = $null
 $ExtensionPolicyValueWasPresent = $false
 $ExtensionPolicyKeyWasPresent = $false
+$ExtensionPolicyKeyCreated = $false
 $ExtensionPolicyChangeStarted = $false
 $ExtensionPolicyCommitted = $false
 $ExtensionInstallMethod = ""
@@ -133,7 +136,7 @@ function Invoke-Python {
     }
 }
 
-function Test-RetryableRuntimePublishError {
+function Test-RetryableDirectoryMoveError {
     param(
         [Parameter(Mandatory = $true)]
         [Management.Automation.ErrorRecord]$ErrorRecord
@@ -157,10 +160,12 @@ function Test-RetryableRuntimePublishError {
     return $false
 }
 
-function Publish-StagedRuntime {
+function Move-DirectoryAtomicallyWithRetry {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
         [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$OperationLabel,
+        [Parameter(Mandatory = $true)][string]$LogPrefix,
         [ValidateRange(2, 100)][int]$MaximumAttempts = 25
     )
     $DelayMilliseconds = 250
@@ -174,17 +179,20 @@ function Publish-StagedRuntime {
             # absent and the retry state remains unambiguous.
             [IO.Directory]::Move($Source, $Destination)
             if (Test-Path -LiteralPath $Source) {
-                throw "运行时发布返回成功，但暂存源目录仍然存在：$Source"
+                throw ("{0}返回成功，但源目录仍然存在：{1}" -f `
+                    $OperationLabel, $Source)
             }
             if (-not (Test-Path -LiteralPath $Destination -PathType Container)) {
-                throw "运行时发布返回成功，但最终版本目录不存在：$Destination"
+                throw ("{0}返回成功，但目标目录不存在：{1}" -f `
+                    $OperationLabel, $Destination)
             }
             if ($Attempt -gt 1) {
-                Write-Host "暂存运行时占用已释放，安装继续。" -ForegroundColor Green
-                Write-InstallLog ("RUNTIME PUBLISH RECOVERED: attempts={0}; destination={1}" -f `
-                    $Attempt, $Destination)
+                Write-Host ("{0}占用已释放，安装继续。" -f $OperationLabel) `
+                    -ForegroundColor Green
+                Write-InstallLog ("{0} RECOVERED: attempts={1}; destination={2}" -f `
+                    $LogPrefix, $Attempt, $Destination)
             } else {
-                Write-InstallLog "RUNTIME PUBLISH COMPLETED: $Destination"
+                Write-InstallLog "$LogPrefix COMPLETED: $Destination"
             }
             return
         } catch {
@@ -192,32 +200,48 @@ function Publish-StagedRuntime {
             $SourcePresent = Test-Path -LiteralPath $Source -PathType Container
             $DestinationPresent = Test-Path -LiteralPath $Destination -PathType Container
             if (-not $SourcePresent -and $DestinationPresent) {
-                Write-InstallLog ("RUNTIME PUBLISH RECOVERED: move completed while reporting an error; destination={0}" -f `
-                    $Destination)
+                Write-InstallLog ("{0} RECOVERED: move completed while reporting an error; destination={1}" -f `
+                    $LogPrefix, $Destination)
                 return
             }
             if (-not $SourcePresent -or $DestinationPresent) {
-                throw ("运行时发布状态不明确，未继续重试。sourcePresent={0}; destinationPresent={1}; error={2}" -f `
-                    $SourcePresent, $DestinationPresent, $MoveError.Exception.Message)
+                throw ("{0}状态不明确，未继续重试。sourcePresent={1}; destinationPresent={2}; error={3}" -f `
+                    $OperationLabel, $SourcePresent, $DestinationPresent, `
+                    $MoveError.Exception.Message)
             }
-            if (-not (Test-RetryableRuntimePublishError $MoveError)) {
+            if (-not (Test-RetryableDirectoryMoveError $MoveError)) {
                 throw
             }
             if ($Attempt -ge $MaximumAttempts) {
-                throw ("暂存运行时被安全软件或其他进程持续占用，安装器已在同一进程中自动重试 {0} 次但仍无法发布。未覆盖最终版本目录。原始错误：{1}" -f `
-                    $MaximumAttempts, $MoveError.Exception.Message)
+                throw ("{0}被安全软件或其他进程持续占用，安装器已在同一进程中自动重试 {1} 次但仍无法完成。未覆盖目标目录。原始错误：{2}" -f `
+                    $OperationLabel, $MaximumAttempts, $MoveError.Exception.Message)
             }
             if ($Attempt -eq 1) {
-                Write-Host "暂存运行时正被安全软件或其他进程占用；安装器将自动等待并继续，无需重新运行。" -ForegroundColor Yellow
+                Write-Host ("{0}正被安全软件或其他进程占用；安装器将自动等待并继续，无需重新运行。" -f `
+                    $OperationLabel) -ForegroundColor Yellow
             } elseif (($Attempt % 5) -eq 0) {
-                Write-Host "仍在等待暂存运行时释放（已重试 $Attempt 次）..." -ForegroundColor Yellow
+                Write-Host ("仍在等待{0}释放（已重试 {1} 次）..." -f `
+                    $OperationLabel, $Attempt) -ForegroundColor Yellow
             }
-            Write-InstallLog ("RUNTIME PUBLISH RETRY {0}/{1}: {2}" -f `
-                $Attempt, $MaximumAttempts, $MoveError.Exception.Message)
+            Write-InstallLog ("{0} RETRY {1}/{2}: {3}" -f `
+                $LogPrefix, $Attempt, $MaximumAttempts, `
+                $MoveError.Exception.Message)
             Start-Sleep -Milliseconds $DelayMilliseconds
             $DelayMilliseconds = [Math]::Min($DelayMilliseconds * 2, 5000)
         }
     }
+}
+
+function Publish-StagedRuntime {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    Move-DirectoryAtomicallyWithRetry `
+        -Source $Source `
+        -Destination $Destination `
+        -OperationLabel "暂存运行时" `
+        -LogPrefix "RUNTIME PUBLISH"
 }
 
 function Get-NodeInfo {
@@ -330,31 +354,74 @@ function Test-PlaywrightExtension {
 }
 
 function Restore-ExtensionPolicyChange {
-    if (-not $script:ExtensionPolicyChangeStarted -or
+    if ((-not $script:ExtensionPolicyChangeStarted -and
+            -not $script:ExtensionPolicyKeyCreated) -or
         $script:ExtensionPolicyCommitted -or
-        -not $script:ExtensionPolicyPath -or
-        -not $script:ExtensionPolicyValueName) {
+        -not $script:ExtensionPolicyPath) {
         return
     }
-    if ($script:ExtensionPolicyValueWasPresent) {
-        New-ItemProperty -LiteralPath $script:ExtensionPolicyPath `
-            -Name $script:ExtensionPolicyValueName `
-            -Value $script:ExtensionPolicyPreviousValue `
-            -PropertyType String -Force | Out-Null
-        Write-InstallLog "ROLLBACK: restored previous browser extension policy"
-    } elseif (Test-Path -LiteralPath $script:ExtensionPolicyPath) {
-        Remove-ItemProperty -LiteralPath $script:ExtensionPolicyPath `
-            -Name $script:ExtensionPolicyValueName -Force -ErrorAction SilentlyContinue
-        if (-not $script:ExtensionPolicyKeyWasPresent) {
+    if ($script:ExtensionPolicyChangeStarted -and
+        $script:ExtensionPolicyValueName) {
+        if ($script:ExtensionPolicyValueWasPresent) {
+            New-ItemProperty -LiteralPath $script:ExtensionPolicyPath `
+                -Name $script:ExtensionPolicyValueName `
+                -Value $script:ExtensionPolicyPreviousValue `
+                -PropertyType $script:ExtensionPolicyPreviousValueKind `
+                -Force | Out-Null
+            $RestoredPolicyKey = Get-Item `
+                -LiteralPath $script:ExtensionPolicyPath
+            $RestoredPolicyValue = $RestoredPolicyKey.GetValue(
+                $script:ExtensionPolicyValueName,
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+            $RestoredPolicyValueKind = `
+                $RestoredPolicyKey.GetValueKind($script:ExtensionPolicyValueName)
+            if ($RestoredPolicyValueKind -ne `
+                    $script:ExtensionPolicyPreviousValueKind -or
+                [string]$RestoredPolicyValue -cne `
+                    [string]$script:ExtensionPolicyPreviousValue) {
+                throw "浏览器扩展策略原值恢复后核对不一致。"
+            }
+            Write-InstallLog "ROLLBACK: restored previous browser extension policy"
+        } elseif (Test-Path -LiteralPath $script:ExtensionPolicyPath) {
+            Remove-ItemProperty -LiteralPath $script:ExtensionPolicyPath `
+                -Name $script:ExtensionPolicyValueName -Force -ErrorAction Stop
+            $RestoredPolicyKey = Get-Item `
+                -LiteralPath $script:ExtensionPolicyPath
+            if (@($RestoredPolicyKey.GetValueNames()) -contains `
+                $script:ExtensionPolicyValueName) {
+                throw "浏览器扩展策略新增值删除后仍然存在。"
+            }
+            Write-InstallLog "ROLLBACK: removed newly added browser extension policy"
+        }
+    }
+    if ($script:ExtensionPolicyKeyCreated -and
+        (Test-Path -LiteralPath $script:ExtensionPolicyPath)) {
+        try {
             $RollbackPolicyKey = Get-Item -LiteralPath $script:ExtensionPolicyPath
             if (@($RollbackPolicyKey.GetValueNames()).Count -eq 0 -and
                 $RollbackPolicyKey.SubKeyCount -eq 0) {
                 Remove-Item -LiteralPath $script:ExtensionPolicyPath -Force
+                Write-InstallLog "ROLLBACK: removed empty browser extension policy key"
+            } else {
+                Write-InstallLog (
+                    "ROLLBACK: retained non-empty browser extension policy key: {0}" -f `
+                        $script:ExtensionPolicyPath
+                )
             }
+        } catch {
+            # Creating an empty key is optional preparation. If inherited policy
+            # ACLs allow key creation but deny cleanup, the empty key has no
+            # browser effect and must not prevent the supported manual path.
+            Write-InstallLog (
+                "WARNING: could not remove empty browser extension policy key: {0}" -f `
+                    $_.Exception.Message
+            )
         }
-        Write-InstallLog "ROLLBACK: removed newly added browser extension policy"
     }
     $script:ExtensionPolicyChangeStarted = $false
+    $script:ExtensionPolicyKeyCreated = $false
 }
 
 try {
@@ -658,29 +725,56 @@ try {
         Write-Host "当前浏览器已安装批准的 Playwright Extension，直接复用。" -ForegroundColor Green
     } else {
         Write-Host "当前浏览器未安装 Playwright Extension；开始从迁移包离线安装。" -ForegroundColor Cyan
+        $PreparedExtensionReusable = $false
         if (Test-Path -LiteralPath $ExtensionInstallRoot) {
             if (-not (Test-Path -LiteralPath $ExtensionInstallRoot -PathType Container)) {
                 throw "离线扩展安装路径已存在但不是目录：$ExtensionInstallRoot"
             }
-            if (-not (Test-Path -LiteralPath $InstalledExtensionCrx -PathType Leaf)) {
-                throw "离线扩展版本目录不完整：$ExtensionInstallRoot"
+            try {
+                if (-not (Test-Path -LiteralPath $InstalledExtensionCrx -PathType Leaf)) {
+                    throw "离线扩展版本目录不完整：$ExtensionInstallRoot"
+                }
+                if (-not (Test-Path -LiteralPath $InstalledExtensionUnpacked -PathType Container)) {
+                    throw "离线扩展版本目录缺少已解压内容：$ExtensionInstallRoot"
+                }
+                Invoke-Python @(
+                    $ExtensionVerifier,
+                    $InstalledExtensionCrx,
+                    "--approval-file", $ExtensionApproval,
+                    "--unpacked-directory", $InstalledExtensionUnpacked
+                )
+                $PreparedExtensionReusable = $true
+                Write-InstallLog "EXTENSION PREPARED DIRECTORY REUSED: $ExtensionInstallRoot"
+            } catch {
+                $InvalidExtensionReason = $_.Exception.Message
+                $InvalidExtensionBackupRoot = Join-Path $AgentRoot "backups"
+                $InvalidExtensionBackup = Join-Path $InvalidExtensionBackupRoot `
+                    ("invalid-browser-extension-{0}-{1}" -f `
+                        (Get-Date -Format "yyyyMMdd-HHmmss-fff"), `
+                        [guid]::NewGuid().ToString("N").Substring(0, 8))
+                New-Item -ItemType Directory -Path $InvalidExtensionBackupRoot `
+                    -Force | Out-Null
+                Write-Host "发现上次遗留的不完整扩展目录，正在保留副本并自动重建。" `
+                    -ForegroundColor Yellow
+                Move-DirectoryAtomicallyWithRetry `
+                    -Source $ExtensionInstallRoot `
+                    -Destination $InvalidExtensionBackup `
+                    -OperationLabel "不完整扩展目录隔离" `
+                    -LogPrefix "EXTENSION QUARANTINE"
+                Write-InstallLog (
+                    "EXTENSION INVALID DIRECTORY QUARANTINED: source={0}; backup={1}; reason={2}" -f `
+                        $ExtensionInstallRoot, $InvalidExtensionBackup, `
+                        $InvalidExtensionReason
+                )
             }
-            if (-not (Test-Path -LiteralPath $InstalledExtensionUnpacked -PathType Container)) {
-                throw "离线扩展版本目录缺少已解压内容：$ExtensionInstallRoot"
-            }
-            Invoke-Python @(
-                $ExtensionVerifier,
-                $InstalledExtensionCrx,
-                "--approval-file", $ExtensionApproval,
-                "--unpacked-directory", $InstalledExtensionUnpacked
-            )
-        } else {
-            $StagedExtensionRoot = Join-Path $StagingRoot `
+        }
+        if (-not $PreparedExtensionReusable) {
+            $ExtensionStagingRoot = Join-Path $StagingRoot `
                 ("extension-" + [guid]::NewGuid().ToString("N"))
-            New-Item -ItemType Directory -Path $StagedExtensionRoot | Out-Null
-            $StagedExtensionCrx = Join-Path $StagedExtensionRoot `
+            New-Item -ItemType Directory -Path $ExtensionStagingRoot | Out-Null
+            $StagedExtensionCrx = Join-Path $ExtensionStagingRoot `
                 ([IO.Path]::GetFileName($ExtensionSourcePath))
-            $StagedExtensionUnpacked = Join-Path $StagedExtensionRoot "unpacked"
+            $StagedExtensionUnpacked = Join-Path $ExtensionStagingRoot "unpacked"
             Copy-Item -LiteralPath $ExtensionSourcePath -Destination $StagedExtensionCrx
             Copy-Item -LiteralPath $ExtensionUnpackedSourcePath `
                 -Destination $StagedExtensionUnpacked -Recurse
@@ -692,13 +786,30 @@ try {
             )
             New-Item -ItemType Directory -Path (Split-Path -Parent $ExtensionInstallRoot) `
                 -Force | Out-Null
-            Move-Item -LiteralPath $StagedExtensionRoot -Destination $ExtensionInstallRoot
+            Move-DirectoryAtomicallyWithRetry `
+                -Source $ExtensionStagingRoot `
+                -Destination $ExtensionInstallRoot `
+                -OperationLabel "离线扩展目录" `
+                -LogPrefix "EXTENSION PUBLISH"
         }
+        Invoke-Python @(
+            $ExtensionVerifier,
+            $InstalledExtensionCrx,
+            "--approval-file", $ExtensionApproval,
+            "--unpacked-directory", $InstalledExtensionUnpacked
+        )
 
-        $CrxUri = ([Uri]$InstalledExtensionCrx).AbsoluteUri
-        $UpdateManifestPath = Join-Path $ExtensionInstallRoot "updates.xml"
-        $EscapedCrxUri = [Security.SecurityElement]::Escape($CrxUri)
-        $UpdateManifest = @"
+        $ExtensionPolicyPath = if ($BrowserChannel -eq "chrome") {
+            "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
+        } else {
+            "HKCU:\Software\Policies\Microsoft\Edge\ExtensionInstallForcelist"
+        }
+        $PolicyAttemptAvailable = $false
+        try {
+            $CrxUri = ([Uri]$InstalledExtensionCrx).AbsoluteUri
+            $UpdateManifestPath = Join-Path $ExtensionInstallRoot "updates.xml"
+            $EscapedCrxUri = [Security.SecurityElement]::Escape($CrxUri)
+            $UpdateManifest = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
   <app appid="$ExtensionId">
@@ -706,85 +817,157 @@ try {
   </app>
 </gupdate>
 "@
-        Write-Utf8NoBom $UpdateManifestPath $UpdateManifest
-        $UpdateManifestUri = ([Uri]$UpdateManifestPath).AbsoluteUri
+            Write-Utf8NoBom $UpdateManifestPath $UpdateManifest
+            $UpdateManifestUri = ([Uri]$UpdateManifestPath).AbsoluteUri
 
-        $ExtensionPolicyPath = if ($BrowserChannel -eq "chrome") {
-            "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
-        } else {
-            "HKCU:\Software\Policies\Microsoft\Edge\ExtensionInstallForcelist"
-        }
-        $ExtensionPolicyKeyWasPresent = Test-Path -LiteralPath $ExtensionPolicyPath
-        if (-not $ExtensionPolicyKeyWasPresent) {
-            New-Item -Path $ExtensionPolicyPath -Force | Out-Null
-        }
-        $PolicyKey = Get-Item -LiteralPath $ExtensionPolicyPath
-        $PolicyValueNames = @($PolicyKey.GetValueNames())
-        foreach ($PolicyValueName in $PolicyValueNames) {
-            $PolicyValue = [string]$PolicyKey.GetValue($PolicyValueName, "")
-            if ($PolicyValue -match ("^" + [regex]::Escape($ExtensionId) + ";")) {
-                $ExtensionPolicyValueName = $PolicyValueName
-                break
+            $ExtensionPolicyKeyWasPresent = Test-Path `
+                -LiteralPath $ExtensionPolicyPath
+            if (-not $ExtensionPolicyKeyWasPresent) {
+                New-Item -Path $ExtensionPolicyPath -Force | Out-Null
+                $ExtensionPolicyKeyCreated = $true
             }
-        }
-        if (-not $ExtensionPolicyValueName) {
-            $PolicyIndex = 1
-            while ($PolicyValueNames -contains [string]$PolicyIndex) {
-                $PolicyIndex += 1
+            $PolicyKey = Get-Item -LiteralPath $ExtensionPolicyPath
+            $PolicyValueNames = @($PolicyKey.GetValueNames())
+            foreach ($PolicyValueName in $PolicyValueNames) {
+                $PolicyValue = [string]$PolicyKey.GetValue(
+                    $PolicyValueName,
+                    "",
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+                )
+                if ($PolicyValue -match `
+                    ("^" + [regex]::Escape($ExtensionId) + ";")) {
+                    $ExtensionPolicyValueName = $PolicyValueName
+                    break
+                }
             }
-            $ExtensionPolicyValueName = [string]$PolicyIndex
-        }
-        $ExtensionPolicyValueWasPresent = $PolicyValueNames -contains $ExtensionPolicyValueName
-        if ($ExtensionPolicyValueWasPresent) {
-            $ExtensionPolicyPreviousValue = [string]$PolicyKey.GetValue(
+            if (-not $ExtensionPolicyValueName) {
+                $PolicyIndex = 1
+                while ($PolicyValueNames -contains [string]$PolicyIndex) {
+                    $PolicyIndex += 1
+                }
+                $ExtensionPolicyValueName = [string]$PolicyIndex
+            }
+            $ExtensionPolicyValueWasPresent = `
+                $PolicyValueNames -contains $ExtensionPolicyValueName
+            if ($ExtensionPolicyValueWasPresent) {
+                $ExtensionPolicyPreviousValue = $PolicyKey.GetValue(
+                    $ExtensionPolicyValueName,
+                    $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+                )
+                $ExtensionPolicyPreviousValueKind = `
+                    $PolicyKey.GetValueKind($ExtensionPolicyValueName)
+            }
+            $RequestedPolicyValue = "$ExtensionId;$UpdateManifestUri"
+            New-ItemProperty -LiteralPath $ExtensionPolicyPath `
+                -Name $ExtensionPolicyValueName `
+                -Value $RequestedPolicyValue `
+                -PropertyType String -Force | Out-Null
+            # Registry SetValue is atomic. Only mark the policy as changed after
+            # the provider confirms the write, so an access-denied write does not
+            # trigger a second forbidden write during optional-policy fallback.
+            $ExtensionPolicyChangeStarted = $true
+            $WrittenPolicyKey = Get-Item -LiteralPath $ExtensionPolicyPath
+            $WrittenPolicyValue = [string]$WrittenPolicyKey.GetValue(
                 $ExtensionPolicyValueName,
                 ""
             )
-        }
-        $ExtensionPolicyChangeStarted = $true
-        New-ItemProperty -LiteralPath $ExtensionPolicyPath `
-            -Name $ExtensionPolicyValueName `
-            -Value ("$ExtensionId;$UpdateManifestUri") `
-            -PropertyType String -Force | Out-Null
-        Write-InstallLog (
-            "Offline extension policy configured: {0}\{1}" -f `
-                $ExtensionPolicyPath, $ExtensionPolicyValueName
-        )
-
-        Start-Process -FilePath $BrowserExecutable -ArgumentList @("about:blank")
-        Write-Host "已尝试当前用户离线策略安装，正在等待浏览器确认……"
-        $PolicyInstallDeadline = [DateTime]::UtcNow.AddSeconds(30)
-        while (-not (Test-PlaywrightExtension `
-            $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
-            $InstalledExtensionUnpacked)) {
-            if ([DateTime]::UtcNow -ge $PolicyInstallDeadline) {
-                break
+            $WrittenPolicyValueKind = `
+                $WrittenPolicyKey.GetValueKind($ExtensionPolicyValueName)
+            if ($WrittenPolicyValue -ne $RequestedPolicyValue -or
+                $WrittenPolicyValueKind -ne [Microsoft.Win32.RegistryValueKind]::String) {
+                throw "浏览器扩展策略写入后核对不一致。"
             }
-            Start-Sleep -Seconds 2
+            Write-InstallLog (
+                "Offline extension policy configured: {0}\{1}" -f `
+                    $ExtensionPolicyPath, $ExtensionPolicyValueName
+            )
+
+            Start-Process -FilePath $BrowserExecutable `
+                -ArgumentList @("about:blank")
+            $PolicyAttemptAvailable = $true
+            Write-Host "已尝试当前用户离线策略安装，正在等待浏览器确认……"
+        } catch {
+            $PolicyAttemptError = $_
+            if ($ExtensionPolicyChangeStarted -or $ExtensionPolicyKeyCreated) {
+                try {
+                    Restore-ExtensionPolicyChange
+                } catch {
+                    throw (
+                        "自动浏览器策略不可用，且无法安全恢复本次策略变更。" +
+                        "原始错误：$($PolicyAttemptError.Exception.Message)；" +
+                        "恢复错误：$($_.Exception.Message)"
+                    )
+                }
+            }
+            Write-InstallLog (
+                "OFFLINE EXTENSION POLICY UNAVAILABLE: {0}" -f `
+                    $PolicyAttemptError.Exception.Message
+            )
+            Write-Host (
+                "浏览器自动策略安装不可用（可能受权限或企业策略限制）；" +
+                "将直接进入手动加载，不会中止或要求重新运行。"
+            ) -ForegroundColor Yellow
+        }
+
+        if ($PolicyAttemptAvailable) {
+            $PolicyInstallDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            while (-not (Test-PlaywrightExtension `
+                $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
+                $InstalledExtensionUnpacked)) {
+                if ([DateTime]::UtcNow -ge $PolicyInstallDeadline) {
+                    break
+                }
+                Start-Sleep -Seconds 2
+            }
         }
         if (-not (Test-PlaywrightExtension `
             $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
             $InstalledExtensionUnpacked)) {
-            Restore-ExtensionPolicyChange
+            if ($ExtensionPolicyChangeStarted -or $ExtensionPolicyKeyCreated) {
+                Restore-ExtensionPolicyChange
+            }
             $ExtensionsPage = if ($BrowserChannel -eq "chrome") {
                 "chrome://extensions"
             } else {
                 "edge://extensions"
             }
-            Start-Process -FilePath $BrowserExecutable -ArgumentList @($ExtensionsPage)
+            try {
+                Start-Process -FilePath $BrowserExecutable `
+                    -ArgumentList @($ExtensionsPage)
+            } catch {
+                Write-InstallLog (
+                    "WARNING: could not open browser extension page: {0}" -f `
+                        $_.Exception.Message
+                )
+                Write-Host (
+                    "未能自动打开扩展页；请在浏览器地址栏手动打开 " +
+                    $ExtensionsPage
+                ) -ForegroundColor Yellow
+            }
             $ClipCommand = Get-Command "clip.exe" -ErrorAction SilentlyContinue
             if ($ClipCommand) {
                 try {
                     $InstalledExtensionUnpacked | & $ClipCommand.Source
                     if ($LASTEXITCODE -eq 0) {
                         Write-Host "扩展目录已复制到剪贴板。" -ForegroundColor Green
+                    } else {
+                        Write-InstallLog (
+                            "WARNING: clip.exe returned exit code {0}" -f `
+                                $LASTEXITCODE
+                        )
                     }
                 } catch {
-                    Write-InstallLog "WARNING: could not copy extension path to clipboard"
+                    Write-InstallLog (
+                        "WARNING: could not copy extension path to clipboard: {0}" -f `
+                            $_.Exception.Message
+                    )
                 }
+            } else {
+                Write-InstallLog "WARNING: clip.exe is unavailable"
             }
             Write-Host ""
-            Write-Host "浏览器未接受自动安装，请在刚打开的扩展页完成以下 3 步：" `
+            Write-Host "请在扩展页完成以下 3 步（若未自动打开，请打开 $ExtensionsPage）：" `
                 -ForegroundColor Yellow
             Write-Host "  1. 打开右上角“开发者模式”。"
             Write-Host "  2. 点击“加载已解压的扩展程序”。"
@@ -896,10 +1079,18 @@ try {
         -Force | Out-Null
     $ConfigChangeStarted = $true
     if ($ConfigWasPresent) {
-        Move-Item -LiteralPath $ConfigRoot -Destination $ConfigBackupPath
+        Move-DirectoryAtomicallyWithRetry `
+            -Source $ConfigRoot `
+            -Destination $ConfigBackupPath `
+            -OperationLabel "旧配置目录备份" `
+            -LogPrefix "CONFIG BACKUP"
         $ConfigBackupComplete = $true
     }
-    Move-Item -LiteralPath $StageDeploy -Destination $ConfigRoot
+    Move-DirectoryAtomicallyWithRetry `
+        -Source $StageDeploy `
+        -Destination $ConfigRoot `
+        -OperationLabel "新配置目录发布" `
+        -LogPrefix "CONFIG PUBLISH"
     $ConfigPublished = $true
 
     Write-Step 5 "执行目标机预检并注册用户级 MCP"
@@ -1036,13 +1227,27 @@ approve the browser tab connection, and perform a read-only page-title test firs
                         throw "配置发布状态不明确；已保留当前目录和备份，未执行破坏性回滚。"
                     }
                     if ($ConfigPublished -and (Test-Path -LiteralPath $ConfigRoot)) {
-                        Remove-Item -LiteralPath $ConfigRoot -Recurse -Force
+                        $FailedConfigPath = Join-Path $BackupRoot `
+                            "failed-config-pilot"
+                        Move-DirectoryAtomicallyWithRetry `
+                            -Source $ConfigRoot `
+                            -Destination $FailedConfigPath `
+                            -OperationLabel "失败配置目录隔离" `
+                            -LogPrefix "CONFIG ROLLBACK QUARANTINE"
+                        Write-InstallLog (
+                            "ROLLBACK: quarantined failed pilot configuration: {0}" -f `
+                                $FailedConfigPath
+                        )
                     }
                     if (-not $ConfigBackupPath -or
                         -not (Test-Path -LiteralPath $ConfigBackupPath -PathType Container)) {
                         throw "配置回滚备份不存在。"
                     }
-                    Move-Item -LiteralPath $ConfigBackupPath -Destination $ConfigRoot
+                    Move-DirectoryAtomicallyWithRetry `
+                        -Source $ConfigBackupPath `
+                        -Destination $ConfigRoot `
+                        -OperationLabel "旧配置目录恢复" `
+                        -LogPrefix "CONFIG ROLLBACK RESTORE"
                     Write-InstallLog "ROLLBACK: restored previous pilot configuration directory"
                 } elseif (-not (Test-Path -LiteralPath $ConfigRoot -PathType Container)) {
                     throw "旧配置未完成备份，原目录也不存在；不执行删除。"
@@ -1050,10 +1255,23 @@ approve the browser tab connection, and perform a read-only page-title test firs
                     Write-InstallLog "ROLLBACK: original pilot configuration remained in place"
                 }
             } else {
-                if (Test-Path -LiteralPath $ConfigRoot) {
-                    Remove-Item -LiteralPath $ConfigRoot -Recurse -Force
+                if ($ConfigPublished -and
+                    (Test-Path -LiteralPath $ConfigRoot -PathType Container)) {
+                    $FailedConfigPath = Join-Path $BackupRoot `
+                        "failed-config-pilot"
+                    Move-DirectoryAtomicallyWithRetry `
+                        -Source $ConfigRoot `
+                        -Destination $FailedConfigPath `
+                        -OperationLabel "失败配置目录隔离" `
+                        -LogPrefix "CONFIG ROLLBACK QUARANTINE"
+                    Write-InstallLog (
+                        "ROLLBACK: quarantined newly installed pilot configuration: {0}" -f `
+                            $FailedConfigPath
+                    )
+                } elseif (-not $ConfigPublished -and
+                    (Test-Path -LiteralPath $ConfigRoot)) {
+                    throw "配置发布状态不明确；检测到非本次安装确认发布的目录，已原样保留。"
                 }
-                Write-InstallLog "ROLLBACK: removed newly installed pilot configuration directory"
             }
         } catch {
             Write-InstallLog "CONFIG ROLLBACK FAILED: $($_.Exception.Message)"
@@ -1073,6 +1291,11 @@ approve the browser tab connection, and perform a read-only page-title test firs
 } finally {
     if ($RuntimeExtractionRoot -and (Test-Path -LiteralPath $RuntimeExtractionRoot)) {
         Remove-Item -LiteralPath $RuntimeExtractionRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($ExtensionStagingRoot -and
+        (Test-Path -LiteralPath $ExtensionStagingRoot)) {
+        Remove-Item -LiteralPath $ExtensionStagingRoot -Recurse -Force `
+            -ErrorAction SilentlyContinue
     }
     if ($StageRoot -and (Test-Path -LiteralPath $StageRoot)) {
         Remove-Item -LiteralPath $StageRoot -Recurse -Force -ErrorAction SilentlyContinue

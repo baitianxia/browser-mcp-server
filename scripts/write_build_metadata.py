@@ -54,7 +54,7 @@ def main() -> int:
         parser.error("--cross-built requires a target different from the build host")
     payload = {
         "schemaVersion": 1,
-        "runtimeVersion": "1.0.12",
+        "runtimeVersion": "1.0.13",
         "profile": args.profile,
         "buildHost": build_host,
         "target": target,

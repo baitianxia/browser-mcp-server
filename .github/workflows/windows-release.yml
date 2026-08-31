@@ -209,7 +209,7 @@ jobs:
               throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
           }
           $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-agent-runtime-1.0.12-core-windows-x64.tar.gz")
+              -Filter "browser-agent-runtime-1.0.13-core-windows-x64.tar.gz")
           if ($RuntimeArchives.Count -ne 1) {
               throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
           }
@@ -228,7 +228,7 @@ jobs:
               throw "Transfer-kit build failed."
           }
           $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "intranet-browser-agent-transfer-1.0.12-core-windows-x64.tar.gz")
+              -Filter "intranet-browser-agent-transfer-1.0.13-core-windows-x64.tar.gz")
           if ($TransferArchives.Count -ne 1) {
               throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
           }
@@ -479,12 +479,28 @@ jobs:
           $RuntimeLockStagingRoot = Join-Path $PilotLocalAppData `
               "IntranetBrowserAgent\staging"
           $InstallLogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
+          $CiExtensionPolicyPath = `
+              "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
+          $script:CiExtensionPolicyKeyWasPresent = $false
+          $script:CiExtensionPolicyKeyCreated = $false
+          $script:CiExtensionPolicyOriginalAccessSddl = ""
+          $script:CiExtensionPolicyAclArmed = $false
+          $script:CiExtensionPolicyAclRestored = $false
           $Approval = Get-Content -LiteralPath (Join-Path `
               $env:TRANSFER_ROOT `
               "toolkit\config\playwright-extension-source.json") `
               -Raw | ConvertFrom-Json
           $InstalledUnpacked = Join-Path $env:LOCALAPPDATA `
               "IntranetBrowserAgent\browser-extension\$($Approval.version)\unpacked"
+          $PreparedExtensionRoot = Split-Path -Parent $InstalledUnpacked
+          $InvalidExtensionMarkerName = "ci-invalid-extension-leftover.txt"
+          New-Item -ItemType Directory -Path $PreparedExtensionRoot `
+              -Force | Out-Null
+          [IO.File]::WriteAllText(
+              (Join-Path $PreparedExtensionRoot $InvalidExtensionMarkerName),
+              "preserve-and-rebuild",
+              (New-Object System.Text.UTF8Encoding($false))
+          )
           $ChromeUserData = Join-Path $env:LOCALAPPDATA `
               "Google\Chrome\User Data"
           & node.exe --check $CdpProbe
@@ -573,7 +589,86 @@ jobs:
               }
               return $ParsedExitCode
           }
+          function Restore-CiExtensionPolicyAccess {
+              if (-not $script:CiExtensionPolicyAclArmed -or
+                  $script:CiExtensionPolicyAclRestored) {
+                  return
+              }
+              $RestorePolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
+              $RestorePolicyAcl.SetSecurityDescriptorSddlForm(
+                  $script:CiExtensionPolicyOriginalAccessSddl,
+                  [Security.AccessControl.AccessControlSections]::Access
+              )
+              Set-Acl -LiteralPath $CiExtensionPolicyPath `
+                  -AclObject $RestorePolicyAcl
+              $RestoredPolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
+              $RestoredPolicyAccessSddl = `
+                  $RestoredPolicyAcl.GetSecurityDescriptorSddlForm(
+                      [Security.AccessControl.AccessControlSections]::Access
+                  )
+              if ($RestoredPolicyAccessSddl -cne `
+                  $script:CiExtensionPolicyOriginalAccessSddl) {
+                  throw "CI did not restore the exact extension-policy access ACL."
+              }
+              if ($script:CiExtensionPolicyKeyCreated -and
+                  (Test-Path -LiteralPath $CiExtensionPolicyPath)) {
+                  $CiPolicyKey = Get-Item -LiteralPath $CiExtensionPolicyPath
+                  if (@($CiPolicyKey.GetValueNames()).Count -eq 0 -and
+                      $CiPolicyKey.SubKeyCount -eq 0) {
+                      Remove-Item -LiteralPath $CiExtensionPolicyPath -Force
+                  }
+              }
+              $script:CiExtensionPolicyAclRestored = $true
+              Write-Host "CI EXTENSION POLICY ACCESS DENIED RESTORED"
+          }
           try {
+              $script:CiExtensionPolicyKeyWasPresent = `
+                  Test-Path -LiteralPath $CiExtensionPolicyPath
+              if (-not $script:CiExtensionPolicyKeyWasPresent) {
+                  New-Item -Path $CiExtensionPolicyPath -Force | Out-Null
+                  $script:CiExtensionPolicyKeyCreated = $true
+              }
+              $CiPolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
+              $script:CiExtensionPolicyOriginalAccessSddl = `
+                  $CiPolicyAcl.GetSecurityDescriptorSddlForm(
+                      [Security.AccessControl.AccessControlSections]::Access
+                  )
+              $CiPolicyIdentity = `
+                  [Security.Principal.WindowsIdentity]::GetCurrent().User
+              $CiPolicyDeny = `
+                  [Security.AccessControl.RegistryAccessRule]::new(
+                      $CiPolicyIdentity,
+                      [Security.AccessControl.RegistryRights]::SetValue,
+                      [Security.AccessControl.InheritanceFlags]::None,
+                      [Security.AccessControl.PropagationFlags]::None,
+                      [Security.AccessControl.AccessControlType]::Deny
+                  )
+              $null = $CiPolicyAcl.AddAccessRule($CiPolicyDeny)
+              Set-Acl -LiteralPath $CiExtensionPolicyPath `
+                  -AclObject $CiPolicyAcl
+              $script:CiExtensionPolicyAclArmed = $true
+              $CiPolicyProbeName = "ci-access-denied-probe"
+              $CiPolicyWriteDenied = $false
+              try {
+                  New-ItemProperty -LiteralPath $CiExtensionPolicyPath `
+                      -Name $CiPolicyProbeName -Value "must-not-write" `
+                      -PropertyType String -Force | Out-Null
+              } catch {
+                  if ($_.CategoryInfo.Category -ne `
+                          [Management.Automation.ErrorCategory]::PermissionDenied -and
+                      $_.Exception -isnot [System.UnauthorizedAccessException]) {
+                      throw
+                  }
+                  $CiPolicyWriteDenied = $true
+              } finally {
+                  Remove-ItemProperty -LiteralPath $CiExtensionPolicyPath `
+                      -Name $CiPolicyProbeName -Force `
+                      -ErrorAction SilentlyContinue
+              }
+              if (-not $CiPolicyWriteDenied) {
+                  throw "CI could not deny the exact extension policy SetValue operation."
+              }
+              Write-Host "CI EXTENSION POLICY ACCESS DENIED ARMED"
               New-NetFirewallRule -DisplayName $FirewallRule `
                   -Direction Outbound -Program $ChromeExe `
                   -RemoteAddress Internet -Action Block | Out-Null
@@ -614,10 +709,21 @@ jobs:
               if (-not $ManualFallbackReached) {
                   $LauncherExitCode = Read-CiExitCode `
                       $LauncherExitFile "One-click Windows launcher"
-                  if ($LauncherExitCode -ne 0) {
-                      throw "One-click Windows launcher failed before the manual fallback with exit code $LauncherExitCode"
-                  }
+                  throw (
+                      "The denied extension policy did not enter the supported " +
+                      "manual fallback; launcher exit=$LauncherExitCode"
+                  )
               }
+              $FallbackInstallLog = Get-ChildItem -LiteralPath $InstallLogRoot `
+                  -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
+                  Sort-Object LastWriteTime -Descending |
+                  Select-Object -First 1
+              if (-not $FallbackInstallLog -or
+                  -not (Select-String -LiteralPath $FallbackInstallLog.FullName `
+                      -SimpleMatch "OFFLINE EXTENSION POLICY UNAVAILABLE" -Quiet)) {
+                  throw "The installer did not classify denied policy access as optional."
+              }
+              Restore-CiExtensionPolicyAccess
 
               # The target flow leaves chrome://extensions open while the user
               # follows the three displayed steps. A GitHub-hosted runner cannot
@@ -712,6 +818,26 @@ jobs:
                   -not (Select-String -LiteralPath $CurrentInstallLog.FullName `
                       -SimpleMatch "RUNTIME PUBLISH RECOVERED" -Quiet)) {
                   throw "The installer did not prove runtime publish retry and recovery."
+              }
+              if (-not (Select-String -LiteralPath $CurrentInstallLog.FullName `
+                  -SimpleMatch "EXTENSION INVALID DIRECTORY QUARANTINED" -Quiet)) {
+                  throw "The installer did not quarantine the invalid extension leftover."
+              }
+              $QuarantinedExtensionMarkers = @(
+                  Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA `
+                      "IntranetBrowserAgent\backups") `
+                      -Filter $InvalidExtensionMarkerName -File -Recurse `
+                      -ErrorAction Stop
+              )
+              if ($QuarantinedExtensionMarkers.Count -ne 1 -or
+                  (Get-Content -LiteralPath `
+                      $QuarantinedExtensionMarkers[0].FullName -Raw) -ne `
+                      "preserve-and-rebuild") {
+                  throw "The invalid extension leftover was not preserved exactly once."
+              }
+              if (Test-Path -LiteralPath (Join-Path $PreparedExtensionRoot `
+                  $InvalidExtensionMarkerName)) {
+                  throw "The rebuilt extension directory retained the invalid marker."
               }
               $InstalledManifestPath = Join-Path $env:LOCALAPPDATA `
                   "IntranetBrowserAgent\config\pilot\deployment.windows-pilot.json"
@@ -822,6 +948,7 @@ jobs:
                   Get-Content -LiteralPath $RuntimeLockStderr `
                       -ErrorAction SilentlyContinue | Write-Host
               }
+              Restore-CiExtensionPolicyAccess
           }
 
       - name: Verify publisher-gate and installed-state evidence
@@ -876,6 +1003,16 @@ jobs:
               -not (Select-String -LiteralPath $InstallLogs[0].FullName `
               -SimpleMatch "RUNTIME PUBLISH RECOVERED" -Quiet)) {
               throw "Runtime publish retry/recovery evidence is missing."
+          }
+          if (-not (Select-String -LiteralPath $InstallLogs[0].FullName `
+              -SimpleMatch "OFFLINE EXTENSION POLICY UNAVAILABLE" -Quiet) -or
+              -not (Select-String -LiteralPath $InstallLogs[0].FullName `
+              -SimpleMatch "MANUAL EXTENSION LOAD REQUIRED" -Quiet)) {
+              throw "Denied extension-policy fallback evidence is missing."
+          }
+          if (-not (Select-String -LiteralPath $InstallLogs[0].FullName `
+              -SimpleMatch "EXTENSION INVALID DIRECTORY QUARANTINED" -Quiet)) {
+              throw "Invalid extension recovery evidence is missing."
           }
           $InstallerStarts = @(Select-String -LiteralPath `
               $InstallLogs[0].FullName `
@@ -995,7 +1132,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: intranet-browser-agent-transfer-1.0.12-windows-x64-${{ github.run_id }}
+          name: intranet-browser-agent-transfer-1.0.13-windows-x64-${{ github.run_id }}
           path: |
             ${{ env.TRANSFER_ARCHIVE }}
             ${{ env.TRANSFER_ARCHIVE }}.sha256
