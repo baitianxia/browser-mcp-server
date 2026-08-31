@@ -77,6 +77,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         discovery = (
             ROOT / "scripts" / "windows-tool-discovery.ps1"
         ).read_text(encoding="utf-8")
+        target_automation = installer + launcher + registrar + discovery
         self.assertNotIn("ExecutionPolicy", installer + launcher)
         self.assertNotIn("ProjectRoot", installer)
         self.assertNotIn("--project-root", installer)
@@ -98,7 +99,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("check_playwright_extension.py", installer)
         self.assertIn("validate_playwright_extension.py", installer)
         self.assertIn('Invoke-Python @($McpRegistrar, "self-test")', installer)
-        self.assertIn('"--claude-executable", $ClaudeExecutable', installer)
+        self.assertIn(
+            '"--claude-executable", [string]$ClaudeInvocation.Executable', installer
+        )
+        self.assertIn('"--claude-prefix", [string]$ClaudePrefixArgument', installer)
         self.assertIn('"--node-executable", $NodeExe', installer)
         self.assertIn('"--playwright-cli", $PlaywrightCliPath', installer)
         self.assertIn('"--browser-channel", $BrowserChannel', installer)
@@ -106,10 +110,13 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn('"--wrapper"', installer)
         self.assertNotIn('Get-Command "claude.cmd"', installer)
         self.assertNotIn("function Get-ClaudeExecutable", installer)
-        self.assertIn("Resolve-NativeClaudeExecutable", installer)
-        self.assertIn('Get-Command "claude.exe"', discovery)
+        self.assertIn("Resolve-ClaudeCodeInvocation", installer)
+        self.assertIn('"claude.exe", "claude.cmd"', discovery)
         self.assertIn('".local\\bin\\claude.exe"', discovery)
-        self.assertIn("Resolve-NativeClaudeExecutable", discovery)
+        self.assertIn("Resolve-ClaudeCodeInvocation", discovery)
+        self.assertIn("Resolve-NpmClaudeInvocation", discovery)
+        self.assertIn('"node_modules\\@anthropic-ai\\claude-code"', discovery)
+        self.assertIn('Package.bin.PSObject.Properties["claude"]', discovery)
         self.assertIn('"--user-config", $ClaudeUserConfigPath', installer)
         self.assertIn("[IO.Path]::IsPathRooted($ClaudeConfigDirectory)", installer)
         self.assertIn("$ClaudeConfigDirectory -notmatch '^[A-Za-z]:[\\\\/]'", installer)
@@ -150,6 +157,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("BROWSER_AGENT_NODE", installer)
         self.assertIn("未修改系统 Node.js", installer)
         self.assertIn("Detailed error log:", launcher)
+        self.assertNotIn("npm.cmd", target_automation)
+        self.assertNotIn("pnpm.cmd", target_automation)
+        self.assertNotIn("npx.cmd", target_automation)
+        self.assertIn("不会安装、升级或修复 Claude Code", installer)
         self.assertIn('-LogPath "%INSTALL_LOG%" %*', launcher)
         self.assertIn("toolkit\\scripts\\verify-windows-release.ps1", launcher)
         self.assertIn('set "TRANSFER_ROOT=%%~fI"', launcher)
@@ -191,7 +202,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"self-test"', gate)
         self.assertIn("intranet-browser-agent-release-probe", gate)
         self.assertIn("$env:CLAUDE_CONFIG_DIR = $ProbeClaudeConfig", gate)
-        self.assertIn('"--claude-executable", $ClaudeExecutable', gate)
+        self.assertIn(
+            '"--claude-executable", [string]$ClaudeInvocation.Executable', gate
+        )
+        self.assertIn('"--claude-prefix", [string]$ClaudePrefixArgument', gate)
         self.assertIn('"--node-executable", $ProbeNode', gate)
         self.assertIn('"--playwright-cli", $ProbePlaywrightCli', gate)
         self.assertIn('"validate_node_distribution.py"', gate)
@@ -211,7 +225,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("Remove-Item Env:PYTHONDONTWRITEBYTECODE", gate)
         self.assertIn("WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED", gate)
         self.assertIn('Join-Path $PSScriptRoot "windows-tool-discovery.ps1"', gate)
-        self.assertIn("Resolve-NativeClaudeExecutable", gate)
+        self.assertIn("Resolve-ClaudeCodeInvocation", gate)
 
         verify_call = '(Join-Path $PSScriptRoot "verify-bundle.py")'
         verify_positions: list[int] = []
@@ -268,9 +282,18 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("process.exit(1)", loader)
 
         self.assertIn("exercise-extension-mcp.py", workflow)
-        self.assertIn("CI PATH-HIDDEN CLAUDE FALLBACK READY", workflow)
-        self.assertIn("CI failed to hide claude.exe from PATH", workflow)
+        self.assertIn("CI EXISTING NPM CLAUDE READY", workflow)
+        self.assertIn("CI failed to hide native claude.exe from PATH", workflow)
         self.assertIn("The official per-user Claude Code fallback path is missing", workflow)
+        self.assertIn("Prepare exact native and npm Claude Code CI fixtures", workflow)
+        self.assertIn("CI-only native Claude Code", workflow)
+        self.assertIn("CI-only npm Claude Code", workflow)
+        self.assertIn("Prove native Claude compatibility", workflow)
+        self.assertIn("Resolve-ClaudeCodeInvocation", workflow)
+        self.assertIn("The shared resolver did not select the existing npm", workflow)
+        self.assertIn("NPM_CLAUDE_COMMAND", workflow)
+        self.assertIn("NPM_CLAUDE_NODE", workflow)
+        self.assertIn("$ClaudeFirewallRule", workflow)
         self.assertIn('"CHROME_EXE=$ChromeExe"', workflow)
         self.assertIn('$ChromeExe = [string]$env:CHROME_EXE', workflow)
         self.assertIn("--browser-executable $ChromeExe", workflow)
@@ -323,10 +346,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 f"$env:USERPROFILE = {ps_literal(user_profile)}; "
                 "$env:PATH = ''; "
                 f". {ps_literal(resolver)}; "
-                "$Resolved = Resolve-NativeClaudeExecutable; "
-                f"if ($Resolved -ne {ps_literal(claude)}) {{ "
-                "throw ('Unexpected Claude path: ' + $Resolved) }; "
-                f"$Explicit = Resolve-NativeClaudeExecutable -ExplicitPath "
+                "$Resolved = Resolve-ClaudeCodeInvocation; "
+                f"if ($Resolved.CommandPath -ne {ps_literal(claude)} -or "
+                "$Resolved.Executable -ne $Resolved.CommandPath -or "
+                "$Resolved.Kind -ne 'native' -or @($Resolved.Prefix).Count -ne 0) { "
+                "throw ('Unexpected Claude invocation: ' + ($Resolved | Out-String)) }; "
+                f"$Explicit = Resolve-ClaudeCodeInvocation -ExplicitPath "
                 f"{ps_literal(user_profile / 'missing.exe')}; "
                 "if ($Explicit) { throw 'An invalid explicit path must not fall back' }"
             )
@@ -338,6 +363,79 @@ class WindowsPilotSetupTests(unittest.TestCase):
                     "-NonInteractive",
                     "-Command",
                     command,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                msg=f"stdout={result.stdout}\nstderr={result.stderr}",
+            )
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell 5.1")
+    def test_npm_claude_resolver_uses_installed_package_without_running_npm(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            user_profile = root / "profile"
+            native_fallback = user_profile / ".local" / "bin" / "claude.exe"
+            native_fallback.parent.mkdir(parents=True)
+            native_fallback.write_bytes(b"MZ")
+
+            npm_root = root / "npm prefix with spaces"
+            npm_root.mkdir(parents=True)
+            command = npm_root / "claude.cmd"
+            command.write_bytes(b"@echo off\r\n")
+            node = npm_root / "node.exe"
+            node.write_bytes(b"MZ")
+            package_root = (
+                npm_root / "node_modules" / "@anthropic-ai" / "claude-code"
+            )
+            package_root.mkdir(parents=True)
+            cli = package_root / "cli.js"
+            cli.write_bytes(b"// existing npm Claude Code entry\n")
+            (package_root / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "@anthropic-ai/claude-code",
+                        "bin": {"claude": "cli.js"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            resolver = ROOT / "scripts" / "windows-tool-discovery.ps1"
+
+            def ps_literal(value: Path) -> str:
+                return "'" + str(value).replace("'", "''") + "'"
+
+            powershell = (
+                "$ErrorActionPreference = 'Stop'; "
+                f"$env:USERPROFILE = {ps_literal(user_profile)}; "
+                f"$env:PATH = {ps_literal(npm_root)}; "
+                f". {ps_literal(resolver)}; "
+                "$Resolved = Resolve-ClaudeCodeInvocation; "
+                f"if ($Resolved.CommandPath -ne {ps_literal(command)} -or "
+                f"$Resolved.Executable -ne {ps_literal(node)} -or "
+                "$Resolved.Kind -ne 'npm' -or @($Resolved.Prefix).Count -ne 1 -or "
+                f"$Resolved.Prefix[0] -ne {ps_literal(cli)}) {{ "
+                "throw ('Unexpected npm Claude invocation: ' + "
+                "($Resolved | Out-String)) }; "
+                f"$Explicit = Resolve-ClaudeCodeInvocation -ExplicitPath "
+                f"{ps_literal(command)}; "
+                "if ($Explicit.Kind -ne 'npm') { "
+                "throw 'Explicit npm Claude command was not accepted' }"
+            )
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    powershell,
                 ],
                 check=False,
                 capture_output=True,

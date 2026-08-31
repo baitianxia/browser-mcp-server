@@ -16,6 +16,7 @@ concurrency:
 
 env:
   CLAUDE_CODE_VERSION: "2.1.84"
+  CLAUDE_NPM_NODE_VERSION: "20.18.3"
   NODE_VERSION: "24.19.0"
   PNPM_VERSION: "11.19.0"
   PYTHONDONTWRITEBYTECODE: "1"
@@ -108,7 +109,7 @@ jobs:
           }
 
   windows-package-and-install:
-    name: Native package, release gate, and one-click install
+    name: Package, existing-Claude gates, and one-click install
     needs: windows-tests
     runs-on: windows-latest
     timeout-minutes: 60
@@ -254,14 +255,21 @@ jobs:
           "TRANSFER_ROOT=$($TransferRoots[0].FullName)" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Install the exact native Claude Code used by the pilot
+      - name: Set up the target-like existing npm Claude Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.CLAUDE_NPM_NODE_VERSION }}
+
+      - name: Prepare exact native and npm Claude Code CI fixtures
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          # These installations exist only on the disposable online runner.
+          # The transfer kit never installs or repairs Claude Code on a target.
           & powershell.exe -NoLogo -NoProfile -Command `
               "& ([scriptblock]::Create((Invoke-RestMethod https://claude.ai/install.ps1))) $env:CLAUDE_CODE_VERSION"
           if ($LASTEXITCODE -ne 0) {
-              throw "Official Claude Code installer failed with exit code $LASTEXITCODE"
+              throw "The CI-only native Claude fixture failed to install with exit code $LASTEXITCODE"
           }
           $Candidates = @(
               (Join-Path $env:USERPROFILE ".local\bin\claude.exe")
@@ -275,14 +283,44 @@ jobs:
               Select-Object -First 1
           if (-not $ClaudeExecutable -or
               [IO.Path]::GetExtension($ClaudeExecutable) -ine ".exe") {
-              throw "The official installer did not produce native claude.exe."
+              throw "The CI-only native fixture did not produce claude.exe."
           }
-          $ActualClaude = ((& $ClaudeExecutable --version 2>&1) -join "`n").Trim()
+          $ActualNativeClaude = ((& $ClaudeExecutable --version 2>&1) -join "`n").Trim()
           if ($LASTEXITCODE -ne 0 -or
-              $ActualClaude -notmatch ("^" + [regex]::Escape($env:CLAUDE_CODE_VERSION) + "(?:\s|$)")) {
-              throw "Expected Claude Code $env:CLAUDE_CODE_VERSION; found $ActualClaude"
+              $ActualNativeClaude -notmatch ("^" + [regex]::Escape($env:CLAUDE_CODE_VERSION) + "(?:\s|$)")) {
+              throw "Expected native Claude Code $env:CLAUDE_CODE_VERSION; found $ActualNativeClaude"
           }
-          "CLAUDE_EXECUTABLE=$ClaudeExecutable" |
+
+          $NpmClaudeRoot = Join-Path $env:RUNNER_TEMP "existing-npm-claude"
+          npm.cmd install --global --prefix $NpmClaudeRoot --ignore-scripts `
+              "@anthropic-ai/claude-code@$env:CLAUDE_CODE_VERSION"
+          if ($LASTEXITCODE -ne 0) {
+              throw "The CI-only npm Claude fixture failed to install with exit code $LASTEXITCODE"
+          }
+          $NpmClaudeCommand = Join-Path $NpmClaudeRoot "claude.cmd"
+          if (-not (Test-Path -LiteralPath $NpmClaudeCommand -PathType Leaf)) {
+              throw "The CI-only npm fixture did not produce claude.cmd."
+          }
+          $ActualNpmClaude = ((& $NpmClaudeCommand --version 2>&1) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $ActualNpmClaude -notmatch ("^" + [regex]::Escape($env:CLAUDE_CODE_VERSION) + "(?:\s|$)")) {
+              throw "Expected npm Claude Code $env:CLAUDE_CODE_VERSION; found $ActualNpmClaude"
+          }
+          $NpmClaudeNode = (Get-Command node.exe -CommandType Application `
+              -ErrorAction Stop).Source
+          $ActualNpmNode = ((& $NpmClaudeNode --version 2>&1) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $ActualNpmNode -ne "v$env:CLAUDE_NPM_NODE_VERSION") {
+              throw "Expected target-like npm Claude Node.js v$env:CLAUDE_NPM_NODE_VERSION; found $ActualNpmNode"
+          }
+
+          "NATIVE_CLAUDE_EXECUTABLE=$ClaudeExecutable" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "NPM_CLAUDE_ROOT=$NpmClaudeRoot" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "NPM_CLAUDE_COMMAND=$NpmClaudeCommand" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "NPM_CLAUDE_NODE=$NpmClaudeNode" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "DISABLE_AUTOUPDATER=1" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -292,7 +330,22 @@ jobs:
           New-Item -ItemType Directory -Path $ClaudeConfig -Force | Out-Null
           "CLAUDE_CONFIG_DIR=$ClaudeConfig" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "Native Claude Code: $ActualClaude"
+          Write-Host "CI-only native Claude Code: $ActualNativeClaude"
+          Write-Host "CI-only npm Claude Code: $ActualNpmClaude"
+          Write-Host "CI-only npm Claude Node.js: $ActualNpmNode"
+
+      - name: Prove native Claude compatibility in an isolated release gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $Gate = Join-Path $env:TRANSFER_ROOT `
+              "toolkit\scripts\verify-windows-release.ps1"
+          & powershell.exe -NoLogo -NoProfile -File $Gate `
+              -ClaudeExecutable $env:NATIVE_CLAUDE_EXECUTABLE `
+              -TransferPath $env:TRANSFER_ROOT
+          if ($LASTEXITCODE -ne 0) {
+              throw "The isolated native Claude release gate failed with exit code $LASTEXITCODE"
+          }
 
       - name: Run the exact one-click package launcher
         shell: powershell
@@ -304,11 +357,11 @@ jobs:
               throw "The official per-user Claude Code fallback path is missing."
           }
           if (-not [string]::Equals(
-              [IO.Path]::GetFullPath($env:CLAUDE_EXECUTABLE),
+              [IO.Path]::GetFullPath($env:NATIVE_CLAUDE_EXECUTABLE),
               [IO.Path]::GetFullPath($ExpectedClaudeFallback),
               [StringComparison]::OrdinalIgnoreCase
           )) {
-              throw "The tested Claude executable is not the official per-user path."
+              throw "The native compatibility fixture is not the official per-user path."
           }
           $ClaudeDirectory = [IO.Path]::GetFullPath(
               (Split-Path -Parent $ExpectedClaudeFallback)
@@ -329,9 +382,42 @@ jobs:
               }
           }) -join ";")
           if (Get-Command claude.exe -ErrorAction SilentlyContinue) {
-              throw "CI failed to hide claude.exe from PATH for the fallback test."
+              throw "CI failed to hide native claude.exe from PATH."
           }
-          Write-Host "CI PATH-HIDDEN CLAUDE FALLBACK READY: $ExpectedClaudeFallback"
+          if (-not (Test-Path -LiteralPath $env:NPM_CLAUDE_COMMAND -PathType Leaf)) {
+              throw "The existing npm Claude command fixture is missing."
+          }
+          $env:PATH = $env:NPM_CLAUDE_ROOT + ";" + $env:PATH
+          $NpmCommand = Get-Command claude.cmd -CommandType Application `
+              -ErrorAction Stop
+          if (-not [string]::Equals(
+              [IO.Path]::GetFullPath($NpmCommand.Source),
+              [IO.Path]::GetFullPath($env:NPM_CLAUDE_COMMAND),
+              [StringComparison]::OrdinalIgnoreCase
+          )) {
+              throw "PATH did not resolve the expected existing npm claude.cmd."
+          }
+          $Discovery = Join-Path $env:TRANSFER_ROOT `
+              "toolkit\scripts\windows-tool-discovery.ps1"
+          . $Discovery
+          $ClaudeInvocation = Resolve-ClaudeCodeInvocation
+          if ($ClaudeInvocation.Kind -ne "npm" -or
+              -not [string]::Equals(
+                  [IO.Path]::GetFullPath([string]$ClaudeInvocation.CommandPath),
+                  [IO.Path]::GetFullPath($env:NPM_CLAUDE_COMMAND),
+                  [StringComparison]::OrdinalIgnoreCase
+              )) {
+              throw "The shared resolver did not select the existing npm Claude command."
+          }
+          $ResolvedClaudeArguments = @($ClaudeInvocation.Prefix) + @("--version")
+          $ResolvedClaudeVersion = ((& $ClaudeInvocation.Executable `
+              @ResolvedClaudeArguments 2>&1) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $ResolvedClaudeVersion -notmatch ("^" + `
+                  [regex]::Escape($env:CLAUDE_CODE_VERSION) + "(?:\s|$)")) {
+              throw "The resolved npm Claude invocation is unusable: $ResolvedClaudeVersion"
+          }
+          Write-Host "CI EXISTING NPM CLAUDE READY: $($ClaudeInvocation.CommandPath)"
           $Launcher = Join-Path $env:TRANSFER_ROOT "INSTALL-WINDOWS-PILOT.cmd"
           if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
               throw "Transfer launcher is missing: $Launcher"
@@ -413,7 +499,9 @@ jobs:
           )
           $LauncherStdout = Join-Path $env:RUNNER_TEMP "one-click-launcher.stdout.log"
           $LauncherStderr = Join-Path $env:RUNNER_TEMP "one-click-launcher.stderr.log"
-          $FirewallRule = "IntranetBrowserAgent-CI-$env:GITHUB_RUN_ID"
+          $FirewallRule = "IntranetBrowserAgent-Chrome-CI-$env:GITHUB_RUN_ID"
+          $ClaudeFirewallRule = `
+              "IntranetBrowserAgent-Claude-CI-$env:GITHUB_RUN_ID"
           $LauncherProcess = $null
           $CdpProcess = $null
           $LauncherFinished = $false
@@ -451,6 +539,9 @@ jobs:
           try {
               New-NetFirewallRule -DisplayName $FirewallRule `
                   -Direction Outbound -Program $ChromeExe `
+                  -RemoteAddress Internet -Action Block | Out-Null
+              New-NetFirewallRule -DisplayName $ClaudeFirewallRule `
+                  -Direction Outbound -Program $env:NPM_CLAUDE_NODE `
                   -RemoteAddress Internet -Action Block | Out-Null
               $LauncherProcess = Start-Process -FilePath $env:ComSpec `
                   -ArgumentList @("/d", "/c", $Wrapper) `
@@ -618,6 +709,8 @@ jobs:
                   Stop-Process -Force -ErrorAction SilentlyContinue
               Remove-NetFirewallRule -DisplayName $FirewallRule `
                   -ErrorAction SilentlyContinue
+              Remove-NetFirewallRule -DisplayName $ClaudeFirewallRule `
+                  -ErrorAction SilentlyContinue
               foreach ($Marker in @(
                   $ExtensionTokenFile, $CdpReadyFile, $CdpStopFile,
                   $LauncherExitFile, $CdpExitFile
@@ -783,7 +876,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: intranet-browser-agent-transfer-1.0.9-windows-x64-${{ github.run_id }}
+          name: intranet-browser-agent-transfer-1.0.10-windows-x64-${{ github.run_id }}
           path: |
             ${{ env.TRANSFER_ARCHIVE }}
             ${{ env.TRANSFER_ARCHIVE }}.sha256

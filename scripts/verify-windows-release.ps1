@@ -43,10 +43,10 @@ if (-not $PythonExecutable) {
     }
 }
 
-$ClaudeExecutable = Resolve-NativeClaudeExecutable `
+$ClaudeInvocation = Resolve-ClaudeCodeInvocation `
     -ExplicitPath $ClaudeExecutable
-if (-not $ClaudeExecutable) {
-    throw "Native Claude Code claude.exe is required on the controlled Windows release runner."
+if ($null -eq $ClaudeInvocation) {
+    throw "An existing usable Claude Code command is required. Supported forms are native claude.exe and an npm-generated claude.cmd; the release gate does not install or repair Claude Code."
 }
 
 function Invoke-PythonChecked {
@@ -168,6 +168,11 @@ try {
         (Join-Path $PSScriptRoot "register_claude_user_mcp.py"),
         "self-test"
     )
+    $ClaudeVersionArguments = @($ClaudeInvocation.Prefix) + @("--version")
+    $ClaudeVersion = Get-NativeOutput `
+        ([string]$ClaudeInvocation.Executable) $ClaudeVersionArguments
+    Write-Host ("CLAUDE CODE: {0} ({1})" -f `
+        $ClaudeVersion, $ClaudeInvocation.Kind)
 
     $KitMetadataPath = Join-Path $ResolvedTransferPath "KIT-METADATA.json"
     $KitMetadata = Get-Content -LiteralPath $KitMetadataPath -Raw | ConvertFrom-Json
@@ -230,10 +235,17 @@ try {
             "--playwright-config", $ProbePlaywrightConfig
         )
         $env:CLAUDE_CONFIG_DIR = $ProbeClaudeConfig
-        Invoke-PythonChecked @(
+        $RegistrationArguments = @(
             (Join-Path $PSScriptRoot "register_claude_user_mcp.py"),
             "register",
-            "--claude-executable", $ClaudeExecutable,
+            "--claude-executable", [string]$ClaudeInvocation.Executable
+        )
+        foreach ($ClaudePrefixArgument in @($ClaudeInvocation.Prefix)) {
+            $RegistrationArguments += @(
+                "--claude-prefix", [string]$ClaudePrefixArgument
+            )
+        }
+        $RegistrationArguments += @(
             "--server-name", "intranet-browser-agent-release-probe",
             "--node-executable", $ProbeNode,
             "--playwright-cli", $ProbePlaywrightCli,
@@ -241,6 +253,7 @@ try {
             "--user-config", $ProbeUserConfig,
             "--backup", $ProbeBackup
         )
+        Invoke-PythonChecked $RegistrationArguments
         if (-not (Test-Path -LiteralPath $ProbeUserConfig -PathType Leaf)) {
             throw "Claude CLI probe did not create isolated user configuration."
         }

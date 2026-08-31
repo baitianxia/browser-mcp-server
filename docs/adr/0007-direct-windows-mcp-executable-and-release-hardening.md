@@ -1,6 +1,6 @@
 # ADR 0007：Windows MCP 直接启动固定可执行文件并收紧发布事务
 
-状态：已接受，2026-08-30。
+状态：已接受；2026-08-31 修订 Claude Code 入口兼容范围。
 
 ## 背景
 
@@ -12,7 +12,7 @@
 
 - Windows 清单必须声明本机盘符绝对路径 `nodeExecutable`。渲染出的 MCP 直接执行已校验的 `node.exe`，首个参数是固定运行包内的 `node_modules\@playwright\mcp\cli.js`，不再把 `.cmd` shell shim 作为 Claude MCP 命令。`.cmd` 只保留为构建/人工诊断入口。
 - Windows `extension` 清单还必须声明安装器自动识别的本机 Chrome/Edge `.exe`。渲染、握手和 Claude user-scope 注册必须同时使用精确 `--browser=<channel>` 与 `--executable-path=<browser.exe>`。这是固定 MCP 版本连接手工 unpacked 扩展的兼容路径：未指定 executable 时，上游安装预检不能识别只存在于 `Secure Preferences` 的记录；指定后则由浏览器自身打开 last-used Profile。安装检测因此只能接受 last-used Profile，不能从其他休眠 Profile 误放行。
-- Windows 一键迁移包必须 `bundledNode=true`，不探测、不依赖也不修复系统 Node。Claude Code 必须提供原生 `claude.exe`；旧式 `claude.cmd` 不进入此自动流程。发布门禁和安装器共用一个原生 Claude 探测器：显式门禁参数优先且错误时失败关闭；未显式指定时依次检查当前 `PATH` 与官方 `%USERPROFILE%\.local\bin\claude.exe`。这避免刚安装后 Explorer/PowerShell 尚未刷新 `PATH` 时把可用的原生 CLI 误判为缺失，CI 必须通过隐藏 PATH 的真实 launcher 场景覆盖该分支。
+- Windows 一键迁移包必须 `bundledNode=true`；Playwright MCP 不探测、不依赖也不修复系统 Node。Claude Code 本身是目标机已经存在的前置条件，安装器不得安装、升级、替换或修复它。发布门禁和安装器共用一个 Claude 入口探测器：显式门禁路径优先且错误时失败关闭；未显式指定时依次检查当前 `PATH` 的 `claude.exe`、npm 生成的 `claude.cmd`，最后检查官方 `%USERPROFILE%\.local\bin\claude.exe`。原生入口直接执行。npm 入口只接受同级标准 `node_modules\@anthropic-ai\claude-code\package.json` 声明的 `claude` bin，并解析该 npm 安装本来使用的同级或 `PATH` `node.exe`，随后直接执行 `node.exe + 已安装 cli.js`；不把 `.cmd` 交给 Python 子进程，不经 `cmd.exe` 拼接参数，也不运行 npm/pnpm/npx。找不到可验证入口时在持久化安装前停止。
 - `config/windows-node-sources.json` 是当前发布批准的 Node 来源哈希清单。准备、构建和目标安装都必须同时校验官方 archive、官方 `SHASUMS256.txt`、`node.exe` 与 `LICENSE` 的固定 SHA-256；自洽但未批准的来源失败关闭。
 - 注册事务除 `remove → add → get` 外，还必须直接读取隔离/真实的 Claude 用户配置，确认 user-scope 条目准确指向已验证的 `node.exe`、固定 CLI 和 Playwright 配置；不以可能受同名高优先级 scope 影响的 `get` 结果代替该检查。
 - `config/windows-mcp-environment.json` 固定 Windows Playwright 子进程环境：清空固定依赖支持的配置覆盖变量以及 `NODE_OPTIONS`/`NODE_PATH`，保留默认心跳，不写扩展 token 或秘密。渲染、协议握手、Claude `--env` 注册和最终条目核对必须共用该映射。只有明确的“user-scope 条目不存在”可以忽略 `remove` 非零；其他错误必须回滚。
@@ -22,4 +22,4 @@
 
 ## 结果
 
-Claude Code 的真实 MCP 启动路径不再依赖 Windows shell shim，构建输入、环境继承、路径边界、中断恢复和门禁污染都有机器可执行的失败关闭条件。代价是 Windows 一键包必须携带批准的最小 Node、写入较长但固定的 MCP 环境映射，且只支持原生 Claude Code 安装；这些限制与“内网目标不运行 npm/pnpm/npx、只双击一次”的目标一致。
+Claude Code 启动 Playwright MCP 的真实路径仍不依赖 Windows shell shim；构建输入、环境继承、路径边界、中断恢复和门禁污染都有机器可执行的失败关闭条件。Windows 一键包必须携带批准的最小 Node、写入较长但固定的 MCP 环境映射，但可以复用原生或标准 npm 安装的 Claude Code。npm 兼容只增加对现有安装元数据和 Node/CLI 入口的只读解析，不把包管理器或在线修复带入内网流程。

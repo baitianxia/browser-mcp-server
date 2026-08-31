@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path, PurePosixPath
@@ -364,6 +365,18 @@ class BrowserAgentManifestTests(unittest.TestCase):
         for path, fragment in expected_fragments.items():
             with self.subTest(path=path.name):
                 self.assertIn(fragment, path.read_text(encoding="utf-8"))
+
+        workflow = ROOT / ".github" / "workflows" / "windows-release.yml"
+        if workflow.is_file():
+            workflow_text = workflow.read_text(encoding="utf-8")
+            workflow_release_versions = set(
+                re.findall(
+                    r"(?:browser-agent-runtime|intranet-browser-agent-transfer)-"
+                    r"(\d+\.\d+\.\d+)",
+                    workflow_text,
+                )
+            )
+            self.assertEqual({version}, workflow_release_versions)
 
     def test_runtime_uses_link_free_pnpm_layout(self) -> None:
         settings = (ROOT / "runtime" / "pnpm-workspace.yaml").read_text(encoding="utf-8")

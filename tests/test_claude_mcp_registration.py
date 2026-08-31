@@ -551,6 +551,30 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
             command,
         )
 
+    def test_npm_claude_package_entry_is_executed_directly_without_cmd_shell(
+        self,
+    ) -> None:
+        command = registration._native_command(
+            r"C:\Program Files\nodejs\node.exe",
+            (
+                r"C:\Users\pilot\AppData\Roaming\npm\node_modules"
+                r"\@anthropic-ai\claude-code\cli.js",
+            ),
+            ("mcp", "get", "intranet-browser-agent"),
+        )
+        self.assertEqual(
+            [
+                r"C:\Program Files\nodejs\node.exe",
+                r"C:\Users\pilot\AppData\Roaming\npm\node_modules"
+                r"\@anthropic-ai\claude-code\cli.js",
+                "mcp",
+                "get",
+                "intranet-browser-agent",
+            ],
+            command,
+        )
+        self.assertNotIn("cmd.exe", " ".join(command).lower())
+
 
 if __name__ == "__main__":
     unittest.main()

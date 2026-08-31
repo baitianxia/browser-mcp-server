@@ -319,11 +319,14 @@ try {
         ([string]$env:LOCALAPPDATA) -notmatch '^[A-Za-z]:[\\/]') {
         throw "USERPROFILE 和 LOCALAPPDATA 必须是本机盘符绝对路径。"
     }
-    $ClaudeExecutable = Resolve-NativeClaudeExecutable
-    if (-not $ClaudeExecutable) {
-        throw "未找到原生 Claude Code claude.exe；旧式 claude.cmd 不适用于此一键安装包。"
+    $ClaudeInvocation = Resolve-ClaudeCodeInvocation
+    if ($null -eq $ClaudeInvocation) {
+        throw "未找到可用的 Claude Code。安装器支持现有原生 claude.exe 或 npm 生成的 claude.cmd，但不会安装、升级或修复 Claude Code；请确认当前用户可直接运行 claude 后重试。"
     }
-    Invoke-External $ClaudeExecutable @("--version")
+    $ClaudeVersionArguments = @($ClaudeInvocation.Prefix) + @("--version")
+    Invoke-External ([string]$ClaudeInvocation.Executable) $ClaudeVersionArguments
+    Write-InstallLog ("CLAUDE: kind={0}; command={1}" -f `
+        $ClaudeInvocation.Kind, $ClaudeInvocation.CommandPath)
 
     $ToolkitRoot = Join-Path $PSScriptRoot "toolkit"
     $Verifier = Join-Path $ToolkitRoot "scripts\verify-bundle.py"
@@ -858,11 +861,17 @@ try {
     }
 
     $McpServerName = "intranet-browser-agent"
-    $UserConfigChangeStarted = $true
-    Invoke-Python @(
+    $RegistrarArguments = @(
         $McpRegistrar,
         "register",
-        "--claude-executable", $ClaudeExecutable,
+        "--claude-executable", [string]$ClaudeInvocation.Executable
+    )
+    foreach ($ClaudePrefixArgument in @($ClaudeInvocation.Prefix)) {
+        $RegistrarArguments += @(
+            "--claude-prefix", [string]$ClaudePrefixArgument
+        )
+    }
+    $RegistrarArguments += @(
         "--server-name", $McpServerName,
         "--node-executable", $NodeExe,
         "--playwright-cli", $PlaywrightCliPath,
@@ -872,6 +881,8 @@ try {
         "--user-config", $ClaudeUserConfigPath,
         "--backup", $ClaudeUserConfigBackup
     )
+    $UserConfigChangeStarted = $true
+    Invoke-Python $RegistrarArguments
     $UserConfigCommitted = $true
     $ConfigCommitted = $true
     $ExtensionPolicyCommitted = $true

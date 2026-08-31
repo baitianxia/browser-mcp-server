@@ -253,7 +253,13 @@ def register_user_mcp(
     if not server_name or any(character.isspace() for character in server_name):
         raise RegistrationError("server name must be non-empty and contain no whitespace")
     if os.name == "nt" and not claude_executable.lower().endswith(".exe"):
-        raise RegistrationError("native Claude Code claude.exe is required on Windows")
+        raise RegistrationError(
+            "the resolved Claude Code launcher must be a Windows .exe"
+        )
+    if not claude_executable or "\x00" in claude_executable or any(
+        not isinstance(item, str) or "\x00" in item for item in claude_prefix
+    ):
+        raise RegistrationError("invalid resolved Claude Code invocation")
     if not node_executable.is_file():
         raise RegistrationError(
             f"Node.js executable is not a regular file: {node_executable}"

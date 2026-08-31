@@ -4,9 +4,11 @@
 
 ## 1.0.10 Windows 验证状态
 
-目标机实测撤回了 1.0.9：该包的后续安装器已经会在 `Get-Command claude.exe` 失败后检查官方 `%USERPROFILE%\.local\bin\claude.exe`，但顶层 launcher 先执行的发布门禁只有前一项检查。原生 Claude Code 已安装且可在用户正常环境中使用、而启动安装包的 Explorer/Windows PowerShell 5.1 尚未刷新 `PATH` 时，门禁因此在任何安装变更前假阴性停止。GitHub runner 曾把 Claude 安装目录显式加入 `PATH`，所以旧验收没有进入目标机暴露的分支。这是发布门禁探测与安装器探测漂移造成的实现和测试缺陷，不是目标机缺少 Claude Code。
+目标机实测撤回了 1.0.9：目标机通过 npm 安装的 Claude Code 已经可以正常使用，入口是 `claude.cmd`，而发布门禁和安装器把“可用 Claude Code”错误限定为原生 `claude.exe`，因此在任何安装变更前假阴性停止。这是需求边界、规范、实现和 CI 同时固化了错误假设的系统性缺陷，不是目标机缺少 Claude Code，也不授权安装器替用户安装或替换 Claude Code。
 
-1.0.10 将原生 Claude 路径解析收敛到同一个随包 PowerShell 5.1 helper：显式门禁路径错误时仍失败关闭；未显式指定时依次检查当前 `PATH` 与 `%USERPROFILE%\.local\bin\claude.exe`。Windows 单元回归会把 `PATH` 清空并用临时官方目录夹具验证 fallback；原生 package/install job 还必须在运行真实顶层 `.cmd` 前从 `PATH` 移除实际 Claude 安装目录，同时保留标准位置文件，再完成发布门禁、安装、注册和 MCP/Cookie E2E。完成该提交的全绿 Windows run 前，1.0.10 只属于待验证候选，不得交付。
+中间候选提交 `b47c40f` 只把原生 Claude 路径解析收敛到共享 helper，并在 [Windows release validation #33](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33348472314) 通过了“`PATH` 不可见、官方每用户位置存在”的原生分支；该 run 没有覆盖 npm 入口，而且上传 artifact 的显示版本仍误写为 1.0.9，所以即使 run 全绿也不得交付。当前 1.0.10 在同一个共享探测器中支持两类现有入口：原生 `claude.exe` 直接执行；标准 npm `claude.cmd` 解析同级 `@anthropic-ai/claude-code` 包的 bin 与现有 `node.exe` 后，直接执行该安装的 `node.exe + cli.js`。目标机不运行 npm/pnpm/npx，也不安装、升级、替换或修复 Claude Code。Windows 回归必须同时覆盖原生 stale-PATH、npm PATH 优先、真实 npm Claude 隔离注册、真实原生 Claude 隔离门禁，以及 npm 入口下的一次 launcher、离线扩展续跑和 MCP/Cookie E2E。完成新的全绿 Windows run 并重新校验下载制品前，1.0.10 仍只属于待验证候选，不得交付。
+
+新的 npm 全链路 CI 夹具固定使用目标机日志中的 Node v20.18.3，而不是用构建 Node v24.19.0 掩盖兼容差异；包内 Playwright MCP 仍使用批准的 v24.19.0。
 
 ## 1.0.9 Windows 历史验证状态（已撤回）
 
@@ -20,7 +22,7 @@
 
 ## 已执行并通过
 
-- 源码测试：1.0.9 本地构建环境执行 `python3 -m unittest discover -s tests -v` 时 80/80 通过。1.0.10 新增“`PATH` 不可见、官方每用户位置存在”的 Windows PowerShell 真实解析用例；最终数量与通过结果必须以待完成的 1.0.10 Windows run 为准。其余覆盖包括 Windows 路径、user scope、版本一致性、LF/CRLF 逐字节备份、`remove/add/get` 注册失败回滚、条目/环境错写、窄 Windows 代码页与 Claude UTF-8 输出组合、遗留环境清理、Node 来源、archive 路径、扩展 CRX/Profile/人工等待、休眠 Profile 防误判、显式 browser `.exe`、配置漂移、发布顺序和 MCP stdio 握手。
+- 源码测试：当前本地构建环境执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`，83 项中 81 项通过、2 项仅因需要 Windows PowerShell 5.1 而跳过。新增 Windows 用例分别覆盖原生 stale-PATH fallback，以及 `PATH` 中真实形态的 npm `claude.cmd + package.json bin + node.exe` 在原生 fallback 同时存在时仍被正确选择；最终 83/83 结果必须以待完成的 Windows run 为准。其余覆盖包括 Windows 路径、user scope、版本一致性、LF/CRLF 逐字节备份、`remove/add/get` 注册失败回滚、条目/环境错写、窄 Windows 代码页与 Claude UTF-8 输出组合、遗留环境清理、Node 来源、archive 路径、扩展 CRX/Profile/人工等待、休眠 Profile 防误判、显式 browser `.exe`、配置漂移、发布顺序和 MCP stdio 握手。
 - 语法与格式：全部 Python 文件通过编译检查；shell 入口通过 `bash -n`；12 个 JSON/JSON template 通过标准 JSON 解析；`git diff --check` 通过。
 - PowerShell 解析：`build-offline-bundle.ps1`、`INSTALL-WINDOWS-PILOT.ps1`、`verify-windows-release.ps1` 均由官方 PowerShell 7.6.5 parser 返回无 AST 错误；GitHub Actions 的 `windows-2022`、`windows-latest` 两个 job 又分别使用 Windows PowerShell 5.1 Desktop 解析仓库内全部 PowerShell 脚本并通过。
 - 清单与渲染：本地 demo 返回 `VALID`。Windows pilot 模板固定 `mcpScope=user`、`workspaceRoots=[]`，省略 `network`/`dataBoundary`，只因明确占位符而失败关闭；production 模板继续因未批准字段和占位符失败关闭。Windows `.mcp.json` 的命令直接指向包内 `node.exe`，首个参数指向固定 Playwright CLI，不使用 `.cmd` shell shim；环境与 `config/windows-mcp-environment.json` 完全一致且不含扩展 token。
@@ -32,7 +34,7 @@
 - 运行包结构：239 个 archive member，0 symlink、0 hardlink、0 device/FIFO，最长 archive 路径 146 字符；`SYMLINKS.json` 为空，`node_modules` 中无 `.exe/.dll/.node/.so/.dylib`，唯一目标 EXE 是批准的 `node/node.exe`，Node 目录精确包含 `LICENSE`、`SOURCE.json`、`VERSION`、`node.exe`。安装器使用 `%LOCALAPPDATA%\IntranetBrowserAgent\staging\r-*` 短暂存路径，降低传统 Windows 路径长度风险。
 - archive 防护：校验器拒绝绝对路径、`..`、反斜杠、ADS 冒号、Windows 保留名、尾随空格/点、大小写碰撞、hardlink/device/FIFO、越界 symlink，以及用 symlink 冒充 `SHA256SUMS`/`SYMLINKS.json`。运行包和迁移包均无链接。
 - 安装事务：运行时先在同盘短目录解压，完整性、Node 批准哈希和实际版本通过后才发布固定版本目录。配置先在 `%LOCALAPPDATA%` 暂存并 preflight，再整目录切换；“旧目录备份完成”和“新目录发布完成”独立记账，备份动作本身失败时不会删除原目录。后续失败恢复旧配置和 Claude 用户配置。
-- Windows 门禁：顶层 `.cmd` 只需启动一次，先规范化迁移目录；门禁拒绝 archive 参数和来自另一目录的脚本，只验证自身所在的同一解压迁移包。1.0.10 的原生 job 必须在 `Get-Command claude.exe` 明确不可见而 `%USERPROFILE%\.local\bin\claude.exe` 存在的进程环境中，实际执行测试前后双重完整性校验、完整测试、全部 PowerShell 5.1 AST 解析、假 Claude 回滚自检、内层运行时临时解压、批准 Node 校验、真实 MCP stdio 握手，以及临时 `CLAUDE_CONFIG_DIR` 下原生 Claude Code 2.1.84 的 `remove/add/get` 隔离探针，并保留 `WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED`；随后同一个 launcher 还须自动进入安装并核对运行时、清单和 user-scope 配置。旧 1.0.9 run 不满足这项新增条件。
+- Windows 门禁：顶层 `.cmd` 只需启动一次，先规范化迁移目录；门禁拒绝 archive 参数和来自另一目录的脚本，只验证自身所在的同一解压迁移包。1.0.10 的 package job 必须先用原生 Claude Code 2.1.84 完成一次临时配置下的隔离发布门禁，再从 `PATH` 隐藏原生入口、暴露真实 npm `claude.cmd`，证明共享探测器选择 npm 安装并以其现有 Node/CLI 完成第二次门禁和后续安装。运行 launcher 期间必须阻断该 Node 和 Chrome 的 Internet 出站并保留 loopback；随后同一个 launcher 还须从人工扩展等待自动续跑，核对运行时、清单、user-scope 配置并完成页面/Cookie E2E。旧 1.0.9 和仅覆盖原生 stale-PATH 的 run #33 均不满足这项新增条件。
 - 迁移包：1.0.10 逐文件白名单增加共享的 `windows-tool-discovery.ps1`，共包含 66 个源码/文档文件；仍不收录 `.git`、真实部署清单、`build/`、`dist/`、缓存或 Python bytecode。迁移 archive、解压迁移目录、包内运行 archive、解压运行目录四层必须均返回 `VALID`；包内完整测试、注册 self-test 和 MCP 握手脚本随包交付。最终重建后的外层 SHA-256 以相邻 `.sha256` 为准。
 
 ## Windows Actions 实测事实

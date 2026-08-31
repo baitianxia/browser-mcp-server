@@ -2,7 +2,7 @@
 
 状态：当前；适用于已通过发布门禁的 Windows x64 试点包，以及明确标记的自检候选包。自检候选不能冒充正式制品，但顶层启动器会在任何持久化安装之前强制运行同一门禁。生产部署仍以 `operations.md` 为准。
 
-目标机只需准备：Windows x64、原生 Claude Code `claude.exe`、Chrome（优先）或 Edge、Python 3.10+。目标机可以完全离线；迁移包同时携带固定 Node.js、固定哈希的官方 Playwright Extension CRX 和经逐文件核对的已解压副本。系统已有的 v20.18.3 可以保留，不需要安装、升级或修复 Node/npm；旧式 npm 安装产生的 `claude.cmd` 不属于本一键流程。原生 Claude 已安装到 `%USERPROFILE%\.local\bin\claude.exe` 时，即使刚安装后 Explorer 或当前 PowerShell 的 `PATH` 还没刷新，向导也会直接识别，不要求重启终端或手工改环境变量。迁移包必须放在本机盘符目录，不使用 UNC。
+目标机只需准备：Windows x64、当前用户已经能正常运行的 Claude Code、Chrome（优先）或 Edge、Python 3.10+。Claude Code 可以来自原生安装的 `claude.exe`，也可以来自 npm 全局安装生成的 `claude.cmd`。向导只复用现有安装，绝不安装、升级、替换或修复 Claude Code。目标机可以完全离线；迁移包同时携带固定 Node.js、固定哈希的官方 Playwright Extension CRX 和经逐文件核对的已解压副本。系统已有的 v20.18.3 可以保留；包内 Playwright MCP 使用自己的固定 Node，npm 版 Claude 继续使用它现有安装本来使用的 Node。整个目标机流程不会运行 npm、pnpm 或 npx。原生 Claude 已安装到 `%USERPROFILE%\.local\bin\claude.exe` 时，即使 Explorer 或当前 PowerShell 的 `PATH` 尚未刷新也能识别；npm 版要求当前用户环境能从 `PATH` 找到 `claude.cmd` 及其现有 `node.exe`。迁移包必须放在本机盘符目录，不使用 UNC。
 
 若目标浏览器尚未安装 Playwright Extension，向导先写入当前用户的 Chrome/Edge `ExtensionInstallForcelist`，尝试从包内 `file:///` CRX 全自动离线安装，不访问 Chrome Web Store。Chrome 对本地 CRX 的静默安装可能要求设备受企业管理；若浏览器没有实际安装，向导会恢复临时策略、自动打开 `chrome://extensions`/`edge://extensions`、把包内已解压目录复制到剪贴板并显示三步指引。此时保持安装窗口打开，按提示开启开发者模式、点击“加载已解压的扩展程序”并选择该目录；安装器会持续检测，成功后在同一进程自动继续，不需要再运行一次。
 
@@ -44,7 +44,7 @@ INSTALL-WINDOWS-PILOT.cmd
 6. 先在临时目录自动演练首次安装、升级、条目/环境错写和 `remove/add/get` 失败回滚，再备份真实 Claude Code 用户配置，通过 `--scope user` 注册 MCP；注册项直接执行包内 `node.exe + 固定 cli.js + --browser=<channel> + --executable-path=<自动识别的 browser.exe> + config`，不依赖 `.cmd` shell shim，并核对实际 user-scope 命令、参数和固定环境。遗留的 Playwright MCP 配置覆盖变量、`NODE_OPTIONS`、`NODE_PATH` 不会改写包内配置，也不需要用户填写。失败时逐字节恢复用户配置、旧部署配置和本次新增的浏览器策略。
 7. 先对安装后的最终路径执行 preflight，再使用与最终注册一致的直接命令完成 MCP stdio `initialize` 和 `tools/list` 握手，自动确认所有 user-scope 路径位于当前用户 `%LOCALAPPDATA%`、不经过子级 link/junction，并确认 extension 配置和浏览器 channel；出现任何 `FAIL` 就停止。全程不修改项目 `.mcp.json` 或 `CLAUDE.md`。
 
-首次安装时 Claude 明确报告没有可删除的旧 user-scope MCP 条目是正常情况，向导会记录提示后继续注册；其他删除错误会自动恢复并停止，不需要手工执行任何 Claude/npm 命令。若你本来就设置了 `CLAUDE_CONFIG_DIR`，向导会自动使用它；为避免 Claude 把配置写进当前项目，它必须是本机盘符绝对路径，不能写相对路径、`~` 或 UNC。
+首次安装时 Claude 明确报告没有可删除的旧 user-scope MCP 条目是正常情况，向导会记录提示后继续注册；其他删除错误会自动恢复并停止，不需要手工执行任何 Claude/npm 命令。若没有找到可用的现有 Claude Code，向导会在任何真实配置变更前明确停止，不会自行安装。若你本来就设置了 `CLAUDE_CONFIG_DIR`，向导会自动使用它；为避免 Claude 把配置写进当前项目，它必须是本机盘符绝对路径，不能写相对路径、`~` 或 UNC。
 
 成功后，重启 Claude Code，在任意项目中输入 `/mcp`，确认 `intranet-browser-agent` 已连接。第一次调用浏览器工具时，Playwright Extension 会显示连接页；选择一个已经登录的现有 Chrome 标签页或标签组。随后先只测试“读取当前页面标题”，不要提交、上传或删除。连接批准和标签页选择是访问边界，不是第二次安装。
 
