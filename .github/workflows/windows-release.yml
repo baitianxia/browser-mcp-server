@@ -516,7 +516,7 @@ jobs:
               "run-runtime-publish-directory-lock.cmd"
           $RuntimeLockWrapperBody = @"
           @echo off
-          powershell.exe -NoLogo -NoProfile -NonInteractive -File "$RuntimeLockScript" -StagingRoot "$RuntimeLockStagingRoot" -MarkerPath "$RuntimeLockMarker" -HoldSeconds 12
+          powershell.exe -NoLogo -NoProfile -NonInteractive -File "$RuntimeLockScript" -StagingRoot "$RuntimeLockStagingRoot" -MarkerPath "$RuntimeLockMarker" -HoldSeconds 30
           set "RUNTIME_LOCK_EXIT=%errorlevel%"
           > "$RuntimeLockExitFile" echo %RUNTIME_LOCK_EXIT%
           exit /b %RUNTIME_LOCK_EXIT%

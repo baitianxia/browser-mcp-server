@@ -347,6 +347,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
 
         self.assertIn("CreateFile", directory_lock)
         self.assertIn("FILE_SHARE_DELETE", directory_lock)
+        self.assertIn("pnpm-workspace.yaml", directory_lock)
+        self.assertIn("-HoldSeconds 30", workflow)
         self.assertIn("CI RUNTIME PUBLISH DIRECTORY LOCKED", directory_lock)
         self.assertIn("CI RUNTIME PUBLISH DIRECTORY RELEASED", directory_lock)
 

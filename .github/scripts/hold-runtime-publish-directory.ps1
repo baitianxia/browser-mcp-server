@@ -4,7 +4,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$StagingRoot,
     [Parameter(Mandatory = $true)][string]$MarkerPath,
-    [ValidateRange(1, 60)][int]$HoldSeconds = 12,
+    [ValidateRange(1, 60)][int]$HoldSeconds = 30,
     [ValidateRange(10, 600)][int]$WaitSeconds = 300
 )
 
@@ -39,10 +39,17 @@ try {
                 Get-ChildItem -LiteralPath $_.FullName -Directory `
                     -Filter "browser-agent-runtime-*-windows-x64" `
                     -ErrorAction SilentlyContinue
-            })
+        })
         foreach ($Candidate in $Candidates) {
             $NodePath = Join-Path $Candidate.FullName "node\node.exe"
-            if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) {
+            # Runtime archives are emitted in lexical order, making this root
+            # file the final archive entry. Waiting for it avoids consuming the
+            # hold interval while tar.exe is still extracting node_modules.
+            $ExtractionCompletionMarker = Join-Path $Candidate.FullName `
+                "pnpm-workspace.yaml"
+            if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $ExtractionCompletionMarker `
+                    -PathType Leaf)) {
                 continue
             }
             # FILE_SHARE_READ | FILE_SHARE_WRITE deliberately omits
@@ -77,7 +84,8 @@ try {
         $LockedPath,
         (New-Object System.Text.UTF8Encoding($false))
     )
-    Write-Host "CI RUNTIME PUBLISH DIRECTORY LOCKED: $LockedPath"
+    Write-Host ("CI RUNTIME PUBLISH DIRECTORY LOCKED {0}: {1}" -f `
+        (Get-Date -Format "o"), $LockedPath)
     Start-Sleep -Seconds $HoldSeconds
 } finally {
     if ($Handle) {
@@ -85,4 +93,5 @@ try {
     }
 }
 
-Write-Host "CI RUNTIME PUBLISH DIRECTORY RELEASED: $LockedPath"
+Write-Host ("CI RUNTIME PUBLISH DIRECTORY RELEASED {0}: {1}" -f `
+    (Get-Date -Format "o"), $LockedPath)
