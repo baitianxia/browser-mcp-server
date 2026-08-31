@@ -467,6 +467,8 @@ jobs:
               "runtime-publish-directory-lock.stdout.log"
           $RuntimeLockStderr = Join-Path $env:RUNNER_TEMP `
               "runtime-publish-directory-lock.stderr.log"
+          $RuntimeLockExitFile = Join-Path $env:RUNNER_TEMP `
+              "runtime-publish-directory-lock.exit.txt"
           $RuntimeLockScript = Join-Path $env:GITHUB_WORKSPACE `
               ".github\scripts\hold-runtime-publish-directory.ps1"
           $RuntimeLockStagingRoot = Join-Path $PilotLocalAppData `
@@ -508,6 +510,20 @@ jobs:
           [IO.File]::WriteAllText(
               $CdpWrapper,
               $CdpWrapperBody,
+              (New-Object System.Text.ASCIIEncoding)
+          )
+          $RuntimeLockWrapper = Join-Path $env:RUNNER_TEMP `
+              "run-runtime-publish-directory-lock.cmd"
+          $RuntimeLockWrapperBody = @"
+          @echo off
+          powershell.exe -NoLogo -NoProfile -NonInteractive -File "$RuntimeLockScript" -StagingRoot "$RuntimeLockStagingRoot" -MarkerPath "$RuntimeLockMarker" -HoldSeconds 12
+          set "RUNTIME_LOCK_EXIT=%errorlevel%"
+          > "$RuntimeLockExitFile" echo %RUNTIME_LOCK_EXIT%
+          exit /b %RUNTIME_LOCK_EXIT%
+          "@
+          [IO.File]::WriteAllText(
+              $RuntimeLockWrapper,
+              $RuntimeLockWrapperBody,
               (New-Object System.Text.ASCIIEncoding)
           )
           $LauncherStdout = Join-Path $env:RUNNER_TEMP "one-click-launcher.stdout.log"
@@ -558,16 +574,8 @@ jobs:
               New-NetFirewallRule -DisplayName $ClaudeFirewallRule `
                   -Direction Outbound -Program $env:NPM_CLAUDE_NODE `
                   -RemoteAddress Internet -Action Block | Out-Null
-              $RuntimeLockProcess = Start-Process -FilePath `
-                  (Join-Path $env:SystemRoot `
-                      "System32\WindowsPowerShell\v1.0\powershell.exe") `
-                  -ArgumentList @(
-                      "-NoLogo", "-NoProfile", "-NonInteractive", "-File",
-                      $RuntimeLockScript,
-                      "-StagingRoot", $RuntimeLockStagingRoot,
-                      "-MarkerPath", $RuntimeLockMarker,
-                      "-HoldSeconds", "12"
-                  ) `
+              $RuntimeLockProcess = Start-Process -FilePath $env:ComSpec `
+                  -ArgumentList @("/d", "/c", $RuntimeLockWrapper) `
                   -RedirectStandardOutput $RuntimeLockStdout `
                   -RedirectStandardError $RuntimeLockStderr `
                   -PassThru
@@ -670,8 +678,10 @@ jobs:
               if (-not $RuntimeLockProcess.WaitForExit(30000)) {
                   throw "The runtime publish fault injector did not finish."
               }
-              if ($RuntimeLockProcess.ExitCode -ne 0) {
-                  throw "The runtime publish fault injector failed with exit code $($RuntimeLockProcess.ExitCode)."
+              $RuntimeLockExitCode = Read-CiExitCode `
+                  $RuntimeLockExitFile "Runtime publish fault injector"
+              if ($RuntimeLockExitCode -ne 0) {
+                  throw "The runtime publish fault injector failed with exit code $RuntimeLockExitCode."
               }
               $RuntimeLockFinished = $true
               if (-not (Test-Path -LiteralPath $RuntimeLockMarker -PathType Leaf)) {
