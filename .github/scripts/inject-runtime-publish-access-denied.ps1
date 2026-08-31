@@ -14,7 +14,11 @@ $ErrorActionPreference = "Stop"
 
 $Deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
 $DeniedPath = $null
-$OriginalAccessSddl = $null
+$DeniedParentPath = $null
+$OriginalRuntimeAccessSddl = $null
+$OriginalParentAccessSddl = $null
+$RuntimeAccessDenied = $false
+$ParentAccessDenied = $false
 $AccessDeniedArmed = $false
 $RetryObserved = $false
 try {
@@ -26,20 +30,14 @@ try {
                     -ErrorAction SilentlyContinue
             })
         foreach ($Candidate in $Candidates) {
-            $NodePath = Join-Path $Candidate.FullName "node\node.exe"
-            # Runtime archives are emitted in lexical order, making this root
-            # file the final archive entry. Wait until extraction is complete
-            # before changing only the directory's Delete permission.
-            $ExtractionCompletionMarker = Join-Path $Candidate.FullName `
-                "pnpm-workspace.yaml"
-            if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf) -or
-                -not (Test-Path -LiteralPath $ExtractionCompletionMarker `
-                    -PathType Leaf)) {
-                continue
-            }
-
-            $CurrentAcl = Get-Acl -LiteralPath $Candidate.FullName
-            $OriginalAccessSddl = $CurrentAcl.GetSecurityDescriptorSddlForm(
+            $DeniedPath = $Candidate.FullName
+            $DeniedParentPath = Split-Path -Parent $DeniedPath
+            $RuntimeAcl = Get-Acl -LiteralPath $DeniedPath
+            $ParentAcl = Get-Acl -LiteralPath $DeniedParentPath
+            $OriginalRuntimeAccessSddl = $RuntimeAcl.GetSecurityDescriptorSddlForm(
+                [Security.AccessControl.AccessControlSections]::Access
+            )
+            $OriginalParentAccessSddl = $ParentAcl.GetSecurityDescriptorSddlForm(
                 [Security.AccessControl.AccessControlSections]::Access
             )
             $CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -50,24 +48,57 @@ try {
                     [Security.AccessControl.FileSystemRights]::Delete,
                     [Security.AccessControl.AccessControlType]::Deny
                 )
-            $null = $CurrentAcl.AddAccessRule($DenyDeleteRule)
-            Set-Acl -LiteralPath $Candidate.FullName -AclObject $CurrentAcl
-            $DeniedPath = $Candidate.FullName
-            $AccessDeniedArmed = $true
+            $DenyDeleteChildRule = New-Object `
+                -TypeName Security.AccessControl.FileSystemAccessRule `
+                -ArgumentList @(
+                    $CurrentSid,
+                    [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
+                    [Security.AccessControl.AccessControlType]::Deny
+                )
+
+            # Windows permits a rename when either Delete on the child or
+            # DeleteChild on its parent is granted. Deny both paths before
+            # extraction completes so the installer cannot race the injector.
+            $null = $ParentAcl.AddAccessRule($DenyDeleteChildRule)
+            Set-Acl -LiteralPath $DeniedParentPath -AclObject $ParentAcl
+            $ParentAccessDenied = $true
+            $null = $RuntimeAcl.AddAccessRule($DenyDeleteRule)
+            Set-Acl -LiteralPath $DeniedPath -AclObject $RuntimeAcl
+            $RuntimeAccessDenied = $true
             break
         }
-        if ($AccessDeniedArmed) {
+        if ($RuntimeAccessDenied -and $ParentAccessDenied) {
             break
         }
         Start-Sleep -Milliseconds 25
     }
-    if (-not $AccessDeniedArmed -or -not $DeniedPath -or
-        -not $OriginalAccessSddl) {
-        throw "The CI fault injector could not deny Delete on a staged runtime directory."
+    if (-not $RuntimeAccessDenied -or -not $ParentAccessDenied -or
+        -not $DeniedPath -or -not $DeniedParentPath -or
+        -not $OriginalRuntimeAccessSddl -or -not $OriginalParentAccessSddl) {
+        throw "The CI fault injector could not deny runtime Delete and parent DeleteChild."
     }
+
+    # Runtime archives are emitted in lexical order, making this root file the
+    # final archive entry. The ACLs are already armed, but the marker must only
+    # announce a fully extracted runtime that is ready for publish.
+    $NodePath = Join-Path $DeniedPath "node\node.exe"
+    $ExtractionCompletionMarker = Join-Path $DeniedPath "pnpm-workspace.yaml"
+    while ([DateTime]::UtcNow -lt $Deadline -and
+        ((-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) -or
+        (-not (Test-Path -LiteralPath $ExtractionCompletionMarker -PathType Leaf)))) {
+        if (-not (Test-Path -LiteralPath $DeniedPath -PathType Container)) {
+            throw "The staged runtime moved before the access denial was fully armed."
+        }
+        Start-Sleep -Milliseconds 25
+    }
+    if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $ExtractionCompletionMarker -PathType Leaf)) {
+        throw "The staged runtime did not finish extraction while access denial was armed."
+    }
+    $AccessDeniedArmed = $true
     [IO.File]::WriteAllText(
         $MarkerPath,
-        $DeniedPath,
+        "$DeniedPath`n$DeniedParentPath",
         (New-Object System.Text.UTF8Encoding($false))
     )
     $FaultArmedAtUtc = [DateTime]::UtcNow
@@ -103,14 +134,31 @@ try {
     Write-Host ("CI RUNTIME PUBLISH RETRY OBSERVED {0}: {1}" -f `
         (Get-Date -Format "o"), $DeniedPath)
 } finally {
-    if ($AccessDeniedArmed -and $DeniedPath -and $OriginalAccessSddl -and
+    $RuntimeAclRestored = -not $RuntimeAccessDenied
+    $ParentAclRestored = -not $ParentAccessDenied
+    if ($RuntimeAccessDenied -and $DeniedPath -and
+        $OriginalRuntimeAccessSddl -and
         (Test-Path -LiteralPath $DeniedPath -PathType Container)) {
-        $RestoreAcl = Get-Acl -LiteralPath $DeniedPath
-        $RestoreAcl.SetSecurityDescriptorSddlForm(
-            $OriginalAccessSddl,
+        $RestoreRuntimeAcl = Get-Acl -LiteralPath $DeniedPath
+        $RestoreRuntimeAcl.SetSecurityDescriptorSddlForm(
+            $OriginalRuntimeAccessSddl,
             [Security.AccessControl.AccessControlSections]::Access
         )
-        Set-Acl -LiteralPath $DeniedPath -AclObject $RestoreAcl
+        Set-Acl -LiteralPath $DeniedPath -AclObject $RestoreRuntimeAcl
+        $RuntimeAclRestored = $true
+    }
+    if ($ParentAccessDenied -and $DeniedParentPath -and
+        $OriginalParentAccessSddl -and
+        (Test-Path -LiteralPath $DeniedParentPath -PathType Container)) {
+        $RestoreParentAcl = Get-Acl -LiteralPath $DeniedParentPath
+        $RestoreParentAcl.SetSecurityDescriptorSddlForm(
+            $OriginalParentAccessSddl,
+            [Security.AccessControl.AccessControlSections]::Access
+        )
+        Set-Acl -LiteralPath $DeniedParentPath -AclObject $RestoreParentAcl
+        $ParentAclRestored = $true
+    }
+    if ($AccessDeniedArmed -and $RuntimeAclRestored -and $ParentAclRestored) {
         Write-Host ("CI RUNTIME PUBLISH ACCESS DENIED RESTORED {0}: {1}" -f `
             (Get-Date -Format "o"), $DeniedPath)
     }

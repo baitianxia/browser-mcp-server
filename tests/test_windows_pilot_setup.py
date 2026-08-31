@@ -347,9 +347,37 @@ class WindowsPilotSetupTests(unittest.TestCase):
 
         self.assertIn("Set-Acl", access_denied_injector)
         self.assertIn("FileSystemRights]::Delete", access_denied_injector)
+        self.assertIn(
+            "FileSystemRights]::DeleteSubdirectoriesAndFiles",
+            access_denied_injector,
+        )
         self.assertIn("AccessControlType]::Deny", access_denied_injector)
-        self.assertIn("OriginalAccessSddl", access_denied_injector)
+        self.assertIn("OriginalRuntimeAccessSddl", access_denied_injector)
+        self.assertIn("OriginalParentAccessSddl", access_denied_injector)
         self.assertIn("pnpm-workspace.yaml", access_denied_injector)
+        extraction_marker = access_denied_injector.index(
+            '$ExtractionCompletionMarker = Join-Path $DeniedPath "pnpm-workspace.yaml"'
+        )
+        self.assertLess(
+            access_denied_injector.index(
+                "Set-Acl -LiteralPath $DeniedParentPath -AclObject $ParentAcl"
+            ),
+            extraction_marker,
+        )
+        self.assertLess(
+            access_denied_injector.index(
+                "Set-Acl -LiteralPath $DeniedPath -AclObject $RuntimeAcl"
+            ),
+            extraction_marker,
+        )
+        self.assertIn(
+            "Set-Acl -LiteralPath $DeniedPath -AclObject $RestoreRuntimeAcl",
+            access_denied_injector,
+        )
+        self.assertIn(
+            "Set-Acl -LiteralPath $DeniedParentPath -AclObject $RestoreParentAcl",
+            access_denied_injector,
+        )
         self.assertIn("InstallLogRoot", access_denied_injector)
         self.assertIn("RUNTIME PUBLISH RETRY", access_denied_injector)
         self.assertIn("CI RUNTIME PUBLISH RETRY OBSERVED", workflow)
