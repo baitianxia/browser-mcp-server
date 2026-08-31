@@ -383,14 +383,14 @@ class WindowsPilotSetupTests(unittest.TestCase):
             user_profile = root / "profile"
             native_fallback = user_profile / ".local" / "bin" / "claude.exe"
             native_fallback.parent.mkdir(parents=True)
-            native_fallback.write_bytes(b"MZ")
+            native_fallback.write_bytes(b"MZNATIVE")
 
             npm_root = root / "npm prefix with spaces"
             npm_root.mkdir(parents=True)
             command = npm_root / "claude.cmd"
-            command.write_bytes(b"@echo off\r\n")
+            command.write_bytes(b"@echo off\r\nrem npm Claude fixture\r\n")
             node = npm_root / "node.exe"
-            node.write_bytes(b"MZ")
+            node.write_bytes(b"MZNODE")
             package_root = (
                 npm_root / "node_modules" / "@anthropic-ai" / "claude-code"
             )
@@ -418,10 +418,24 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 f". {ps_literal(resolver)}; "
                 "$Resolved = Resolve-ClaudeCodeInvocation; "
                 "$ResolvedPrefix = @($Resolved.Prefix); "
-                f"if ($Resolved.CommandPath -ne {ps_literal(command)} -or "
-                f"$Resolved.Executable -ne {ps_literal(node)} -or "
+                "function Get-TestFileHash { param([string]$Path) "
+                "if (-not $Path -or -not "
+                "(Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }; "
+                "return (Get-FileHash -LiteralPath $Path "
+                "-Algorithm SHA256).Hash }; "
+                "$ResolvedCommandHash = Get-TestFileHash "
+                "([string]$Resolved.CommandPath); "
+                "$ResolvedNodeHash = Get-TestFileHash "
+                "([string]$Resolved.Executable); "
+                "$ResolvedCliHash = if ($ResolvedPrefix.Count -eq 1) { "
+                "Get-TestFileHash $ResolvedPrefix[0] } else { '' }; "
+                f"$ExpectedCommandHash = Get-TestFileHash {ps_literal(command)}; "
+                f"$ExpectedNodeHash = Get-TestFileHash {ps_literal(node)}; "
+                f"$ExpectedCliHash = Get-TestFileHash {ps_literal(cli)}; "
+                "if ($ResolvedCommandHash -ne $ExpectedCommandHash -or "
+                "$ResolvedNodeHash -ne $ExpectedNodeHash -or "
                 "$Resolved.Kind -ne 'npm' -or $ResolvedPrefix.Count -ne 1 -or "
-                f"$ResolvedPrefix[0] -ne {ps_literal(cli)}) {{ "
+                "$ResolvedCliHash -ne $ExpectedCliHash) { "
                 "throw ('Unexpected npm Claude invocation: ' + "
                 "([ordered]@{ CommandPath = $Resolved.CommandPath; "
                 "Executable = $Resolved.Executable; Kind = $Resolved.Kind; "
