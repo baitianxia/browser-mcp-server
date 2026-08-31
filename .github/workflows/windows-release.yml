@@ -484,6 +484,7 @@ jobs:
           $CiExtensionPolicyPath = "HKCU:\$CiExtensionPolicySubKey"
           $script:CiExtensionPolicyKeyWasPresent = $false
           $script:CiExtensionPolicyKeyCreated = $false
+          $script:CiExtensionPolicyCreatedPaths = @()
           $script:CiExtensionPolicyOriginalAccessSddl = ""
           $script:CiExtensionPolicyAclArmed = $false
           $script:CiExtensionPolicyAclRestored = $false
@@ -591,32 +592,41 @@ jobs:
               return $ParsedExitCode
           }
           function Restore-CiExtensionPolicyAccess {
-              if (-not $script:CiExtensionPolicyAclArmed -or
-                  $script:CiExtensionPolicyAclRestored) {
+              if ($script:CiExtensionPolicyAclRestored) {
                   return
               }
-              $RestorePolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
-              $RestorePolicyAcl.SetSecurityDescriptorSddlForm(
-                  $script:CiExtensionPolicyOriginalAccessSddl,
-                  [Security.AccessControl.AccessControlSections]::Access
-              )
-              Set-Acl -LiteralPath $CiExtensionPolicyPath `
-                  -AclObject $RestorePolicyAcl
-              $RestoredPolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
-              $RestoredPolicyAccessSddl = `
-                  $RestoredPolicyAcl.GetSecurityDescriptorSddlForm(
+              if ($script:CiExtensionPolicyAclArmed) {
+                  $RestorePolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
+                  $RestorePolicyAcl.SetSecurityDescriptorSddlForm(
+                      $script:CiExtensionPolicyOriginalAccessSddl,
                       [Security.AccessControl.AccessControlSections]::Access
                   )
-              if ($RestoredPolicyAccessSddl -cne `
-                  $script:CiExtensionPolicyOriginalAccessSddl) {
-                  throw "CI did not restore the exact extension-policy access ACL."
+                  Set-Acl -LiteralPath $CiExtensionPolicyPath `
+                      -AclObject $RestorePolicyAcl
+                  $RestoredPolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
+                  $RestoredPolicyAccessSddl = `
+                      $RestoredPolicyAcl.GetSecurityDescriptorSddlForm(
+                          [Security.AccessControl.AccessControlSections]::Access
+                      )
+                  if ($RestoredPolicyAccessSddl -cne `
+                      $script:CiExtensionPolicyOriginalAccessSddl) {
+                      throw "CI did not restore the exact extension-policy access ACL."
+                  }
               }
-              if ($script:CiExtensionPolicyKeyCreated -and
-                  (Test-Path -LiteralPath $CiExtensionPolicyPath)) {
-                  $CiPolicyKey = Get-Item -LiteralPath $CiExtensionPolicyPath
+              for ($CiCreatedPolicyIndex =
+                      $script:CiExtensionPolicyCreatedPaths.Count - 1;
+                  $CiCreatedPolicyIndex -ge 0;
+                  $CiCreatedPolicyIndex -= 1) {
+                  $CiCreatedPolicyPath =
+                      $script:CiExtensionPolicyCreatedPaths[$CiCreatedPolicyIndex]
+                  if (-not (Test-Path -LiteralPath $CiCreatedPolicyPath `
+                      -PathType Container)) {
+                      continue
+                  }
+                  $CiPolicyKey = Get-Item -LiteralPath $CiCreatedPolicyPath
                   if (@($CiPolicyKey.GetValueNames()).Count -eq 0 -and
                       $CiPolicyKey.SubKeyCount -eq 0) {
-                      Remove-Item -LiteralPath $CiExtensionPolicyPath -Force
+                      Remove-Item -LiteralPath $CiCreatedPolicyPath -Force
                   }
               }
               $script:CiExtensionPolicyAclRestored = $true
@@ -626,20 +636,35 @@ jobs:
               $script:CiExtensionPolicyKeyWasPresent = `
                   Test-Path -LiteralPath $CiExtensionPolicyPath
               if (-not $script:CiExtensionPolicyKeyWasPresent) {
-                  $CiCreatedPolicyKey = `
-                      [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
-                          $CiExtensionPolicySubKey,
-                          [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree
-                      )
-                  if ($null -eq $CiCreatedPolicyKey) {
-                      throw "CI could not create the extension policy test key."
+                  $CiCurrentPolicyPath = "HKCU:\"
+                  foreach ($CiPolicyPathPart in @(
+                      $CiExtensionPolicySubKey -split '\\')) {
+                      if (-not $CiPolicyPathPart) {
+                          continue
+                      }
+                      $CiCurrentPolicyPath = Join-Path `
+                          $CiCurrentPolicyPath $CiPolicyPathPart
+                      if (-not (Test-Path -LiteralPath $CiCurrentPolicyPath `
+                          -PathType Container)) {
+                          New-Item -Path $CiCurrentPolicyPath -Force `
+                              -ErrorAction Stop | Out-Null
+                          $script:CiExtensionPolicyCreatedPaths += `
+                              $CiCurrentPolicyPath
+                      }
+                      if (-not (Test-Path -LiteralPath $CiCurrentPolicyPath `
+                          -PathType Container)) {
+                          throw (
+                              "CI extension policy segment is not visible: " +
+                              $CiCurrentPolicyPath
+                          )
+                      }
                   }
-                  $script:CiExtensionPolicyKeyCreated = $true
-                  $CiCreatedPolicyKey.Dispose()
-                  if (-not (Test-Path -LiteralPath $CiExtensionPolicyPath `
-                      -PathType Container)) {
-                      throw "CI extension policy test key is not visible after creation."
+                  if ($CiCurrentPolicyPath -cne $CiExtensionPolicyPath) {
+                      throw "CI extension policy path creation returned the wrong key."
                   }
+                  $script:CiExtensionPolicyKeyCreated =
+                      $script:CiExtensionPolicyCreatedPaths -contains `
+                          $CiExtensionPolicyPath
               }
               $CiPolicyAcl = Get-Acl -LiteralPath $CiExtensionPolicyPath
               $script:CiExtensionPolicyOriginalAccessSddl = `

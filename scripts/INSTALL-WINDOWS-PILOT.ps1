@@ -50,6 +50,7 @@ $ExtensionPolicyPreviousValueKind = $null
 $ExtensionPolicyValueWasPresent = $false
 $ExtensionPolicyKeyWasPresent = $false
 $ExtensionPolicyKeyCreated = $false
+$ExtensionPolicyCreatedPaths = @()
 $ExtensionPolicyChangeStarted = $false
 $ExtensionPolicyCommitted = $false
 $ExtensionInstallMethod = ""
@@ -353,9 +354,32 @@ function Test-PlaywrightExtension {
     throw "Playwright Extension 检测失败，退出码 $ExitCode。"
 }
 
+function Ensure-CurrentUserRegistryKey {
+    param([string]$SubKey)
+    $CurrentRegistryPath = "HKCU:\"
+    foreach ($RegistryPathPart in @($SubKey -split '\\')) {
+        if (-not $RegistryPathPart) {
+            continue
+        }
+        $CurrentRegistryPath = Join-Path $CurrentRegistryPath $RegistryPathPart
+        if (-not (Test-Path -LiteralPath $CurrentRegistryPath `
+            -PathType Container)) {
+            New-Item -Path $CurrentRegistryPath -Force -ErrorAction Stop |
+                Out-Null
+            $script:ExtensionPolicyCreatedPaths += $CurrentRegistryPath
+        }
+        if (-not (Test-Path -LiteralPath $CurrentRegistryPath `
+            -PathType Container)) {
+            throw "浏览器扩展策略路径分段创建后不可见：$CurrentRegistryPath"
+        }
+    }
+    return $CurrentRegistryPath
+}
+
 function Restore-ExtensionPolicyChange {
     if ((-not $script:ExtensionPolicyChangeStarted -and
-            -not $script:ExtensionPolicyKeyCreated) -or
+            -not $script:ExtensionPolicyKeyCreated -and
+            $script:ExtensionPolicyCreatedPaths.Count -eq 0) -or
         $script:ExtensionPolicyCommitted -or
         -not $script:ExtensionPolicyPath) {
         return
@@ -396,18 +420,29 @@ function Restore-ExtensionPolicyChange {
             Write-InstallLog "ROLLBACK: removed newly added browser extension policy"
         }
     }
-    if ($script:ExtensionPolicyKeyCreated -and
-        (Test-Path -LiteralPath $script:ExtensionPolicyPath)) {
+    for ($CreatedPolicyIndex =
+            $script:ExtensionPolicyCreatedPaths.Count - 1;
+        $CreatedPolicyIndex -ge 0;
+        $CreatedPolicyIndex -= 1) {
+        $CreatedPolicyPath =
+            $script:ExtensionPolicyCreatedPaths[$CreatedPolicyIndex]
         try {
-            $RollbackPolicyKey = Get-Item -LiteralPath $script:ExtensionPolicyPath
+            if (-not (Test-Path -LiteralPath $CreatedPolicyPath `
+                -PathType Container)) {
+                continue
+            }
+            $RollbackPolicyKey = Get-Item -LiteralPath $CreatedPolicyPath
             if (@($RollbackPolicyKey.GetValueNames()).Count -eq 0 -and
                 $RollbackPolicyKey.SubKeyCount -eq 0) {
-                Remove-Item -LiteralPath $script:ExtensionPolicyPath -Force
-                Write-InstallLog "ROLLBACK: removed empty browser extension policy key"
+                Remove-Item -LiteralPath $CreatedPolicyPath -Force
+                Write-InstallLog (
+                    "ROLLBACK: removed empty browser extension policy key: {0}" -f `
+                        $CreatedPolicyPath
+                )
             } else {
                 Write-InstallLog (
                     "ROLLBACK: retained non-empty browser extension policy key: {0}" -f `
-                        $script:ExtensionPolicyPath
+                        $CreatedPolicyPath
                 )
             }
         } catch {
@@ -422,6 +457,7 @@ function Restore-ExtensionPolicyChange {
     }
     $script:ExtensionPolicyChangeStarted = $false
     $script:ExtensionPolicyKeyCreated = $false
+    $script:ExtensionPolicyCreatedPaths = @()
 }
 
 try {
@@ -824,20 +860,13 @@ try {
             $ExtensionPolicyKeyWasPresent = Test-Path `
                 -LiteralPath $ExtensionPolicyPath
             if (-not $ExtensionPolicyKeyWasPresent) {
-                $CreatedExtensionPolicyKey = `
-                    [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey(
-                        $ExtensionPolicySubKey,
-                        [Microsoft.Win32.RegistryKeyPermissionCheck]::ReadWriteSubTree
-                    )
-                if ($null -eq $CreatedExtensionPolicyKey) {
-                    throw "浏览器扩展策略键创建失败。"
+                $CreatedExtensionPolicyPath =
+                    Ensure-CurrentUserRegistryKey $ExtensionPolicySubKey
+                if ($CreatedExtensionPolicyPath -cne $ExtensionPolicyPath) {
+                    throw "浏览器扩展策略键创建结果不一致。"
                 }
-                $ExtensionPolicyKeyCreated = $true
-                $CreatedExtensionPolicyKey.Dispose()
-                if (-not (Test-Path -LiteralPath $ExtensionPolicyPath `
-                    -PathType Container)) {
-                    throw "浏览器扩展策略键创建后不可见。"
-                }
+                $ExtensionPolicyKeyCreated =
+                    $ExtensionPolicyCreatedPaths -contains $ExtensionPolicyPath
             }
             $PolicyKey = Get-Item -LiteralPath $ExtensionPolicyPath
             $PolicyValueNames = @($PolicyKey.GetValueNames())
@@ -902,7 +931,9 @@ try {
             Write-Host "已尝试当前用户离线策略安装，正在等待浏览器确认……"
         } catch {
             $PolicyAttemptError = $_
-            if ($ExtensionPolicyChangeStarted -or $ExtensionPolicyKeyCreated) {
+            if ($ExtensionPolicyChangeStarted -or
+                $ExtensionPolicyKeyCreated -or
+                $ExtensionPolicyCreatedPaths.Count -gt 0) {
                 try {
                     Restore-ExtensionPolicyChange
                 } catch {
@@ -937,7 +968,9 @@ try {
         if (-not (Test-PlaywrightExtension `
             $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
             $InstalledExtensionUnpacked)) {
-            if ($ExtensionPolicyChangeStarted -or $ExtensionPolicyKeyCreated) {
+            if ($ExtensionPolicyChangeStarted -or
+                $ExtensionPolicyKeyCreated -or
+                $ExtensionPolicyCreatedPaths.Count -gt 0) {
                 Restore-ExtensionPolicyChange
             }
             $ExtensionsPage = if ($BrowserChannel -eq "chrome") {
@@ -1290,7 +1323,10 @@ approve the browser tab connection, and perform a read-only page-title test firs
             Write-InstallLog "CONFIG ROLLBACK FAILED: $($_.Exception.Message)"
         }
     }
-    if ($ExtensionPolicyChangeStarted -and -not $ExtensionPolicyCommitted) {
+    if (($ExtensionPolicyChangeStarted -or
+            $ExtensionPolicyKeyCreated -or
+            $ExtensionPolicyCreatedPaths.Count -gt 0) -and
+        -not $ExtensionPolicyCommitted) {
         try {
             Restore-ExtensionPolicyChange
         } catch {
