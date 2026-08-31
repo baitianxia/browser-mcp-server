@@ -259,11 +259,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         exercise = (
             ROOT / ".github" / "scripts" / "exercise-extension-mcp.py"
         ).read_text(encoding="utf-8")
-        directory_lock = (
+        access_denied_injector = (
             ROOT
             / ".github"
             / "scripts"
-            / "hold-runtime-publish-directory.ps1"
+            / "inject-runtime-publish-access-denied.ps1"
         ).read_text(encoding="utf-8")
 
         self.assertIn("CI-only session surrogate", loader)
@@ -314,8 +314,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("playwright-extension-ci-stop.txt", workflow)
         self.assertIn("one-click-launcher.exit.txt", workflow)
         self.assertIn("playwright-extension-ci.exit.txt", workflow)
-        self.assertIn("runtime-publish-directory-lock.exit.txt", workflow)
-        self.assertIn("hold-runtime-publish-directory.ps1", workflow)
+        self.assertIn("runtime-publish-access-denied.exit.txt", workflow)
+        self.assertIn("inject-runtime-publish-access-denied.ps1", workflow)
         self.assertIn("RUNTIME PUBLISH RETRY", workflow)
         self.assertIn("RUNTIME PUBLISH RECOVERED", workflow)
         self.assertIn("exactly one installer process", workflow)
@@ -345,15 +345,17 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("session_cookie=reused", exercise)
         self.assertNotIn('"browser_close"', exercise)
 
-        self.assertIn("CreateFile", directory_lock)
-        self.assertIn("FILE_SHARE_DELETE", directory_lock)
-        self.assertIn("pnpm-workspace.yaml", directory_lock)
-        self.assertIn("InstallLogRoot", directory_lock)
-        self.assertIn("RUNTIME PUBLISH RETRY", directory_lock)
+        self.assertIn("Set-Acl", access_denied_injector)
+        self.assertIn("FileSystemRights]::Delete", access_denied_injector)
+        self.assertIn("AccessControlType]::Deny", access_denied_injector)
+        self.assertIn("OriginalAccessSddl", access_denied_injector)
+        self.assertIn("pnpm-workspace.yaml", access_denied_injector)
+        self.assertIn("InstallLogRoot", access_denied_injector)
+        self.assertIn("RUNTIME PUBLISH RETRY", access_denied_injector)
         self.assertIn("CI RUNTIME PUBLISH RETRY OBSERVED", workflow)
         self.assertNotIn("-HoldSeconds", workflow)
-        self.assertIn("CI RUNTIME PUBLISH DIRECTORY LOCKED", directory_lock)
-        self.assertIn("CI RUNTIME PUBLISH DIRECTORY RELEASED", directory_lock)
+        self.assertIn("CI RUNTIME PUBLISH ACCESS DENIED ARMED", access_denied_injector)
+        self.assertIn("CI RUNTIME PUBLISH ACCESS DENIED RESTORED", access_denied_injector)
 
     @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell 5.1")
     def test_native_claude_resolver_finds_official_path_when_path_is_stale(

@@ -4,7 +4,7 @@
 
 ## 1.0.11 Windows 暂存目录恢复验证状态
 
-1.0.11 修复目标机已经完成运行包和包内 Node 验证后，`staging\r-*` 到最终版本目录的原子 `Move-Item` 因 Defender/EDR 短暂持有目录句柄而第一次访问被拒绝时立即退出的问题。安装器现在只在源仍存在、目标尚未出现且错误属于访问拒绝、共享冲突或等价目录移动 I/O 错误时，在原安装进程内有界退避重试；释放后继续并再次验证最终目录，目标已出现或状态不明确时仍失败关闭。Windows package job 必须用真实的不共享删除目录句柄强制首次移动失败，证明同一个 launcher/installer 记录 `RUNTIME PUBLISH RETRY` 与 `RUNTIME PUBLISH RECOVERED` 后完成安装、注册和登录态 E2E。
+1.0.11 修复目标机已经完成运行包和包内 Node 验证后，`staging\r-*` 到最终版本目录的原子 `Move-Item` 因 Defender/EDR 短暂持有目录句柄而第一次访问被拒绝时立即退出的问题。安装器现在只在源仍存在、目标尚未出现且错误属于访问拒绝、共享冲突或等价目录移动 I/O 错误时，在原安装进程内有界退避重试；释放后继续并再次验证最终目录，目标已出现或状态不明确时仍失败关闭。Windows package job 必须在完整解压后保存暂存目录原 ACL，对当前用户真实拒绝 `Delete` 权限以强制首次移动返回操作系统访问拒绝；观察到首次重试后逐字恢复原 ACL，并证明同一个 launcher/installer 记录 `RUNTIME PUBLISH RETRY` 与 `RUNTIME PUBLISH RECOVERED` 后完成安装、注册和登录态 E2E。
 
 当前源码已经通过本地完整回归；在新的 GitHub Windows 原生打包和上述故障注入门禁完成前，1.0.11 仍是不可交付候选。不得用本地交叉构建或旧 1.0.10 制品冒充本次修复。
 

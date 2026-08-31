@@ -462,15 +462,15 @@ jobs:
           $CdpExitFile = Join-Path $env:RUNNER_TEMP `
               "playwright-extension-ci.exit.txt"
           $RuntimeLockMarker = Join-Path $env:RUNNER_TEMP `
-              "runtime-publish-directory-lock.txt"
+              "runtime-publish-access-denied.txt"
           $RuntimeLockStdout = Join-Path $env:RUNNER_TEMP `
-              "runtime-publish-directory-lock.stdout.log"
+              "runtime-publish-access-denied.stdout.log"
           $RuntimeLockStderr = Join-Path $env:RUNNER_TEMP `
-              "runtime-publish-directory-lock.stderr.log"
+              "runtime-publish-access-denied.stderr.log"
           $RuntimeLockExitFile = Join-Path $env:RUNNER_TEMP `
-              "runtime-publish-directory-lock.exit.txt"
+              "runtime-publish-access-denied.exit.txt"
           $RuntimeLockScript = Join-Path $env:GITHUB_WORKSPACE `
-              ".github\scripts\hold-runtime-publish-directory.ps1"
+              ".github\scripts\inject-runtime-publish-access-denied.ps1"
           $RuntimeLockStagingRoot = Join-Path $PilotLocalAppData `
               "IntranetBrowserAgent\staging"
           $InstallLogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
@@ -514,7 +514,7 @@ jobs:
               (New-Object System.Text.ASCIIEncoding)
           )
           $RuntimeLockWrapper = Join-Path $env:RUNNER_TEMP `
-              "run-runtime-publish-directory-lock.cmd"
+              "run-runtime-publish-access-denied.cmd"
           $RuntimeLockWrapperBody = @"
           @echo off
           powershell.exe -NoLogo -NoProfile -NonInteractive -File "$RuntimeLockScript" -StagingRoot "$RuntimeLockStagingRoot" -MarkerPath "$RuntimeLockMarker" -InstallLogRoot "$InstallLogRoot"
@@ -686,11 +686,15 @@ jobs:
               }
               $RuntimeLockFinished = $true
               if (-not (Test-Path -LiteralPath $RuntimeLockMarker -PathType Leaf)) {
-                  throw "The runtime publish fault injector did not acquire its directory handle."
+                  throw "The runtime publish fault injector did not apply its access denial."
               }
               if (-not (Select-String -LiteralPath $RuntimeLockStdout `
                   -SimpleMatch "CI RUNTIME PUBLISH RETRY OBSERVED" -Quiet)) {
                   throw "The runtime publish fault injector did not observe the blocked move."
+              }
+              if (-not (Select-String -LiteralPath $RuntimeLockStdout `
+                  -SimpleMatch "CI RUNTIME PUBLISH ACCESS DENIED RESTORED" -Quiet)) {
+                  throw "The runtime publish fault injector did not restore the original ACL."
               }
               $CurrentInstallLog = Get-ChildItem -LiteralPath `
                   $InstallLogRoot `
