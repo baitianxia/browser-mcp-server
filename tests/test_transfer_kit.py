@@ -197,6 +197,9 @@ class TransferKitTests(unittest.TestCase):
                 f"{prefix}/toolkit/scripts/verify-windows-release.ps1", names
             )
             self.assertIn(
+                f"{prefix}/toolkit/scripts/windows-tool-discovery.ps1", names
+            )
+            self.assertIn(
                 f"{prefix}/toolkit/tests/test_claude_mcp_registration.py", names
             )
             self.assertIn(f"{prefix}/toolkit/scripts/verify-bundle.py", names)

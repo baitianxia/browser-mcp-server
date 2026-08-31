@@ -208,7 +208,7 @@ jobs:
               throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
           }
           $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-agent-runtime-1.0.9-core-windows-x64.tar.gz")
+              -Filter "browser-agent-runtime-1.0.10-core-windows-x64.tar.gz")
           if ($RuntimeArchives.Count -ne 1) {
               throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
           }
@@ -227,7 +227,7 @@ jobs:
               throw "Transfer-kit build failed."
           }
           $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "intranet-browser-agent-transfer-1.0.9-core-windows-x64.tar.gz")
+              -Filter "intranet-browser-agent-transfer-1.0.10-core-windows-x64.tar.gz")
           if ($TransferArchives.Count -ne 1) {
               throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
           }
@@ -282,9 +282,6 @@ jobs:
               $ActualClaude -notmatch ("^" + [regex]::Escape($env:CLAUDE_CODE_VERSION) + "(?:\s|$)")) {
               throw "Expected Claude Code $env:CLAUDE_CODE_VERSION; found $ActualClaude"
           }
-          $ClaudeDirectory = Split-Path -Parent $ClaudeExecutable
-          $env:PATH = "$ClaudeDirectory;$env:PATH"
-          $ClaudeDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "CLAUDE_EXECUTABLE=$ClaudeExecutable" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "DISABLE_AUTOUPDATER=1" |
@@ -301,6 +298,40 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          $ExpectedClaudeFallback = Join-Path $env:USERPROFILE `
+              ".local\bin\claude.exe"
+          if (-not (Test-Path -LiteralPath $ExpectedClaudeFallback -PathType Leaf)) {
+              throw "The official per-user Claude Code fallback path is missing."
+          }
+          if (-not [string]::Equals(
+              [IO.Path]::GetFullPath($env:CLAUDE_EXECUTABLE),
+              [IO.Path]::GetFullPath($ExpectedClaudeFallback),
+              [StringComparison]::OrdinalIgnoreCase
+          )) {
+              throw "The tested Claude executable is not the official per-user path."
+          }
+          $ClaudeDirectory = [IO.Path]::GetFullPath(
+              (Split-Path -Parent $ExpectedClaudeFallback)
+          ).TrimEnd("\")
+          $env:PATH = (@($env:PATH -split ";" | Where-Object {
+              if (-not $_) {
+                  return $false
+              }
+              try {
+                  $PathDirectory = [IO.Path]::GetFullPath($_).TrimEnd("\")
+                  return -not [string]::Equals(
+                      $PathDirectory,
+                      $ClaudeDirectory,
+                      [StringComparison]::OrdinalIgnoreCase
+                  )
+              } catch {
+                  return $true
+              }
+          }) -join ";")
+          if (Get-Command claude.exe -ErrorAction SilentlyContinue) {
+              throw "CI failed to hide claude.exe from PATH for the fallback test."
+          }
+          Write-Host "CI PATH-HIDDEN CLAUDE FALLBACK READY: $ExpectedClaudeFallback"
           $Launcher = Join-Path $env:TRANSFER_ROOT "INSTALL-WINDOWS-PILOT.cmd"
           if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
               throw "Transfer launcher is missing: $Launcher"

@@ -29,7 +29,7 @@ from validate_playwright_extension import (
 )
 
 
-TOOLKIT_VERSION = "1.0.9"
+TOOLKIT_VERSION = "1.0.10"
 RUNTIME_PREFIX = "browser-agent-runtime-"
 RUNTIME_SUFFIX = ".tar.gz"
 RUNTIME_NAME_PATTERN = re.compile(
@@ -94,6 +94,7 @@ EXACT_SOURCE_FILES = (
     "scripts/validate_playwright_extension.py",
     "scripts/verify-bundle.py",
     "scripts/verify-windows-release.ps1",
+    "scripts/windows-tool-discovery.ps1",
     "scripts/write_archive_hash.py",
     "scripts/write_build_metadata.py",
     "scripts/write_integrity.py",

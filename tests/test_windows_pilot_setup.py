@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -73,6 +74,9 @@ class WindowsPilotSetupTests(unittest.TestCase):
         registrar = (
             ROOT / "scripts" / "register_claude_user_mcp.py"
         ).read_text(encoding="utf-8")
+        discovery = (
+            ROOT / "scripts" / "windows-tool-discovery.ps1"
+        ).read_text(encoding="utf-8")
         self.assertNotIn("ExecutionPolicy", installer + launcher)
         self.assertNotIn("ProjectRoot", installer)
         self.assertNotIn("--project-root", installer)
@@ -101,7 +105,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"--browser-executable", $BrowserExecutable', installer)
         self.assertNotIn('"--wrapper"', installer)
         self.assertNotIn('Get-Command "claude.cmd"', installer)
-        self.assertIn('Get-Command "claude.exe"', installer)
+        self.assertNotIn("function Get-ClaudeExecutable", installer)
+        self.assertIn("Resolve-NativeClaudeExecutable", installer)
+        self.assertIn('Get-Command "claude.exe"', discovery)
+        self.assertIn('".local\\bin\\claude.exe"', discovery)
+        self.assertIn("Resolve-NativeClaudeExecutable", discovery)
         self.assertIn('"--user-config", $ClaudeUserConfigPath', installer)
         self.assertIn("[IO.Path]::IsPathRooted($ClaudeConfigDirectory)", installer)
         self.assertIn("$ClaudeConfigDirectory -notmatch '^[A-Za-z]:[\\\\/]'", installer)
@@ -202,6 +210,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('$env:PYTHONDONTWRITEBYTECODE = "1"', gate)
         self.assertIn("Remove-Item Env:PYTHONDONTWRITEBYTECODE", gate)
         self.assertIn("WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED", gate)
+        self.assertIn('Join-Path $PSScriptRoot "windows-tool-discovery.ps1"', gate)
+        self.assertIn("Resolve-NativeClaudeExecutable", gate)
 
         verify_call = '(Join-Path $PSScriptRoot "verify-bundle.py")'
         verify_positions: list[int] = []
@@ -258,6 +268,9 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("process.exit(1)", loader)
 
         self.assertIn("exercise-extension-mcp.py", workflow)
+        self.assertIn("CI PATH-HIDDEN CLAUDE FALLBACK READY", workflow)
+        self.assertIn("CI failed to hide claude.exe from PATH", workflow)
+        self.assertIn("The official per-user Claude Code fallback path is missing", workflow)
         self.assertIn('"CHROME_EXE=$ChromeExe"', workflow)
         self.assertIn('$ChromeExe = [string]$env:CHROME_EXE', workflow)
         self.assertIn("--browser-executable $ChromeExe", workflow)
@@ -290,6 +303,51 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("OFFLINE-INTRANET-SESSION-REUSED", exercise)
         self.assertIn("session_cookie=reused", exercise)
         self.assertNotIn('"browser_close"', exercise)
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell 5.1")
+    def test_native_claude_resolver_finds_official_path_when_path_is_stale(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            user_profile = Path(temporary) / "profile"
+            claude = user_profile / ".local" / "bin" / "claude.exe"
+            claude.parent.mkdir(parents=True)
+            claude.write_bytes(b"MZ")
+            resolver = ROOT / "scripts" / "windows-tool-discovery.ps1"
+
+            def ps_literal(value: Path) -> str:
+                return "'" + str(value).replace("'", "''") + "'"
+
+            command = (
+                "$ErrorActionPreference = 'Stop'; "
+                f"$env:USERPROFILE = {ps_literal(user_profile)}; "
+                "$env:PATH = ''; "
+                f". {ps_literal(resolver)}; "
+                "$Resolved = Resolve-NativeClaudeExecutable; "
+                f"if ($Resolved -ne {ps_literal(claude)}) {{ "
+                "throw ('Unexpected Claude path: ' + $Resolved) }; "
+                f"$Explicit = Resolve-NativeClaudeExecutable -ExplicitPath "
+                f"{ps_literal(user_profile / 'missing.exe')}; "
+                "if ($Explicit) { throw 'An invalid explicit path must not fall back' }"
+            )
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    command,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                msg=f"stdout={result.stdout}\nstderr={result.stderr}",
+            )
 
     def test_windows_installer_stages_and_rolls_back_runtime_and_config(self) -> None:
         installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(

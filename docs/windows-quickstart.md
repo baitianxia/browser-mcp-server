@@ -2,7 +2,7 @@
 
 状态：当前；适用于已通过发布门禁的 Windows x64 试点包，以及明确标记的自检候选包。自检候选不能冒充正式制品，但顶层启动器会在任何持久化安装之前强制运行同一门禁。生产部署仍以 `operations.md` 为准。
 
-目标机只需准备：Windows x64、原生 Claude Code `claude.exe`、Chrome（优先）或 Edge、Python 3.10+。目标机可以完全离线；迁移包同时携带固定 Node.js、固定哈希的官方 Playwright Extension CRX 和经逐文件核对的已解压副本。系统已有的 v20.18.3 可以保留，不需要安装、升级或修复 Node/npm；旧式 npm 安装产生的 `claude.cmd` 不属于本一键流程。迁移包必须放在本机盘符目录，不使用 UNC。
+目标机只需准备：Windows x64、原生 Claude Code `claude.exe`、Chrome（优先）或 Edge、Python 3.10+。目标机可以完全离线；迁移包同时携带固定 Node.js、固定哈希的官方 Playwright Extension CRX 和经逐文件核对的已解压副本。系统已有的 v20.18.3 可以保留，不需要安装、升级或修复 Node/npm；旧式 npm 安装产生的 `claude.cmd` 不属于本一键流程。原生 Claude 已安装到 `%USERPROFILE%\.local\bin\claude.exe` 时，即使刚安装后 Explorer 或当前 PowerShell 的 `PATH` 还没刷新，向导也会直接识别，不要求重启终端或手工改环境变量。迁移包必须放在本机盘符目录，不使用 UNC。
 
 若目标浏览器尚未安装 Playwright Extension，向导先写入当前用户的 Chrome/Edge `ExtensionInstallForcelist`，尝试从包内 `file:///` CRX 全自动离线安装，不访问 Chrome Web Store。Chrome 对本地 CRX 的静默安装可能要求设备受企业管理；若浏览器没有实际安装，向导会恢复临时策略、自动打开 `chrome://extensions`/`edge://extensions`、把包内已解压目录复制到剪贴板并显示三步指引。此时保持安装窗口打开，按提示开启开发者模式、点击“加载已解压的扩展程序”并选择该目录；安装器会持续检测，成功后在同一进程自动继续，不需要再运行一次。
 
@@ -11,7 +11,7 @@
 把迁移包和相邻 `.sha256` 放进一个新的空目录，在该目录打开 PowerShell：
 
 ```powershell
-$Archive = Resolve-Path .\intranet-browser-agent-transfer-1.0.9-core-windows-x64.tar.gz
+$Archive = Resolve-Path .\intranet-browser-agent-transfer-1.0.10-core-windows-x64.tar.gz
 $Expected = (((Get-Content "$($Archive.Path).sha256" -Raw) -split '\s+')[0]).ToLowerInvariant()
 $Actual = (Get-FileHash -LiteralPath $Archive.Path -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($Actual -ne $Expected) { throw "迁移包 SHA-256 不匹配" }
@@ -22,7 +22,7 @@ tar.exe -xzf $Archive.Path
 
 ## 安装：只双击一次
 
-进入解压出的 `intranet-browser-agent-transfer-1.0.9-core-windows-x64` 目录，只双击下面这一个文件：
+进入解压出的 `intranet-browser-agent-transfer-1.0.10-core-windows-x64` 目录，只双击下面这一个文件：
 
 ```text
 INSTALL-WINDOWS-PILOT.cmd

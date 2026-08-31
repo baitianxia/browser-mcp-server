@@ -11,6 +11,18 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$ToolDiscovery = Join-Path $PSScriptRoot `
+    "toolkit\scripts\windows-tool-discovery.ps1"
+if (-not (Test-Path -LiteralPath $ToolDiscovery -PathType Leaf)) {
+    # Keep the source script directly testable before transfer-kit assembly.
+    $ToolDiscovery = Join-Path $PSScriptRoot "windows-tool-discovery.ps1"
+}
+if (-not (Test-Path -LiteralPath $ToolDiscovery -PathType Leaf)) {
+    throw "迁移包不完整，缺少 Windows 工具探测脚本：$ToolDiscovery"
+}
+. $ToolDiscovery
+
 $script:PythonExe = ""
 $script:PythonPrefix = @()
 $script:LogPath = $LogPath
@@ -177,26 +189,6 @@ function Test-BrowserInstalled {
     return [bool](Get-BrowserExecutable $Channel)
 }
 
-function Get-ClaudeExecutable {
-    $Command = Get-Command "claude.exe" -ErrorAction SilentlyContinue
-    if ($Command) {
-        $ResolvedCommand = if ($Command.Source) {
-            $Command.Source
-        } else {
-            $Command.Path
-        }
-        if ($ResolvedCommand -and
-            [IO.Path]::GetExtension($ResolvedCommand) -ieq ".exe") {
-            return $ResolvedCommand
-        }
-    }
-    $NativeCandidate = Join-Path $env:USERPROFILE ".local\bin\claude.exe"
-    if (Test-Path -LiteralPath $NativeCandidate -PathType Leaf) {
-        return $NativeCandidate
-    }
-    return ""
-}
-
 function Write-Utf8NoBom {
     param([string]$Path, [string]$Content)
     $Encoding = New-Object System.Text.UTF8Encoding($false)
@@ -327,7 +319,7 @@ try {
         ([string]$env:LOCALAPPDATA) -notmatch '^[A-Za-z]:[\\/]') {
         throw "USERPROFILE 和 LOCALAPPDATA 必须是本机盘符绝对路径。"
     }
-    $ClaudeExecutable = Get-ClaudeExecutable
+    $ClaudeExecutable = Resolve-NativeClaudeExecutable
     if (-not $ClaudeExecutable) {
         throw "未找到原生 Claude Code claude.exe；旧式 claude.cmd 不适用于此一键安装包。"
     }

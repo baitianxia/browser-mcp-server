@@ -12,6 +12,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$ToolDiscovery = Join-Path $PSScriptRoot "windows-tool-discovery.ps1"
+if (-not (Test-Path -LiteralPath $ToolDiscovery -PathType Leaf)) {
+    throw "Windows tool discovery helper is missing: $ToolDiscovery"
+}
+. $ToolDiscovery
+
 function Invoke-ReleaseGate {
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw "Windows release gate must run on Windows."
@@ -37,19 +43,9 @@ if (-not $PythonExecutable) {
     }
 }
 
+$ClaudeExecutable = Resolve-NativeClaudeExecutable `
+    -ExplicitPath $ClaudeExecutable
 if (-not $ClaudeExecutable) {
-    $ClaudeCommand = Get-Command "claude.exe" -ErrorAction SilentlyContinue
-    if ($ClaudeCommand) {
-        $ClaudeExecutable = if ($ClaudeCommand.Source) {
-            $ClaudeCommand.Source
-        } else {
-            $ClaudeCommand.Path
-        }
-    }
-}
-if (-not $ClaudeExecutable -or
-    -not (Test-Path -LiteralPath $ClaudeExecutable -PathType Leaf) -or
-    [IO.Path]::GetExtension($ClaudeExecutable) -ine ".exe") {
     throw "Native Claude Code claude.exe is required on the controlled Windows release runner."
 }
 
