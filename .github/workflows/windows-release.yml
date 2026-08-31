@@ -209,7 +209,7 @@ jobs:
               throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
           }
           $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-agent-runtime-1.0.10-core-windows-x64.tar.gz")
+              -Filter "browser-agent-runtime-1.0.11-core-windows-x64.tar.gz")
           if ($RuntimeArchives.Count -ne 1) {
               throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
           }
@@ -228,7 +228,7 @@ jobs:
               throw "Transfer-kit build failed."
           }
           $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "intranet-browser-agent-transfer-1.0.10-core-windows-x64.tar.gz")
+              -Filter "intranet-browser-agent-transfer-1.0.11-core-windows-x64.tar.gz")
           if ($TransferArchives.Count -ne 1) {
               throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
           }
@@ -461,6 +461,16 @@ jobs:
               "one-click-launcher.exit.txt"
           $CdpExitFile = Join-Path $env:RUNNER_TEMP `
               "playwright-extension-ci.exit.txt"
+          $RuntimeLockMarker = Join-Path $env:RUNNER_TEMP `
+              "runtime-publish-directory-lock.txt"
+          $RuntimeLockStdout = Join-Path $env:RUNNER_TEMP `
+              "runtime-publish-directory-lock.stdout.log"
+          $RuntimeLockStderr = Join-Path $env:RUNNER_TEMP `
+              "runtime-publish-directory-lock.stderr.log"
+          $RuntimeLockScript = Join-Path $env:GITHUB_WORKSPACE `
+              ".github\scripts\hold-runtime-publish-directory.ps1"
+          $RuntimeLockStagingRoot = Join-Path $PilotLocalAppData `
+              "IntranetBrowserAgent\staging"
           $Approval = Get-Content -LiteralPath (Join-Path `
               $env:TRANSFER_ROOT `
               "toolkit\config\playwright-extension-source.json") `
@@ -507,8 +517,10 @@ jobs:
               "IntranetBrowserAgent-Claude-CI-$env:GITHUB_RUN_ID"
           $LauncherProcess = $null
           $CdpProcess = $null
+          $RuntimeLockProcess = $null
           $LauncherFinished = $false
           $CdpFinished = $false
+          $RuntimeLockFinished = $false
           function Stop-CiChrome {
               @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
                   Stop-Process -Force -ErrorAction SilentlyContinue
@@ -546,6 +558,19 @@ jobs:
               New-NetFirewallRule -DisplayName $ClaudeFirewallRule `
                   -Direction Outbound -Program $env:NPM_CLAUDE_NODE `
                   -RemoteAddress Internet -Action Block | Out-Null
+              $RuntimeLockProcess = Start-Process -FilePath `
+                  (Join-Path $env:SystemRoot `
+                      "System32\WindowsPowerShell\v1.0\powershell.exe") `
+                  -ArgumentList @(
+                      "-NoLogo", "-NoProfile", "-NonInteractive", "-File",
+                      $RuntimeLockScript,
+                      "-StagingRoot", $RuntimeLockStagingRoot,
+                      "-MarkerPath", $RuntimeLockMarker,
+                      "-HoldSeconds", "12"
+                  ) `
+                  -RedirectStandardOutput $RuntimeLockStdout `
+                  -RedirectStandardError $RuntimeLockStderr `
+                  -PassThru
               $LauncherProcess = Start-Process -FilePath $env:ComSpec `
                   -ArgumentList @("/d", "/c", $Wrapper) `
                   -RedirectStandardOutput $LauncherStdout `
@@ -642,6 +667,28 @@ jobs:
               if ($LauncherExitCode -ne 0) {
                   throw "One-click Windows launcher failed with exit code $LauncherExitCode"
               }
+              if (-not $RuntimeLockProcess.WaitForExit(30000)) {
+                  throw "The runtime publish fault injector did not finish."
+              }
+              if ($RuntimeLockProcess.ExitCode -ne 0) {
+                  throw "The runtime publish fault injector failed with exit code $($RuntimeLockProcess.ExitCode)."
+              }
+              $RuntimeLockFinished = $true
+              if (-not (Test-Path -LiteralPath $RuntimeLockMarker -PathType Leaf)) {
+                  throw "The runtime publish fault injector did not acquire its directory handle."
+              }
+              $CurrentInstallLog = Get-ChildItem -LiteralPath `
+                  (Join-Path $env:TEMP "IntranetBrowserAgent") `
+                  -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
+                  Sort-Object LastWriteTime -Descending |
+                  Select-Object -First 1
+              if (-not $CurrentInstallLog -or
+                  -not (Select-String -LiteralPath $CurrentInstallLog.FullName `
+                      -SimpleMatch "RUNTIME PUBLISH RETRY" -Quiet) -or
+                  -not (Select-String -LiteralPath $CurrentInstallLog.FullName `
+                      -SimpleMatch "RUNTIME PUBLISH RECOVERED" -Quiet)) {
+                  throw "The installer did not prove runtime publish retry and recovery."
+              }
               $InstalledManifestPath = Join-Path $env:LOCALAPPDATA `
                   "IntranetBrowserAgent\config\pilot\deployment.windows-pilot.json"
               $InstalledManifest = Get-Content -LiteralPath $InstalledManifestPath `
@@ -680,6 +727,12 @@ jobs:
               $CdpFinished = $true
               $LauncherFinished = $true
           } finally {
+              if ($RuntimeLockProcess -and -not $RuntimeLockFinished -and
+                  -not $RuntimeLockProcess.HasExited) {
+                  Stop-Process -Id $RuntimeLockProcess.Id -Force `
+                      -ErrorAction SilentlyContinue
+                  $null = $RuntimeLockProcess.WaitForExit(5000)
+              }
               if ($LauncherProcess -and -not $LauncherFinished -and
                   -not $LauncherProcess.HasExited) {
                   # The launcher is cmd -> release gate -> installer. Kill the
@@ -737,6 +790,14 @@ jobs:
                   Get-Content -LiteralPath $LauncherStderr -ErrorAction SilentlyContinue |
                       Write-Host
               }
+              if (Test-Path -LiteralPath $RuntimeLockStdout) {
+                  Get-Content -LiteralPath $RuntimeLockStdout `
+                      -ErrorAction SilentlyContinue | Write-Host
+              }
+              if (Test-Path -LiteralPath $RuntimeLockStderr) {
+                  Get-Content -LiteralPath $RuntimeLockStderr `
+                      -ErrorAction SilentlyContinue | Write-Host
+              }
           }
 
       - name: Verify release-gate and installed-state evidence
@@ -767,6 +828,18 @@ jobs:
           if (-not (Select-String -LiteralPath $InstallLogs[0].FullName `
               -SimpleMatch "SUCCESS: installation and preflight completed" -Quiet)) {
               throw "The installer success marker is missing."
+          }
+          if (-not (Select-String -LiteralPath $InstallLogs[0].FullName `
+              -SimpleMatch "RUNTIME PUBLISH RETRY" -Quiet) -or
+              -not (Select-String -LiteralPath $InstallLogs[0].FullName `
+              -SimpleMatch "RUNTIME PUBLISH RECOVERED" -Quiet)) {
+              throw "Runtime publish retry/recovery evidence is missing."
+          }
+          $InstallerStarts = @(Select-String -LiteralPath `
+              $InstallLogs[0].FullName `
+              -SimpleMatch "Windows pilot installer started")
+          if ($InstallerStarts.Count -ne 1) {
+              throw "The one-click flow did not use exactly one installer process."
           }
           $Summary = Join-Path $env:LOCALAPPDATA "IntranetBrowserAgent\INSTALLATION.txt"
           $ManifestPath = Join-Path $env:LOCALAPPDATA `
@@ -879,7 +952,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: intranet-browser-agent-transfer-1.0.10-windows-x64-${{ github.run_id }}
+          name: intranet-browser-agent-transfer-1.0.11-windows-x64-${{ github.run_id }}
           path: |
             ${{ env.TRANSFER_ARCHIVE }}
             ${{ env.TRANSFER_ARCHIVE }}.sha256

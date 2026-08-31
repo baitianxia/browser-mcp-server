@@ -259,6 +259,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         exercise = (
             ROOT / ".github" / "scripts" / "exercise-extension-mcp.py"
         ).read_text(encoding="utf-8")
+        directory_lock = (
+            ROOT
+            / ".github"
+            / "scripts"
+            / "hold-runtime-publish-directory.ps1"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("CI-only session surrogate", loader)
         self.assertIn("not evidence that the manual load survives a restart", loader)
@@ -308,6 +314,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("playwright-extension-ci-stop.txt", workflow)
         self.assertIn("one-click-launcher.exit.txt", workflow)
         self.assertIn("playwright-extension-ci.exit.txt", workflow)
+        self.assertIn("hold-runtime-publish-directory.ps1", workflow)
+        self.assertIn("RUNTIME PUBLISH RETRY", workflow)
+        self.assertIn("RUNTIME PUBLISH RECOVERED", workflow)
+        self.assertIn("exactly one installer process", workflow)
         self.assertIn("Read-CiExitCode", workflow)
         self.assertNotIn("$LauncherProcess.ExitCode", workflow)
         self.assertNotIn("$CdpProcess.ExitCode", workflow)
@@ -332,6 +342,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("OFFLINE-INTRANET-SESSION-REUSED", exercise)
         self.assertIn("session_cookie=reused", exercise)
         self.assertNotIn('"browser_close"', exercise)
+
+        self.assertIn("CreateFile", directory_lock)
+        self.assertIn("FILE_SHARE_DELETE", directory_lock)
+        self.assertIn("CI RUNTIME PUBLISH DIRECTORY LOCKED", directory_lock)
+        self.assertIn("CI RUNTIME PUBLISH DIRECTORY RELEASED", directory_lock)
 
     @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell 5.1")
     def test_native_claude_resolver_finds_official_path_when_path_is_stale(
@@ -491,11 +506,21 @@ class WindowsPilotSetupTests(unittest.TestCase):
         )
         staged_node_verify = installer.index("$StagedBundledNodeRoot =")
         runtime_publish = installer.index(
-            "Move-Item -LiteralPath $StagedRuntimeRoot -Destination $RuntimeRoot"
+            "Publish-StagedRuntime -Source $StagedRuntimeRoot -Destination $RuntimeRoot"
         )
         self.assertLess(staged_runtime_verify, runtime_publish)
         self.assertLess(staged_runtime_verify, staged_node_verify)
         self.assertLess(staged_node_verify, runtime_publish)
+        self.assertIn("function Test-RetryableRuntimePublishError", installer)
+        self.assertIn("function Publish-StagedRuntime", installer)
+        self.assertIn(
+            "Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop",
+            installer,
+        )
+        self.assertIn("RUNTIME PUBLISH RETRY", installer)
+        self.assertIn("RUNTIME PUBLISH RECOVERED", installer)
+        self.assertIn("[Math]::Min($DelayMilliseconds * 2, 5000)", installer)
+        self.assertIn("无需重新运行", installer)
         self.assertIn(
             "Remove-Item -LiteralPath $RuntimeExtractionRoot -Recurse -Force -ErrorAction SilentlyContinue",
             installer,

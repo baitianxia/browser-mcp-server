@@ -29,7 +29,7 @@ from validate_playwright_extension import (
 )
 
 
-TOOLKIT_VERSION = "1.0.10"
+TOOLKIT_VERSION = "1.0.11"
 RUNTIME_PREFIX = "browser-agent-runtime-"
 RUNTIME_SUFFIX = ".tar.gz"
 RUNTIME_NAME_PATTERN = re.compile(

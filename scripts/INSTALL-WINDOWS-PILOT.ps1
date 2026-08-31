@@ -133,6 +133,87 @@ function Invoke-Python {
     }
 }
 
+function Test-RetryableRuntimePublishError {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Management.Automation.ErrorRecord]$ErrorRecord
+    )
+    if ($ErrorRecord.CategoryInfo.Category -eq
+        [Management.Automation.ErrorCategory]::PermissionDenied) {
+        return $true
+    }
+    $ErrorId = [string]$ErrorRecord.FullyQualifiedErrorId
+    if ($ErrorId -match '(?i)(UnauthorizedAccess|MoveDirectoryItemIOError|MoveFileInfoItemUnauthorizedAccessError)') {
+        return $true
+    }
+    $Exception = $ErrorRecord.Exception
+    while ($null -ne $Exception) {
+        if ($Exception -is [UnauthorizedAccessException] -or
+            $Exception -is [IO.IOException]) {
+            return $true
+        }
+        $Exception = $Exception.InnerException
+    }
+    return $false
+}
+
+function Publish-StagedRuntime {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [ValidateRange(2, 100)][int]$MaximumAttempts = 25
+    )
+    $DelayMilliseconds = 250
+    for ($Attempt = 1; $Attempt -le $MaximumAttempts; $Attempt++) {
+        try {
+            Move-Item -LiteralPath $Source -Destination $Destination -ErrorAction Stop
+            if (Test-Path -LiteralPath $Source) {
+                throw "运行时发布返回成功，但暂存源目录仍然存在：$Source"
+            }
+            if (-not (Test-Path -LiteralPath $Destination -PathType Container)) {
+                throw "运行时发布返回成功，但最终版本目录不存在：$Destination"
+            }
+            if ($Attempt -gt 1) {
+                Write-Host "暂存运行时占用已释放，安装继续。" -ForegroundColor Green
+                Write-InstallLog ("RUNTIME PUBLISH RECOVERED: attempts={0}; destination={1}" -f `
+                    $Attempt, $Destination)
+            } else {
+                Write-InstallLog "RUNTIME PUBLISH COMPLETED: $Destination"
+            }
+            return
+        } catch {
+            $MoveError = $_
+            $SourcePresent = Test-Path -LiteralPath $Source -PathType Container
+            $DestinationPresent = Test-Path -LiteralPath $Destination -PathType Container
+            if (-not $SourcePresent -and $DestinationPresent) {
+                Write-InstallLog ("RUNTIME PUBLISH RECOVERED: move completed while reporting an error; destination={0}" -f `
+                    $Destination)
+                return
+            }
+            if (-not $SourcePresent -or $DestinationPresent) {
+                throw ("运行时发布状态不明确，未继续重试。sourcePresent={0}; destinationPresent={1}; error={2}" -f `
+                    $SourcePresent, $DestinationPresent, $MoveError.Exception.Message)
+            }
+            if (-not (Test-RetryableRuntimePublishError $MoveError)) {
+                throw
+            }
+            if ($Attempt -ge $MaximumAttempts) {
+                throw ("暂存运行时被安全软件或其他进程持续占用，安装器已在同一进程中自动重试 {0} 次但仍无法发布。未覆盖最终版本目录。原始错误：{1}" -f `
+                    $MaximumAttempts, $MoveError.Exception.Message)
+            }
+            if ($Attempt -eq 1) {
+                Write-Host "暂存运行时正被安全软件或其他进程占用；安装器将自动等待并继续，无需重新运行。" -ForegroundColor Yellow
+            } elseif (($Attempt % 5) -eq 0) {
+                Write-Host "仍在等待暂存运行时释放（已重试 $Attempt 次）..." -ForegroundColor Yellow
+            }
+            Write-InstallLog ("RUNTIME PUBLISH RETRY {0}/{1}: {2}" -f `
+                $Attempt, $MaximumAttempts, $MoveError.Exception.Message)
+            Start-Sleep -Milliseconds $DelayMilliseconds
+            $DelayMilliseconds = [Math]::Min($DelayMilliseconds * 2, 5000)
+        }
+    }
+}
+
 function Get-NodeInfo {
     param([string]$Executable)
     $Output = @()
@@ -538,7 +619,7 @@ try {
         if (Test-Path -LiteralPath $RuntimeRoot) {
             throw "运行版本目录在安装期间被其他进程创建：$RuntimeRoot"
         }
-        Move-Item -LiteralPath $StagedRuntimeRoot -Destination $RuntimeRoot
+        Publish-StagedRuntime -Source $StagedRuntimeRoot -Destination $RuntimeRoot
         Remove-Item -LiteralPath $RuntimeExtractionRoot -Recurse -Force
         $RuntimeExtractionRoot = $null
         Invoke-Python @($Verifier, $RuntimeRoot)

@@ -11,7 +11,7 @@
 把迁移包和相邻 `.sha256` 放进一个新的空目录，在该目录打开 PowerShell：
 
 ```powershell
-$Archive = Resolve-Path .\intranet-browser-agent-transfer-1.0.10-core-windows-x64.tar.gz
+$Archive = Resolve-Path .\intranet-browser-agent-transfer-1.0.11-core-windows-x64.tar.gz
 $Expected = (((Get-Content "$($Archive.Path).sha256" -Raw) -split '\s+')[0]).ToLowerInvariant()
 $Actual = (Get-FileHash -LiteralPath $Archive.Path -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($Actual -ne $Expected) { throw "迁移包 SHA-256 不匹配" }
@@ -22,7 +22,7 @@ tar.exe -xzf $Archive.Path
 
 ## 安装：只双击一次
 
-进入解压出的 `intranet-browser-agent-transfer-1.0.10-core-windows-x64` 目录，只双击下面这一个文件：
+进入解压出的 `intranet-browser-agent-transfer-1.0.11-core-windows-x64` 目录，只双击下面这一个文件：
 
 ```text
 INSTALL-WINDOWS-PILOT.cmd
@@ -39,7 +39,7 @@ INSTALL-WINDOWS-PILOT.cmd
 1. 在临时目录运行 Windows 发布门禁，不修改真实 Claude 配置。
 2. 检查 Windows x64 和 Python，校验迁移目录和内层运行包。
 3. 校验包内官方 Playwright Extension CRX 的固定 ID、版本、大小、SHA-256、CRX3 结构、签名后的 Web Store 元数据和 `<all_urls>` 权限，并逐文件验证已解压副本；已安装则复用。未安装时先发布 CRX/已解压副本，生成只引用本机 `file:///` 的 update manifest 并尝试当前用户策略安装；未实际出现时恢复临时策略，打开扩展页给出唯一目录并等待人工加载，检测成功后自动进入第 4 步。
-4. 在 `%LOCALAPPDATA%\IntranetBrowserAgent\staging\r-*` 的短路径同盘目录解压固定运行时，按发布批准哈希校验包内 Windows x64 Node.js 的来源、哈希和版本，通过后才发布版本目录；系统 Node.js 保持原状。
+4. 在 `%LOCALAPPDATA%\IntranetBrowserAgent\staging\r-*` 的短路径同盘目录解压固定运行时，按发布批准哈希校验包内 Windows x64 Node.js 的来源、哈希和版本，通过后才发布版本目录；系统 Node.js 保持原状。若 Defender/EDR 短暂占用刚验证的目录，窗口会显示自动等待并在释放后继续，不要关闭窗口或重新双击安装器。
 5. 自动生成 `extension` 模式部署清单和 Playwright 配置，显式绑定自动识别出的 `chrome`/`msedge` channel 及实际浏览器 `.exe`，先在 `%LOCALAPPDATA%` 内暂存并 preflight，再整目录切换；目标路径经过 link/junction 或越界时自动停止。浏览器使用自己的 last-used Profile，因此无需填写 Profile 或项目目录。
 6. 先在临时目录自动演练首次安装、升级、条目/环境错写和 `remove/add/get` 失败回滚，再备份真实 Claude Code 用户配置，通过 `--scope user` 注册 MCP；注册项直接执行包内 `node.exe + 固定 cli.js + --browser=<channel> + --executable-path=<自动识别的 browser.exe> + config`，不依赖 `.cmd` shell shim，并核对实际 user-scope 命令、参数和固定环境。遗留的 Playwright MCP 配置覆盖变量、`NODE_OPTIONS`、`NODE_PATH` 不会改写包内配置，也不需要用户填写。失败时逐字节恢复用户配置、旧部署配置和本次新增的浏览器策略。
 7. 先对安装后的最终路径执行 preflight，再使用与最终注册一致的直接命令完成 MCP stdio `initialize` 和 `tools/list` 握手，自动确认所有 user-scope 路径位于当前用户 `%LOCALAPPDATA%`、不经过子级 link/junction，并确认 extension 配置和浏览器 channel；出现任何 `FAIL` 就停止。全程不修改项目 `.mcp.json` 或 `CLAUDE.md`。
