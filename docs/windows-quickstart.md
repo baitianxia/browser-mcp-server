@@ -11,7 +11,7 @@
 把迁移包和相邻 `.sha256` 放进一个新的空目录，在该目录打开 PowerShell：
 
 ```powershell
-$Archive = Resolve-Path .\intranet-browser-agent-transfer-1.0.14-core-windows-x64.tar.gz
+$Archive = Resolve-Path .\intranet-browser-agent-transfer-1.0.15-core-windows-x64.tar.gz
 $Expected = (((Get-Content "$($Archive.Path).sha256" -Raw) -split '\s+')[0]).ToLowerInvariant()
 $Actual = (Get-FileHash -LiteralPath $Archive.Path -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($Actual -ne $Expected) { throw "迁移包 SHA-256 不匹配" }
@@ -22,7 +22,7 @@ tar.exe -xzf $Archive.Path
 
 ## 安装：只双击一次
 
-进入解压出的 `intranet-browser-agent-transfer-1.0.14-core-windows-x64` 目录，只双击下面这一个文件：
+进入解压出的 `intranet-browser-agent-transfer-1.0.15-core-windows-x64` 目录，只双击下面这一个文件：
 
 ```text
 INSTALL-WINDOWS-PILOT.cmd
@@ -39,8 +39,8 @@ INSTALL-WINDOWS-PILOT.cmd
 1. 检查 Windows x64、Python 和当前用户已有的 Claude Code，校验迁移包来自 Windows x64 原生发布流水线；交叉构建或未完成目标 CLI 验证的包会在写入前拒绝。
 2. 校验迁移目录、内层运行包以及官方 Playwright Extension CRX 的固定 ID、版本、哈希和已解压副本；已安装扩展则直接复用。未安装时先尝试本机离线策略；策略访问被拒绝等准备失败会直接降级，已写策略未生效则先恢复，再显示扩展页地址和唯一目录并等待人工加载，成功后在同一进程继续。自动打开页面或复制路径失败不影响等待。
 3. 在 `%LOCALAPPDATA%\IntranetBrowserAgent\staging\r-*` 的短路径同盘目录解压固定运行时，校验包内 Windows x64 Node.js 的批准来源、逐文件哈希、PE 架构和实际版本，通过后才原子发布。运行时、扩展和配置的整目录切换使用同一套原子移动与自动退避重试；安全软件短暂占用时原进程等待释放后继续，无需重新双击。若发现上次遗留的扩展目录不完整，向导会先把它保留到唯一备份目录，再自动重建。
-4. 自动生成初始 `extension + 有头 + 每次批准` 部署清单和 Playwright 配置，绑定自动识别出的 `chrome`/`msedge` 及实际浏览器 `.exe`，在 `%LOCALAPPDATA%` 内暂存、preflight 后整目录切换。同时安装后续设置入口；浏览器初始使用自己的 last-used Profile，无需填写 Profile 或项目目录。后续失败时本次配置会被隔离到备份目录，再恢复旧配置。
-5. 备份真实 Claude Code 用户配置，通过 `--scope user` 事务化执行 `remove → add → get`；注册项直接执行包内 `node.exe + 固定 cli.js + --browser=<channel> + --executable-path=<browser.exe> + config`，并核对实际命令、参数和固定环境。失败时逐字节恢复用户配置、旧部署配置和本次新增的浏览器策略。
+4. 自动生成初始 `extension + 有头 + 每次批准 + 精简快照 + 动态页面兼容` 部署清单和 Playwright/交互配置，绑定自动识别出的 `chrome`/`msedge` 及实际浏览器 `.exe`，在 `%LOCALAPPDATA%` 内暂存、preflight 后整目录切换。同时安装后续设置入口；浏览器初始使用自己的 last-used Profile，无需填写 Profile 或项目目录。后续失败时本次配置会被隔离到备份目录，再恢复旧配置。
+5. 备份真实 Claude Code 用户配置，通过 `--scope user` 事务化执行 `remove → add → get`；注册项直接执行包内 `node.exe + 固定兼容层 + --browser=<channel> + --executable-path=<browser.exe> + config`，兼容层再启动同包上游 Playwright CLI，并核对实际命令、参数和固定环境。失败时逐字节恢复用户配置、旧部署配置和本次新增的浏览器策略。
 6. 对最终路径再次执行 preflight，并用与最终注册一致的直接命令完成 MCP stdio `initialize` 和 `tools/list` 握手；出现任何 `FAIL` 就停止。全程不修改项目 `.mcp.json` 或 `CLAUDE.md`。
 
 首次安装时 Claude 明确报告没有可删除的旧 user-scope MCP 条目是正常情况，向导会记录提示后继续注册；其他删除错误会自动恢复并停止，不需要手工执行任何 Claude/npm 命令。若没有找到可用的现有 Claude Code，向导会在任何真实配置变更前明确停止，不会自行安装。若你本来就设置了 `CLAUDE_CONFIG_DIR`，向导会自动使用它；为避免 Claude 把配置写进当前项目，它必须是本机盘符绝对路径，不能写相对路径、`~` 或 UNC。
@@ -62,6 +62,8 @@ INSTALL-WINDOWS-PILOT.cmd
 3. 使用独立 Profile，不共享原 Chrome/Edge 登录态。可选有头或无头；首次登录、MFA 或验证码必须先用有头模式，登录完成后再切无头。
 
 Extension 连接的是正在显示的浏览器，因此不能使用无头。设置工具会先验证新配置和真实 MCP 握手，成功后才切换；失败会恢复原配置。保存后重启 Claude Code。
+
+同一入口还可切换“精简/完整快照”和“动态页面兼容/标准上游行为”。默认精简模式直接返回限深快照，不需要再读取快照文件；动态兼容模式会处理常见的只读自定义下拉、Element UI 重绘点击、tooltip 全文和异步翻页确认。
 
 向导不会运行 `npm install`、`pnpm install`、`npx`，不会修改系统 Node.js，也不会临时绕过 PowerShell 执行策略。若脚本被企业策略拦截，应走组织签名或脚本批准流程。
 

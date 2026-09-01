@@ -13,5 +13,5 @@ if not defined NODE_EXECUTABLE (
   exit /b 127
 )
 
-"%NODE_EXECUTABLE%" "%RUNTIME_ROOT%\node_modules\@playwright\mcp\cli.js" %*
+"%NODE_EXECUTABLE%" "%RUNTIME_ROOT%\bin\intranet-browser-agent-mcp.js" %*
 exit /b %ERRORLEVEL%

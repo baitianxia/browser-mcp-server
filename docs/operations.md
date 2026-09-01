@@ -27,7 +27,7 @@ GitHub Actions 仅在上述有网构建 VM 中使用 npm 安装精确的 pnpm 11
 
 ## 2. 内网导入
 
-Windows 试点只使用发布流水线上传的 Windows x64 正式迁移包，并双击顶层 `INSTALL-WINDOWS-PILOT.cmd` 一次。launcher 直接启动单个安装事务，不在目标机运行完整测试、PowerShell AST 扫描或假 Claude 故障矩阵。安装器先解析当前 `PATH` 的原生 `claude.exe` 或 npm `claude.cmd`，再检查 `%USERPROFILE%\.local\bin\claude.exe`；npm 入口只有在其同级标准 Claude Code 包、bin 声明和现有 `node.exe` 都可验证时，才转换为直接 `node.exe + 已安装 cli.js` 调用，不执行批处理字符串，也不运行 npm。随后检查现有 Claude Code、平台、Python 和 `KIT-METADATA.json`，只接受 Windows x64 原生构建、`crossBuilt=false` 且已完成目标 CLI 冒烟的包，并验证迁移目录、运行包、官方 CRX 及其已解压副本；包内 Node 按固定批准哈希、来源、文件哈希、AMD64 PE 和实际版本再次验证。系统 Node 不参与 Playwright MCP，但 npm 版 Claude Code 可继续使用其既有 Node。安装器按 Chrome 优先、Edge 回退自动识别浏览器，将运行时和扩展先放到 `%LOCALAPPDATA%\IntranetBrowserAgent\staging` 下的唯一短路径同盘目录，校验后发布。运行时、扩展和配置的发布、备份、隔离与回滚共用原子目录移动；被安全软件短暂占用时，原进程自动退避重试并在释放后继续，无需重新启动。已有扩展目录不完整或校验失败时先保留到唯一备份路径，再从迁移包重建；只有目标目录被外部创建、状态不明确或持续拒绝超过恢复窗口时才停止。缺少扩展时先尝试本地 CRX 用户策略；30 秒内浏览器未确认安装，就恢复临时策略、打开扩展管理页、把 `%LOCALAPPDATA%` 下的已解压扩展目录复制到剪贴板并显示三步指引。用户加载后原进程自动检测并继续；默认持续等待。配置也先在该根目录内暂存/preflight，再整目录切换；后续失败时把本次配置隔离进备份目录并恢复旧目录，不递归删除不明确状态。Claude Code 注册由 Python 事务模块执行：先备份用户配置，按固定 user-scope `remove → add → get` 流程注册 `intranet-browser-agent`，并直接核对真实 user-scope 条目指向包内 `node.exe + cli.js` 且环境与 `config/windows-mcp-environment.json` 完全一致；任一步失败就恢复 Claude 用户配置和旧部署配置。随后用最终命令完成真实 MCP stdio 握手。该 MCP 对当前用户所有未被同名高优先级配置覆盖的项目生效；向导不请求 UAC、不接收项目路径、不写项目文件。找不到可用的现有 Claude Code 时，安装器在任何真实配置变更前停止，绝不自行安装。
+Windows 试点只使用发布流水线上传的 Windows x64 正式迁移包，并双击顶层 `INSTALL-WINDOWS-PILOT.cmd` 一次。launcher 直接启动单个安装事务，不在目标机运行完整测试、PowerShell AST 扫描或假 Claude 故障矩阵。安装器先解析当前 `PATH` 的原生 `claude.exe` 或 npm `claude.cmd`，再检查 `%USERPROFILE%\.local\bin\claude.exe`；npm 入口只有在其同级标准 Claude Code 包、bin 声明和现有 `node.exe` 都可验证时，才转换为直接 `node.exe + 已安装 cli.js` 调用，不执行批处理字符串，也不运行 npm。随后检查现有 Claude Code、平台、Python 和 `KIT-METADATA.json`，只接受 Windows x64 原生构建、`crossBuilt=false` 且已完成目标 CLI 冒烟的包，并验证迁移目录、运行包、官方 CRX 及其已解压副本；包内 Node 按固定批准哈希、来源、文件哈希、AMD64 PE 和实际版本再次验证。系统 Node 不参与 Playwright MCP，但 npm 版 Claude Code 可继续使用其既有 Node。安装器按 Chrome 优先、Edge 回退自动识别浏览器，将运行时和扩展先放到 `%LOCALAPPDATA%\IntranetBrowserAgent\staging` 下的唯一短路径同盘目录，校验后发布。运行时、扩展和配置的发布、备份、隔离与回滚共用原子目录移动；被安全软件短暂占用时，原进程自动退避重试并在释放后继续，无需重新启动。已有扩展目录不完整或校验失败时先保留到唯一备份路径，再从迁移包重建；只有目标目录被外部创建、状态不明确或持续拒绝超过恢复窗口时才停止。缺少扩展时先尝试本地 CRX 用户策略；30 秒内浏览器未确认安装，就恢复临时策略、打开扩展管理页、把 `%LOCALAPPDATA%` 下的已解压扩展目录复制到剪贴板并显示三步指引。用户加载后原进程自动检测并继续；默认持续等待。配置也先在该根目录内暂存/preflight，再整目录切换；后续失败时把本次配置隔离进备份目录并恢复旧目录，不递归删除不明确状态。Claude Code 注册由 Python 事务模块执行：先备份用户配置，按固定 user-scope `remove → add → get` 流程注册 `intranet-browser-agent`，并直接核对真实 user-scope 条目指向包内 `node.exe + bin\intranet-browser-agent-mcp.js` 且环境与 `config/windows-mcp-environment.json` 完全一致；任一步失败就恢复 Claude 用户配置和旧部署配置。随后用最终命令完成真实 MCP stdio 握手。该 MCP 对当前用户所有未被同名高优先级配置覆盖的项目生效；向导不请求 UAC、不接收项目路径、不写项目文件。找不到可用的现有 Claude Code 时，安装器在任何真实配置变更前停止，绝不自行安装。
 
 安装事务同时把设置所需的固定 Python/PowerShell 工具、环境策略和渲染模板复制到版本化 `%LOCALAPPDATA%\IntranetBrowserAgent\maintenance\<版本>`，校验已有版本的逐文件哈希后才复用，并原子更新稳定入口 `BROWSER-AGENT-SETTINGS.cmd`。迁移包删除后设置入口仍可使用。无效旧设置工具先隔离到唯一备份，发布失败必须恢复原版本，不能让这项后置能力把已存在的可用状态留成半成品。
 
@@ -56,7 +56,7 @@ powershell.exe -NoProfile -File .\toolkit\scripts\verify-windows-release.ps1 `
 2. 在解压前用 `Get-FileHash .\<transfer.tar.gz> -Algorithm SHA256` 与相邻 `.sha256` 比对。
 3. 用 Windows 自带 `tar.exe -xzf .\<transfer.tar.gz>` 解压迁移包，进入其顶层目录，先执行 `py -3 .\toolkit\scripts\verify-bundle.py .`，再执行 `py -3 .\toolkit\scripts\verify-bundle.py .\runtime\<runtime.tar.gz>`。Windows 运行包的 `SYMLINKS.json` 必须为空。
 4. 读取 `KIT-METADATA.json` 中嵌入的运行包构建元数据，确认 `buildHost` 与 `target` 都为 `windows/x64`、`crossBuilt=false`、`targetCliSmokeTested=true` 且 `bundledNode=true`。验证解压目录的 `node` 子目录只含 `node.exe`、`LICENSE`、`VERSION`、`SOURCE.json`，并执行 `validate_node_distribution.py --approval-file .\toolkit\config\windows-node-sources.json`。任何交叉构建候选都不得安装。
-5. production 将运行包解压到新的版本目录，例如 `C:\ProgramData\IntranetBrowserAgent\releases\browser-agent-runtime-1.0.14-core-windows-x64`；user-scope pilot 则使用 `%LOCALAPPDATA%\IntranetBrowserAgent\releases\...`。再次对解压后的运行目录执行同一校验器，再与其 `BUILD-METADATA.json` 对照。
+5. production 将运行包解压到新的版本目录，例如 `C:\ProgramData\IntranetBrowserAgent\releases\browser-agent-runtime-1.0.15-core-windows-x64`；user-scope pilot 则使用 `%LOCALAPPDATA%\IntranetBrowserAgent\releases\...`。再次对解压后的运行目录执行同一校验器，再与其 `BUILD-METADATA.json` 对照。
 6. 不直接覆盖当前版本。完成预检后，再由配置管理把 `C:\ProgramData\IntranetBrowserAgent\current` junction 切到新版本目录。
 
 迁移包顶层 `START-HERE.md` 和 `toolkit/docs/windows-quickstart.md` 给出试点最短操作路径；若与本文冲突，以本文为准。
@@ -90,7 +90,7 @@ powershell.exe -NoProfile -File .\toolkit\scripts\verify-windows-release.ps1 `
 
 ### Windows pilot 安装后设置
 
-双击 `%LOCALAPPDATA%\IntranetBrowserAgent\BROWSER-AGENT-SETTINGS.cmd`。入口只允许：现有登录态 + 每次批准、现有登录态 + 当前用户令牌、独立 Profile + 有头/无头。选择保存令牌时需要人工复制一次；其他切换不需要迁移包、不重新安装扩展或运行时。设置工具取得同一安装锁，在 `%LOCALAPPDATA%` 暂存并完成 render、preflight、MCP 握手后，才原子切换配置并事务化重注册 Claude user-scope MCP；失败恢复旧配置和 Claude 用户配置。成功后重启 Claude Code。
+双击 `%LOCALAPPDATA%\IntranetBrowserAgent\BROWSER-AGENT-SETTINGS.cmd`。入口允许选择：现有登录态 + 每次批准、现有登录态 + 当前用户令牌、独立 Profile + 有头/无头；还可独立切换“精简/完整快照”和“动态兼容/标准上游行为”。默认“精简 + 动态兼容”会在导航后等待 DOM 稳定、内联返回限深快照，并提供自定义下拉、tooltip 与点击后状态确认工具；“完整 + 标准”用于诊断或严格保留上游行为。选择保存令牌时需要人工复制一次；其他切换不需要迁移包、不重新安装扩展或运行时。设置工具取得同一安装锁，在 `%LOCALAPPDATA%` 暂存并完成 render、preflight、MCP 握手后，才原子切换配置并事务化重注册 Claude user-scope MCP；失败恢复旧配置和 Claude 用户配置。成功后重启 Claude Code。
 
 ### cdp
 
@@ -103,6 +103,7 @@ powershell.exe -NoProfile -File .\toolkit\scripts\verify-windows-release.ps1 `
 - 开始前运行 `preflight`。它会先确认主机确为 Windows x64，并按当前模式核对 Extension 授权边界或独立 Profile/显示方式；user scope 不绑定项目根，project/managed scope 才核对 `workspaceRoots`。在尚未复制到最终目录的发布验证中，用 `--runtime-root` 和 `--config-root` 指向暂存目录；project/managed scope 需要时再使用 `--project-root`。
 - 人确认当前账号、租户和环境；生产与测试必须视觉上可区分。
 - Agent 每次只做一步并重新观察。
+- 默认优先使用兼容层的内联精简快照；仅在确需完整可访问性树或留存证据时单次请求完整外置快照。动态页面翻页/筛选应使用 `browser_click_and_wait` 的结果条件，自定义只读下拉使用 `browser_select_custom_option`，tooltip 全文使用 `browser_read_tooltip`，不要先固定 sleep。
 - 高风险动作在最后一步前由人确认。
 - 遇到身份漂移、页面注入指令、TLS 警告或并发控制迹象立即停止；production 还应在导航到未列出的 origin 时停止。
 - 不需要的截图、下载和日志在任务结束后按清单保留策略清理。

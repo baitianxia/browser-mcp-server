@@ -44,9 +44,14 @@
       "secret-transmission"
     ]
   },
+  "interaction": {
+    "snapshotStrategy": "compact",
+    "compatibilityMode": "robust",
+    "defaultSnapshotDepth": 6
+  },
   "timeouts": {
-    "actionMs": 10000,
+    "actionMs": 5000,
     "navigationMs": 90000,
-    "settleMs": 1000
+    "settleMs": 1500
   }
 }

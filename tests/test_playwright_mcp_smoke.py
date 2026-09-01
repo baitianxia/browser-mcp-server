@@ -54,7 +54,9 @@ FAKE_SERVER = textwrap.dedent(
             }), flush=True)
         elif message.get("id") == 2:
             names = [] if os.environ.get("EMPTY_TOOLS") else [
-                "browser_navigate", "browser_snapshot"
+                "browser_navigate", "browser_snapshot",
+                "browser_click_and_wait", "browser_read_tooltip",
+                "browser_select_custom_option"
             ]
             print(json.dumps({
                 "jsonrpc": "2.0",
@@ -80,7 +82,7 @@ class PlaywrightMcpSmokeTests(unittest.TestCase):
                 Path(sys.executable), server, config
             )
             self.assertEqual("fixture", version)
-            self.assertEqual(2, tool_count)
+            self.assertEqual(5, tool_count)
 
     def test_empty_tool_list_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -103,7 +105,7 @@ class PlaywrightMcpSmokeTests(unittest.TestCase):
                     Path(sys.executable), server, config
                 )
             self.assertEqual("fixture", version)
-            self.assertEqual(2, tool_count)
+            self.assertEqual(5, tool_count)
 
     def test_extension_browser_channel_is_forwarded(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -126,7 +128,7 @@ class PlaywrightMcpSmokeTests(unittest.TestCase):
                     browser_executable=browser,
                 )
             self.assertEqual("fixture", version)
-            self.assertEqual(2, tool_count)
+            self.assertEqual(5, tool_count)
 
 
 if __name__ == "__main__":

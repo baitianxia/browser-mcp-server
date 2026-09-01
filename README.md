@@ -8,7 +8,9 @@
 
 - 打开和读取网页。
 - 点击、输入、选择、查询和填写表单。
+- 兼容只读自定义下拉框、动态重绘按钮、tooltip 全文和异步翻页。
 - 操作标签页、弹窗、键盘和鼠标。
+- 默认返回精简快照，减少大页面占用；也可切换完整快照。
 - 截图并检查操作结果。
 - 复用用户已登录网页中的 Cookie、SSO 和登录状态。
 - 也可改用独立浏览器 Profile，不共享原有登录状态。
@@ -84,7 +86,7 @@ intranet-browser-agent-transfer-<版本>-windows-x64-ready.zip
 %LOCALAPPDATA%\IntranetBrowserAgent\BROWSER-AGENT-SETTINGS.cmd
 ```
 
-可以选择记住当前用户的扩展授权（首次复制一次令牌）、恢复每次连接确认，或使用不共享原 Chrome/Edge 登录态的独立 Profile。独立 Profile 可选有头或无头；首次登录建议先用有头模式。保存后重启 Claude Code 即可，不需要保留安装包或重新安装。
+可以选择记住当前用户的扩展授权（首次复制一次令牌）、恢复每次连接确认，或使用不共享原 Chrome/Edge 登录态的独立 Profile。独立 Profile 可选有头或无头；首次登录建议先用有头模式。还可以自由切换“精简/完整快照”和“动态页面兼容/标准上游行为”。保存后重启 Claude Code 即可，不需要保留安装包或重新安装。
 
 ## 安装包还需要保留吗
 

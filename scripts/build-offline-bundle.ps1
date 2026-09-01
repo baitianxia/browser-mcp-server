@@ -135,7 +135,7 @@ switch ($Architecture) {
 
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
-$ArtifactName = "browser-agent-runtime-1.0.14-$Profile-windows-$TargetMachine"
+$ArtifactName = "browser-agent-runtime-1.0.15-$Profile-windows-$TargetMachine"
 $Archive = Join-Path $OutputDir "$ArtifactName.tar.gz"
 $ArchiveSidecar = "$Archive.sha256"
 if ((Test-Path -LiteralPath $Archive) -or (Test-Path -LiteralPath $ArchiveSidecar)) {
@@ -152,6 +152,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "runtime\package.json") -Destination $Stage
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "runtime\pnpm-lock.yaml") -Destination $Stage
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "runtime\pnpm-workspace.yaml") -Destination $Stage
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot "runtime\bin\intranet-browser-agent-mcp.js") -Destination (Join-Path $Stage "bin")
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "runtime\bin\playwright-mcp.cmd") -Destination (Join-Path $Stage "bin")
     if ($Profile -eq "diagnostic") {
         Copy-Item -LiteralPath (Join-Path $ProjectRoot "runtime\bin\chrome-devtools-mcp.cmd") -Destination (Join-Path $Stage "bin")
@@ -191,7 +192,7 @@ try {
 
     $env:BROWSER_AGENT_NODE = $RuntimeNode
     Invoke-Checked $RuntimeNode @(
-        (Join-Path $Stage "node_modules\@playwright\mcp\cli.js"),
+        (Join-Path $Stage "bin\intranet-browser-agent-mcp.js"),
         "--help"
     )
     Invoke-Checked (Join-Path $Stage "bin\playwright-mcp.cmd") @("--help")

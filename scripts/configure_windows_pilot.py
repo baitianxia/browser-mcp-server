@@ -59,7 +59,9 @@ def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     try:
-        temporary.write_text(text, encoding="utf-8", newline="\n")
+        # Write exact UTF-8/LF bytes without relying on Path.write_text's
+        # Python-version-specific ``newline`` parameter (absent in Python 3.9).
+        temporary.write_bytes(text.encode("utf-8"))
         os.replace(temporary, path)
     finally:
         if temporary.exists():
@@ -160,6 +162,23 @@ def apply_browser_preferences(
     browser.pop("manualConnectionApproval", None)
 
 
+def apply_interaction_preferences(
+    manifest: dict[str, Any],
+    *,
+    snapshot_strategy: str,
+    compatibility_mode: str,
+) -> None:
+    if snapshot_strategy not in {"compact", "full"}:
+        raise ConfiguratorError("snapshot strategy must be compact or full")
+    if compatibility_mode not in {"robust", "standard"}:
+        raise ConfiguratorError("compatibility mode must be robust or standard")
+    interaction = manifest.get("interaction")
+    if not isinstance(interaction, dict):
+        raise ConfiguratorError("manifest interaction settings are missing")
+    interaction["snapshotStrategy"] = snapshot_strategy
+    interaction["compatibilityMode"] = compatibility_mode
+
+
 def reconfigure(args: argparse.Namespace) -> None:
     try:
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -177,6 +196,19 @@ def reconfigure(args: argparse.Namespace) -> None:
         headless=args.headless == "true",
         extension_authorization=args.extension_authorization,
         user_data_dir=args.user_data_dir,
+    )
+    apply_interaction_preferences(
+        manifest,
+        snapshot_strategy=getattr(
+            args,
+            "snapshot_strategy",
+            manifest["interaction"]["snapshotStrategy"],
+        ),
+        compatibility_mode=getattr(
+            args,
+            "compatibility_mode",
+            manifest["interaction"]["compatibilityMode"],
+        ),
     )
     errors = browser_agent.validate_manifest(manifest)
     if errors:
@@ -265,6 +297,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("session", "user"),
     )
     reconfigure_parser.add_argument("--user-data-dir")
+    reconfigure_parser.add_argument(
+        "--snapshot-strategy", required=True, choices=("compact", "full")
+    )
+    reconfigure_parser.add_argument(
+        "--compatibility-mode", required=True, choices=("robust", "standard")
+    )
     reconfigure_parser.add_argument("--force", action="store_true")
     paths_parser = subparsers.add_parser("assert-user-paths")
     paths_parser.add_argument("--local-app-data", required=True, type=Path)

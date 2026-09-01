@@ -126,7 +126,7 @@ fi
 
 export PYTHONDONTWRITEBYTECODE=1
 
-ARTIFACT_NAME="browser-agent-runtime-1.0.14-${PROFILE}-${TARGET_SYSTEM}-${TARGET_MACHINE}"
+ARTIFACT_NAME="browser-agent-runtime-1.0.15-${PROFILE}-${TARGET_SYSTEM}-${TARGET_MACHINE}"
 mkdir -p "$OUTPUT_DIR"
 ARCHIVE="$OUTPUT_DIR/$ARTIFACT_NAME.tar.gz"
 
@@ -149,6 +149,7 @@ cp "$PROJECT_ROOT/runtime/package.json" "$STAGE/package.json"
 cp "$PROJECT_ROOT/runtime/pnpm-lock.yaml" "$STAGE/pnpm-lock.yaml"
 cp "$PROJECT_ROOT/runtime/pnpm-workspace.yaml" "$STAGE/pnpm-workspace.yaml"
 mkdir -p "$STAGE/bin"
+cp "$PROJECT_ROOT/runtime/bin/intranet-browser-agent-mcp.js" "$STAGE/bin/intranet-browser-agent-mcp.js"
 if [[ "$TARGET_SYSTEM" == "windows" ]]; then
   cp "$PROJECT_ROOT/runtime/bin/playwright-mcp.cmd" "$STAGE/bin/playwright-mcp.cmd"
   if [[ "$PROFILE" == "diagnostic" ]]; then
@@ -205,7 +206,7 @@ if [[ -n "$NODE_DISTRIBUTION" ]]; then
   BUNDLED_NODE_ARG=--bundled-node
 fi
 
-"$RUNTIME_NODE" "$STAGE/node_modules/@playwright/mcp/cli.js" --help >/dev/null
+"$RUNTIME_NODE" "$STAGE/bin/intranet-browser-agent-mcp.js" --help >/dev/null
 if [[ "$PROFILE" == "diagnostic" ]]; then
   "$RUNTIME_NODE" \
     "$STAGE/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js" \

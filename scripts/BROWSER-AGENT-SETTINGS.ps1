@@ -8,6 +8,10 @@ param(
     [string]$ExtensionAuthorization = "ask",
     [ValidateSet("ask", "headed", "headless")]
     [string]$DisplayMode = "ask",
+    [ValidateSet("ask", "compact", "full")]
+    [string]$SnapshotStrategy = "ask",
+    [ValidateSet("ask", "robust", "standard")]
+    [string]$CompatibilityMode = "ask",
     [string]$ExtensionTokenFile = "",
     [string]$LogPath = ""
 )
@@ -36,6 +40,7 @@ $ConfigCommitted = $false
 $script:PythonExe = ""
 $script:PythonPrefix = @()
 $script:LogPath = $LogPath
+$WasInteractive = $BrowserMode -eq "interactive"
 
 function Write-SettingsLog {
     param([string]$Message)
@@ -349,7 +354,7 @@ try {
     $BrowserChannel = [string]$Manifest.browser.channel
     $BrowserExecutable = [string]$Manifest.browser.executablePath
     $PlaywrightCli = Join-Path $RuntimeRoot `
-        "node_modules\@playwright\mcp\cli.js"
+        "bin\intranet-browser-agent-mcp.js"
     foreach ($RequiredRuntimePath in @($NodeExe, $BrowserExecutable, $PlaywrightCli)) {
         if (-not (Test-Path -LiteralPath $RequiredRuntimePath -PathType Leaf)) {
             throw "已安装运行环境不完整：$RequiredRuntimePath"
@@ -386,6 +391,27 @@ try {
         "headless"
     } else {
         "headed"
+    }
+    $CurrentSnapshotStrategy = "compact"
+    $CurrentCompatibilityMode = "robust"
+    $InteractionProperty = $Manifest.PSObject.Properties["interaction"]
+    if ($null -ne $InteractionProperty -and $null -ne $InteractionProperty.Value) {
+        $SnapshotProperty = `
+            $InteractionProperty.Value.PSObject.Properties["snapshotStrategy"]
+        $CompatibilityProperty = `
+            $InteractionProperty.Value.PSObject.Properties["compatibilityMode"]
+        $SnapshotValue = if ($null -ne $SnapshotProperty) {
+            [string]$SnapshotProperty.Value
+        } else { "" }
+        $CompatibilityValue = if ($null -ne $CompatibilityProperty) {
+            [string]$CompatibilityProperty.Value
+        } else { "" }
+        if (@("compact", "full") -contains $SnapshotValue) {
+            $CurrentSnapshotStrategy = $SnapshotValue
+        }
+        if (@("robust", "standard") -contains $CompatibilityValue) {
+            $CurrentCompatibilityMode = $CompatibilityValue
+        }
     }
 
     if ($BrowserMode -eq "interactive") {
@@ -432,6 +458,30 @@ try {
     }
     if ($DisplayMode -eq "ask" -or $ExtensionAuthorization -eq "ask") {
         throw "非交互调用必须提供完整设置。"
+    }
+
+    if ($WasInteractive) {
+        Write-Host ""
+        Write-Host "  1. 精简快照（推荐，内联返回，减少上下文）"
+        Write-Host "  2. 完整快照（诊断用，可能生成较大文件）"
+        $DefaultSnapshotChoice = if ($CurrentSnapshotStrategy -eq "full") { "2" } else { "1" }
+        $SnapshotChoice = Read-Choice "请选择快照方式" @("1", "2") `
+            $DefaultSnapshotChoice
+        $SnapshotStrategy = if ($SnapshotChoice -eq "2") { "full" } else { "compact" }
+
+        Write-Host ""
+        Write-Host "  1. 动态页面兼容（推荐，支持稳定等待和同目标回退）"
+        Write-Host "  2. 标准上游行为（关闭自动兼容回退）"
+        $DefaultCompatibilityChoice = if ($CurrentCompatibilityMode -eq "standard") { "2" } else { "1" }
+        $CompatibilityChoice = Read-Choice "请选择页面兼容方式" @("1", "2") `
+            $DefaultCompatibilityChoice
+        $CompatibilityMode = if ($CompatibilityChoice -eq "2") { "standard" } else { "robust" }
+    }
+    if ($SnapshotStrategy -eq "ask") {
+        $SnapshotStrategy = $CurrentSnapshotStrategy
+    }
+    if ($CompatibilityMode -eq "ask") {
+        $CompatibilityMode = $CurrentCompatibilityMode
     }
 
     $ClaudeUserConfigPath = Get-ClaudeUserConfigPath
@@ -482,12 +532,14 @@ try {
         "--browser-mode", $BrowserMode,
         "--headless", $(if ($DisplayMode -eq "headless") { "true" } else { "false" }),
         "--extension-authorization", $ExtensionAuthorization,
-        "--user-data-dir", $DedicatedProfile
+        "--user-data-dir", $DedicatedProfile,
+        "--snapshot-strategy", $SnapshotStrategy,
+        "--compatibility-mode", $CompatibilityMode
     )
     Copy-Item -LiteralPath $StageManifest `
         -Destination (Join-Path $StageDeploy "deployment.windows-pilot.json")
     foreach ($Name in @(
-        "playwright.config.json", ".mcp.json", "deployment.lock.json",
+        "playwright.config.json", "interaction.config.json", ".mcp.json", "deployment.lock.json",
         "CLAUDE.browser.md", "DEPLOYMENT.txt"
     )) {
         Copy-Item -LiteralPath (Join-Path $StageRendered $Name) `
@@ -592,6 +644,9 @@ try {
         $DisplayLabel = if ($DisplayMode -eq "headless") { "无头" } else { "有头" }
         "独立 $BrowserChannel Profile；$DisplayLabel；不共享原浏览器登录态"
     }
+    $SnapshotLabel = if ($SnapshotStrategy -eq "compact") { "精简快照" } else { "完整快照" }
+    $CompatibilityLabel = if ($CompatibilityMode -eq "robust") { "动态页面兼容" } else { "标准上游行为" }
+    $Summary = "$Summary；$SnapshotLabel；$CompatibilityLabel"
     Write-SettingsLog "SUCCESS: $Summary"
     Write-Host ""
     Write-Host "设置已保存：$Summary" -ForegroundColor Green

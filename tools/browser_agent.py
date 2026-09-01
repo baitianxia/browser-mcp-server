@@ -18,7 +18,7 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 
-TOOL_VERSION = "1.0.14"
+TOOL_VERSION = "1.0.15"
 PLAYWRIGHT_MCP_VERSION = "0.0.79"
 CHROME_DEVTOOLS_MCP_VERSION = "1.8.0"
 MIN_NODE_VERSION = (20, 19, 0)
@@ -299,6 +299,7 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         "output",
         "browser",
         "controls",
+        "interaction",
         "timeouts",
     }
     if production:
@@ -622,6 +623,25 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     elif "devtoolsEndpoint" in browser:
         errors.append("$.browser.devtoolsEndpoint requires controls.devtools=true")
 
+    interaction = _shape(
+        root.get("interaction"),
+        "$.interaction",
+        required={"snapshotStrategy", "compatibilityMode", "defaultSnapshotDepth"},
+        optional=set(),
+        errors=errors,
+    )
+    if interaction.get("snapshotStrategy") not in {"compact", "full"}:
+        errors.append("$.interaction.snapshotStrategy must be compact or full")
+    if interaction.get("compatibilityMode") not in {"robust", "standard"}:
+        errors.append("$.interaction.compatibilityMode must be robust or standard")
+    _integer(
+        interaction.get("defaultSnapshotDepth"),
+        "$.interaction.defaultSnapshotDepth",
+        errors,
+        1,
+        20,
+    )
+
     timeouts = _shape(
         root.get("timeouts"),
         "$.timeouts",
@@ -685,7 +705,18 @@ def _render_playwright(manifest: dict[str, Any]) -> dict[str, Any]:
             "settle": manifest["timeouts"]["settleMs"],
         },
         "imageResponses": "allow" if controls["visionFallback"] else "omit",
-        "snapshot": {"mode": "full", "boxes": controls["visionFallback"]},
+        "snapshot": {
+            "mode": (
+                "none"
+                if manifest["interaction"]["snapshotStrategy"] == "compact"
+                else "full"
+            ),
+            "boxes": (
+                controls["visionFallback"]
+                if manifest["interaction"]["snapshotStrategy"] == "full"
+                else False
+            ),
+        },
         "codegen": "none",
     }
     if manifest.get("network", {}).get("allowedOrigins"):
@@ -716,6 +747,16 @@ def _render_playwright(manifest: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def _render_interaction(manifest: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "snapshotStrategy": manifest["interaction"]["snapshotStrategy"],
+        "compatibilityMode": manifest["interaction"]["compatibilityMode"],
+        "defaultSnapshotDepth": manifest["interaction"]["defaultSnapshotDepth"],
+        "settleMs": manifest["timeouts"]["settleMs"],
+    }
+
+
 def _join_target_path(manifest: dict[str, Any], root: str, *parts: str) -> str:
     path_type = PureWindowsPath if manifest["target"]["os"] == "windows" else PurePosixPath
     return str(path_type(root).joinpath(*parts))
@@ -729,10 +770,8 @@ def _render_mcp(manifest: dict[str, Any]) -> dict[str, Any]:
             _join_target_path(
                 manifest,
                 manifest["installRoot"],
-                "node_modules",
-                "@playwright",
-                "mcp",
-                "cli.js",
+                "bin",
+                "intranet-browser-agent-mcp.js",
             )
         ]
         devtools_command = manifest["nodeExecutable"]
@@ -812,6 +851,7 @@ def render(manifest_path: Path, output_dir: Path, force: bool) -> list[Path]:
     template_path = Path(__file__).resolve().parents[1] / "templates" / "CLAUDE.browser.md"
     generated_names = {
         "playwright.config.json",
+        "interaction.config.json",
         ".mcp.json",
         "deployment.lock.json",
         "CLAUDE.browser.md",
@@ -839,6 +879,7 @@ def render(manifest_path: Path, output_dir: Path, force: bool) -> list[Path]:
             "minimumNode": ".".join(map(str, MIN_NODE_VERSION)),
             "installRoot": manifest["installRoot"],
         },
+        "interaction": manifest["interaction"],
     }
     boundary_step = (
         "Confirm the declared network enforcement and model-route approvals are active."
@@ -859,6 +900,7 @@ Mode: {manifest['mode']}
    {manifest['installRoot']}
 2. Install playwright.config.json at:
    {_join_target_path(manifest, manifest['configRoot'], 'playwright.config.json')}
+   and interaction.config.json in the same directory.
 {integration_steps}
 5. {boundary_step}
 6. Let a human complete SSO/MFA in the dedicated browser Profile.
@@ -869,6 +911,7 @@ No extension token or login secret belongs in these generated files.
 
     payloads = {
         "playwright.config.json": _json_bytes(_render_playwright(manifest)),
+        "interaction.config.json": _json_bytes(_render_interaction(manifest)),
         ".mcp.json": _json_bytes(_render_mcp(manifest)),
         "deployment.lock.json": _json_bytes(lock),
         "CLAUDE.browser.md": template_path.read_bytes(),
@@ -1273,6 +1316,27 @@ def preflight(
     except (OSError, json.JSONDecodeError) as exc:
         checks.append({"name": "playwright-config", "status": "fail", "detail": str(exc)})
 
+    interaction_config = config_root / "interaction.config.json"
+    try:
+        actual_interaction = json.loads(interaction_config.read_text(encoding="utf-8"))
+        expected_interaction = _render_interaction(manifest)
+        interaction_matches = actual_interaction == expected_interaction
+        checks.append(
+            {
+                "name": "interaction-config",
+                "status": "pass" if interaction_matches else "fail",
+                "detail": (
+                    "matches deployment manifest"
+                    if interaction_matches
+                    else "does not match deployment manifest"
+                ),
+            }
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        checks.append(
+            {"name": "interaction-config", "status": "fail", "detail": str(exc)}
+        )
+
     deployed_mcp = config_root / ".mcp.json"
     try:
         actual_mcp = json.loads(deployed_mcp.read_text(encoding="utf-8"))
@@ -1315,6 +1379,14 @@ def preflight(
             "detail": str(playwright_cli_path),
         }
     )
+    compatibility_cli_path = runtime_root / "bin" / "intranet-browser-agent-mcp.js"
+    checks.append(
+        {
+            "name": "compatibility-cli-entry",
+            "status": "pass" if compatibility_cli_path.is_file() else "fail",
+            "detail": str(compatibility_cli_path),
+        }
+    )
     if target_system == "windows":
         expected_node_path = runtime_root / "node" / "node.exe"
         command_matches_runtime = ntpath.normcase(
@@ -1333,9 +1405,7 @@ def preflight(
         )
 
     if run_cli_help and node_path is not None:
-        cli_paths = [
-            ("playwright-cli", runtime_root / "node_modules" / "@playwright" / "mcp" / "cli.js")
-        ]
+        cli_paths = [("playwright-cli", compatibility_cli_path)]
         if manifest["controls"]["devtools"]:
             cli_paths.append(
                 (

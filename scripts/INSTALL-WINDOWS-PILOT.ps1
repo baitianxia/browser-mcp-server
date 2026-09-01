@@ -1269,6 +1269,7 @@ try {
         -Destination (Join-Path $StageDeploy "deployment.windows-pilot.json")
     foreach ($Name in @(
         "playwright.config.json",
+        "interaction.config.json",
         ".mcp.json",
         "deployment.lock.json",
         "CLAUDE.browser.md",
@@ -1325,7 +1326,7 @@ try {
         "--config-root", $ConfigRoot
     )
 
-    $PlaywrightCliPath = Join-Path $RuntimeRoot "node_modules\@playwright\mcp\cli.js"
+    $PlaywrightCliPath = Join-Path $RuntimeRoot "bin\intranet-browser-agent-mcp.js"
     $PlaywrightConfigPath = Join-Path $ConfigRoot "playwright.config.json"
     Invoke-Python @(
         $McpSmoke,
@@ -1398,6 +1399,7 @@ Runtime: $RuntimeRoot
 Manifest: $InstalledManifest
 Claude MCP scope: user (all projects for the current Windows user)
 Browser mode: existing $BrowserChannel tabs through Playwright Extension $ExtensionVersion
+Interaction: compact snapshots; robust dynamic-page compatibility
 Extension install method: $ExtensionInstallMethod
 Backup: $BackupRoot
 Settings: $(Join-Path $AgentRoot "BROWSER-AGENT-SETTINGS.cmd")
@@ -1417,7 +1419,7 @@ approve the browser tab connection, and perform a read-only page-title test firs
     Write-Host "安装和 preflight 已完成。" -ForegroundColor Green
     Write-Host "下一步：重启 Claude Code，在任意项目中输入 /mcp 查看 intranet-browser-agent。"
     Write-Host "首次调用浏览器工具时，在 Playwright Extension 页面选择允许控制的现有标签页。"
-    Write-Host "后续切换授权、无头或独立 Profile：$AgentRoot\BROWSER-AGENT-SETTINGS.cmd"
+    Write-Host "后续切换授权、无头、独立 Profile、快照或页面兼容方式：$AgentRoot\BROWSER-AGENT-SETTINGS.cmd"
     if ($SummaryWritten) {
         Write-Host "安装摘要：$SummaryPath"
     }

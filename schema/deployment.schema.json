@@ -16,6 +16,7 @@
     "output",
     "browser",
     "controls",
+    "interaction",
     "timeouts"
   ],
   "properties": {
@@ -145,6 +146,16 @@
             ]
           }
         }
+      }
+    },
+    "interaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshotStrategy", "compatibilityMode", "defaultSnapshotDepth"],
+      "properties": {
+        "snapshotStrategy": { "enum": ["compact", "full"] },
+        "compatibilityMode": { "enum": ["robust", "standard"] },
+        "defaultSnapshotDepth": { "type": "integer", "minimum": 1, "maximum": 20 }
       }
     },
     "timeouts": {

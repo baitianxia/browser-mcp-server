@@ -114,7 +114,7 @@ class BrowserAgentManifestTests(unittest.TestCase):
                 server["command"],
             )
             self.assertEqual(
-                r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent\releases\runtime-1\node_modules\@playwright\mcp\cli.js",
+                r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent\releases\runtime-1\bin\intranet-browser-agent-mcp.js",
                 server["args"][0],
             )
             self.assertEqual("--browser=chrome", server["args"][1])
@@ -234,11 +234,21 @@ class BrowserAgentManifestTests(unittest.TestCase):
         errors = browser_agent.validate_manifest(manifest)
         self.assertTrue(any("missing: delete" in error for error in errors))
 
+    def test_interaction_modes_are_explicit_and_bounded(self) -> None:
+        manifest = copy.deepcopy(self.demo)
+        manifest["interaction"]["snapshotStrategy"] = "automatic"
+        manifest["interaction"]["compatibilityMode"] = "force"
+        manifest["interaction"]["defaultSnapshotDepth"] = 0
+        errors = browser_agent.validate_manifest(manifest)
+        self.assertTrue(any("snapshotStrategy" in error for error in errors))
+        self.assertTrue(any("compatibilityMode" in error for error in errors))
+        self.assertTrue(any("defaultSnapshotDepth" in error for error in errors))
+
     def test_render_uses_absolute_offline_commands_and_no_secret(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "rendered"
             written = browser_agent.render(self.demo_path, output, force=False)
-            self.assertEqual(5, len(written))
+            self.assertEqual(6, len(written))
             mcp = json.loads((output / ".mcp.json").read_text(encoding="utf-8"))
             server = mcp["mcpServers"]["intranet-browser-agent"]
             self.assertTrue(PurePosixPath(server["command"]).is_absolute())
@@ -254,6 +264,12 @@ class BrowserAgentManifestTests(unittest.TestCase):
             )
             self.assertFalse(playwright["allowUnrestrictedFileAccess"])
             self.assertEqual(["core", "vision"], playwright["capabilities"])
+            self.assertEqual("none", playwright["snapshot"]["mode"])
+            interaction = json.loads(
+                (output / "interaction.config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual("compact", interaction["snapshotStrategy"])
+            self.assertEqual("robust", interaction["compatibilityMode"])
 
     def test_render_refuses_implicit_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -302,6 +318,10 @@ class BrowserAgentManifestTests(unittest.TestCase):
                 )
             config_check = next(check for check in checks if check["name"] == "playwright-config")
             self.assertEqual("pass", config_check["status"])
+            interaction_check = next(
+                check for check in checks if check["name"] == "interaction-config"
+            )
+            self.assertEqual("pass", interaction_check["status"])
             mcp_check = next(check for check in checks if check["name"] == "mcp-config")
             self.assertEqual("pass", mcp_check["status"])
 
@@ -320,6 +340,24 @@ class BrowserAgentManifestTests(unittest.TestCase):
                 )
             config_check = next(check for check in checks if check["name"] == "playwright-config")
             self.assertEqual("fail", config_check["status"])
+
+            interaction_path = rendered / "interaction.config.json"
+            interaction = json.loads(interaction_path.read_text(encoding="utf-8"))
+            interaction["compatibilityMode"] = "standard"
+            interaction_path.write_text(json.dumps(interaction), encoding="utf-8")
+            with mock.patch.object(
+                browser_agent, "_host_system", return_value="darwin"
+            ), mock.patch.object(browser_agent, "_host_machine", return_value="arm64"):
+                checks = browser_agent.preflight(
+                    self.demo_path,
+                    runtime,
+                    rendered,
+                    run_cli_help=False,
+                )
+            interaction_check = next(
+                check for check in checks if check["name"] == "interaction-config"
+            )
+            self.assertEqual("fail", interaction_check["status"])
 
             mcp_path = rendered / ".mcp.json"
             mcp = json.loads(mcp_path.read_text(encoding="utf-8"))

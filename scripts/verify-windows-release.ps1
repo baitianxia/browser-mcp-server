@@ -196,6 +196,7 @@ try {
     $ProbeClaudeConfig = Join-Path $ProbeRoot "claude-config"
     $ProbeRuntimeExtraction = Join-Path $ProbeRoot "runtime"
     $ProbePlaywrightConfig = Join-Path $ProbeRoot "playwright.config.json"
+    $ProbeInteractionConfig = Join-Path $ProbeRoot "interaction.config.json"
     $ProbeUserConfig = Join-Path $ProbeClaudeConfig ".claude.json"
     $ProbeBackup = Join-Path $ProbeRoot "claude-user-config.bak"
     $HadClaudeConfigDir = Test-Path Env:CLAUDE_CONFIG_DIR
@@ -220,7 +221,7 @@ try {
         $ProbeNodeRoot = Join-Path $ProbeRuntimeRoot "node"
         $ProbeNode = Join-Path $ProbeNodeRoot "node.exe"
         $ProbePlaywrightCli = Join-Path $ProbeRuntimeRoot `
-            "node_modules\@playwright\mcp\cli.js"
+            "bin\intranet-browser-agent-mcp.js"
         Invoke-PythonChecked @(
             (Join-Path $PSScriptRoot "validate_node_distribution.py"),
             $ProbeNodeRoot,
@@ -232,6 +233,10 @@ try {
             throw "Packaged Node.js reports $ActualNodeVersion; expected $ExpectedNodeVersion"
         }
         [IO.File]::WriteAllText($ProbePlaywrightConfig, "{}`n")
+        [IO.File]::WriteAllText(
+            $ProbeInteractionConfig,
+            '{"compatibilityMode":"robust","defaultSnapshotDepth":6,"schemaVersion":1,"settleMs":1500,"snapshotStrategy":"compact"}' + "`n"
+        )
         Invoke-PythonChecked @(
             (Join-Path $PSScriptRoot "smoke_playwright_mcp.py"),
             "--node-executable", $ProbeNode,

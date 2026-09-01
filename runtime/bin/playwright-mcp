@@ -15,4 +15,4 @@ else
   exit 127
 fi
 
-exec "$NODE_EXECUTABLE" "$RUNTIME_ROOT/node_modules/@playwright/mcp/cli.js" "$@"
+exec "$NODE_EXECUTABLE" "$RUNTIME_ROOT/bin/intranet-browser-agent-mcp.js" "$@"

@@ -209,7 +209,7 @@ jobs:
               throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
           }
           $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-agent-runtime-1.0.14-core-windows-x64.tar.gz")
+              -Filter "browser-agent-runtime-1.0.15-core-windows-x64.tar.gz")
           if ($RuntimeArchives.Count -ne 1) {
               throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
           }
@@ -228,7 +228,7 @@ jobs:
               throw "Transfer-kit build failed."
           }
           $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "intranet-browser-agent-transfer-1.0.14-core-windows-x64.tar.gz")
+              -Filter "intranet-browser-agent-transfer-1.0.15-core-windows-x64.tar.gz")
           if ($TransferArchives.Count -ne 1) {
               throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
           }
@@ -983,7 +983,7 @@ jobs:
               $InstalledManifest = Get-Content -LiteralPath $InstalledManifestPath `
                   -Raw | ConvertFrom-Json
               $InstalledPlaywrightCli = Join-Path $InstalledManifest.installRoot `
-                  "node_modules\@playwright\mcp\cli.js"
+                  "bin\intranet-browser-agent-mcp.js"
               $InstalledNode = [string]$InstalledManifest.nodeExecutable
               $InstalledPlaywrightConfig = Join-Path `
                   (Split-Path -Parent $InstalledManifestPath) `
@@ -1204,7 +1204,14 @@ jobs:
           $PlaywrightConfig = Join-Path (Split-Path -Parent $ManifestPath) `
               "playwright.config.json"
           $Rendered = Get-Content -LiteralPath $PlaywrightConfig -Raw | ConvertFrom-Json
-          if ($Rendered.extension -ne $true -or $null -ne $Rendered.browser) {
+          $InteractionConfig = Join-Path (Split-Path -Parent $ManifestPath) `
+              "interaction.config.json"
+          $Interaction = Get-Content -LiteralPath $InteractionConfig -Raw | ConvertFrom-Json
+          if ($Rendered.extension -ne $true -or $null -ne $Rendered.browser -or
+              $Rendered.snapshot.mode -ne "none" -or
+              $Interaction.snapshotStrategy -ne "compact" -or
+              $Interaction.compatibilityMode -ne "robust" -or
+              $Interaction.settleMs -ne 1500) {
               throw "Rendered Playwright config does not use extension mode."
           }
           $ClaudePayload = Get-Content -LiteralPath $UserConfig -Raw | ConvertFrom-Json
@@ -1290,6 +1297,8 @@ jobs:
               "config\pilot\deployment.windows-pilot.json"
           $PlaywrightConfigPath = Join-Path $AgentRoot `
               "config\pilot\playwright.config.json"
+          $InteractionConfigPath = Join-Path $AgentRoot `
+              "config\pilot\interaction.config.json"
           $UserConfigPath = Join-Path $env:CLAUDE_CONFIG_DIR ".claude.json"
 
           function Invoke-InstalledSettings {
@@ -1297,13 +1306,17 @@ jobs:
                   [string]$Mode,
                   [string]$Authorization,
                   [string]$Display,
-                  [string]$Token = ""
+                  [string]$Token = "",
+                  [string]$Snapshot = "compact",
+                  [string]$Compatibility = "robust"
               )
               $Arguments = @(
                   "-NoLogo", "-NoProfile", "-File", $SettingsScript,
                   "-BrowserMode", $Mode,
                   "-ExtensionAuthorization", $Authorization,
-                  "-DisplayMode", $Display
+                  "-DisplayMode", $Display,
+                  "-SnapshotStrategy", $Snapshot,
+                  "-CompatibilityMode", $Compatibility
               )
               if ($Token) {
                   $Arguments += @("-ExtensionTokenFile", $Token)
@@ -1314,8 +1327,12 @@ jobs:
               }
           }
 
-          Invoke-InstalledSettings extension user headed $TokenFile
+          Invoke-InstalledSettings extension user headed $TokenFile full standard
           $Manifest = Get-Content -LiteralPath $ManifestPath -Raw |
+              ConvertFrom-Json
+          $Rendered = Get-Content -LiteralPath $PlaywrightConfigPath -Raw |
+              ConvertFrom-Json
+          $Interaction = Get-Content -LiteralPath $InteractionConfigPath -Raw |
               ConvertFrom-Json
           $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
               ConvertFrom-Json
@@ -1323,8 +1340,13 @@ jobs:
               'intranet-browser-agent'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
           if ($Manifest.mode -ne "extension" -or
               $Manifest.browser.manualConnectionApproval -ne $false -or
+              $Manifest.interaction.snapshotStrategy -ne "full" -or
+              $Manifest.interaction.compatibilityMode -ne "standard" -or
+              $Rendered.snapshot.mode -ne "full" -or
+              $Interaction.snapshotStrategy -ne "full" -or
+              $Interaction.compatibilityMode -ne "standard" -or
               $RegisteredToken -ne ("A" * 43)) {
-              throw "Current-user extension authorization was not persisted exactly."
+              throw "Current-user authorization and full/standard interaction settings were not persisted exactly."
           }
           Write-Host "CI USER EXTENSION AUTHORIZATION PASSED"
 
@@ -1332,6 +1354,8 @@ jobs:
           $Manifest = Get-Content -LiteralPath $ManifestPath -Raw |
               ConvertFrom-Json
           $Rendered = Get-Content -LiteralPath $PlaywrightConfigPath -Raw |
+              ConvertFrom-Json
+          $Interaction = Get-Content -LiteralPath $InteractionConfigPath -Raw |
               ConvertFrom-Json
           $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
               ConvertFrom-Json
@@ -1343,6 +1367,9 @@ jobs:
               [IO.Path]::GetFullPath([string]$Manifest.browser.userDataDir) -ine
                   [IO.Path]::GetFullPath($DedicatedProfile) -or
               $Rendered.browser.launchOptions.headless -ne $true -or
+              $Rendered.snapshot.mode -ne "none" -or
+              $Interaction.snapshotStrategy -ne "compact" -or
+              $Interaction.compatibilityMode -ne "robust" -or
               $null -ne $Rendered.extension -or
               $null -ne $RegisteredEnvironment.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
               throw "Dedicated headless settings do not match the requested isolation."
@@ -1358,7 +1385,7 @@ jobs:
                   --mode dedicated `
                   --node-executable $Manifest.nodeExecutable `
                   --playwright-cli (Join-Path $RuntimeRoot `
-                      "node_modules\@playwright\mcp\cli.js") `
+                      "bin\intranet-browser-agent-mcp.js") `
                   --playwright-config $PlaywrightConfigPath `
                   --environment-policy (Join-Path $env:TRANSFER_ROOT `
                       "toolkit\config\windows-mcp-environment.json") `
@@ -1583,7 +1610,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: intranet-browser-agent-transfer-1.0.14-windows-x64-${{ github.run_id }}
+          name: intranet-browser-agent-transfer-1.0.15-windows-x64-${{ github.run_id }}
           path: |
             ${{ env.TRANSFER_ARCHIVE }}
             ${{ env.TRANSFER_ARCHIVE }}.sha256

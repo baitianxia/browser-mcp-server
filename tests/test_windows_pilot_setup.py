@@ -119,6 +119,23 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 user_data_dir=None,
             )
 
+        interaction_manifest = self.manifest()
+        configure.apply_interaction_preferences(
+            interaction_manifest,
+            snapshot_strategy="full",
+            compatibility_mode="standard",
+        )
+        self.assertEqual("full", interaction_manifest["interaction"]["snapshotStrategy"])
+        self.assertEqual(
+            "standard", interaction_manifest["interaction"]["compatibilityMode"]
+        )
+        with self.assertRaisesRegex(configure.ConfiguratorError, "snapshot strategy"):
+            configure.apply_interaction_preferences(
+                interaction_manifest,
+                snapshot_strategy="automatic",
+                compatibility_mode="robust",
+            )
+
     def test_reconfigure_writes_a_complete_rendered_dedicated_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -141,6 +158,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
                     headless="true",
                     extension_authorization="session",
                     user_data_dir=dedicated_profile,
+                    snapshot_strategy="full",
+                    compatibility_mode="standard",
                     force=False,
                 )
             )
@@ -163,6 +182,13 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 arguments,
             )
             self.assertNotIn("extension", rendered)
+            self.assertEqual("full", staged["interaction"]["snapshotStrategy"])
+            self.assertEqual("standard", staged["interaction"]["compatibilityMode"])
+            interaction = json.loads(
+                (render_out / "interaction.config.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual("full", interaction["snapshotStrategy"])
+            self.assertEqual("standard", interaction["compatibilityMode"])
 
     def test_settings_tool_is_installed_for_later_user_changes(self) -> None:
         settings_path = ROOT / "scripts" / "BROWSER-AGENT-SETTINGS.ps1"
@@ -187,6 +213,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"extension", "dedicated"', settings)
         self.assertIn('"headed", "headless"', settings)
         self.assertIn('"session", "user"', settings)
+        self.assertIn('"compact", "full"', settings)
+        self.assertIn('"robust", "standard"', settings)
+        self.assertIn('"--snapshot-strategy", $SnapshotStrategy', settings)
+        self.assertIn('"--compatibility-mode", $CompatibilityMode', settings)
+        self.assertIn('"interaction.config.json"', settings)
         self.assertIn("Read-Host \"扩展令牌\" -AsSecureString", settings)
         self.assertIn("绕过扩展批准页", settings)
         self.assertIn("chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/status.html", settings)
@@ -980,7 +1011,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
             self.assertEqual("stdio", server["type"])
             self.assertTrue(server["command"].endswith(r"node\node.exe"))
             self.assertTrue(
-                server["args"][0].endswith(r"node_modules\@playwright\mcp\cli.js")
+                server["args"][0].endswith(r"bin\intranet-browser-agent-mcp.js")
             )
             self.assertEqual("--browser=chrome", server["args"][1])
             self.assertEqual(
@@ -996,6 +1027,14 @@ class WindowsPilotSetupTests(unittest.TestCase):
             self.assertNotIn("network", playwright)
             self.assertTrue(playwright["extension"])
             self.assertNotIn("browser", playwright)
+            self.assertEqual("none", playwright["snapshot"]["mode"])
+            interaction = json.loads(
+                (root / "rendered" / "interaction.config.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual("compact", interaction["snapshotStrategy"])
+            self.assertEqual("robust", interaction["compatibilityMode"])
 
 
 if __name__ == "__main__":

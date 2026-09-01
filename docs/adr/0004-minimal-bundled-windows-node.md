@@ -21,6 +21,6 @@ Windows 安装向导先校验外层迁移目录和内层运行 archive，再解�
 
 ## 结果
 
-目标机可以保留旧版或不安装系统 Node，双击向导仍可离线完成。代价是迁移包增大约一个 `node.exe` 的体积，且交叉候选包仍必须在 Windows 上完成目标 `node.exe + cli.js`、Claude CLI、浏览器、路径/ACL 和 preflight 验收后才能进入生产。
+目标机可以保留旧版或不安装系统 Node，双击向导仍可离线完成。代价是迁移包增大约一个 `node.exe` 的体积，且交叉候选包仍必须在 Windows 上完成目标 `node.exe + bin\intranet-browser-agent-mcp.js + 同包上游 CLI`、Claude CLI、浏览器、路径/ACL 和 preflight 验收后才能进入生产（入口由 ADR-0010 更新）。
 
 Windows 生产制品仍必须在受控 Windows x64 构建机原生构建。官方 ZIP、官方 checksum、企业扫描、签名和批准记录继续由组织制品流程保留。

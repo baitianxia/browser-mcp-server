@@ -12,7 +12,13 @@ from pathlib import Path
 
 
 PROTOCOL_VERSION = "2025-03-26"
-REQUIRED_TOOLS = {"browser_navigate", "browser_snapshot"}
+REQUIRED_TOOLS = {
+    "browser_click_and_wait",
+    "browser_navigate",
+    "browser_read_tooltip",
+    "browser_select_custom_option",
+    "browser_snapshot",
+}
 MCP_ENVIRONMENT_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "windows-mcp-environment.json"
 )

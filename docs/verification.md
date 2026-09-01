@@ -2,6 +2,10 @@
 
 状态：截至 2026-09-01 的验证证据快照，不是规范性设计文档。
 
+## 1.0.15 验证状态（候选）
+
+1.0.15 在固定上游 Playwright MCP 前增加同包离线兼容层，默认使用内联限深快照与动态页面稳定等待；提供同目标点击回退、自定义只读下拉、tooltip 全文和点击后条件确认。安装后设置可独立切换 `compact|full` 与 `robust|standard`。本地完整回归为 111 项通过、2 项 Windows PowerShell 5.1 专属用例按设计跳过；其中 14 项为真实 JSON-RPC 子进程兼容层回归。固定上游服务 `1.63.0-alpha-2026-08-05`（27 个工具）与真实无头 Chrome 的离线 E2E 已通过，覆盖非空导航快照、自定义下拉、tooltip、视口外同目标回退、异步翻页和独立 Profile Cookie 隔离。Windows 原生打包、PowerShell 5.1、单次安装、Extension 登录态和设置切换仍以本次 GitHub Windows 流水线结果为准，未通过前不得标记为 Windows 已放行。
+
 ## 1.0.14 Windows 验证状态（CI 已放行）
 
 1.0.14 候选增加安装后设置入口：Extension 可在逐次批准与当前用户令牌之间切换；独立 `%LOCALAPPDATA%` Profile 可选择有头/无头且不读取原 Chrome/Edge 登录态。设置工具随安装复制到版本化 maintenance 目录，不依赖原迁移包，使用与安装器相同的锁、路径检查、暂存 preflight/MCP 握手、原子目录切换和 Claude `remove → add → get` 事务。令牌通过短期进程环境变量进入注册器，读取后立即从子进程环境删除；不写设置暂存文件，Claude 错误输出会按当前和旧令牌脱敏。

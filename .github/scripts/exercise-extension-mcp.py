@@ -39,7 +39,33 @@ def _handler(authenticated_request: threading.Event) -> type[BaseHTTPRequestHand
                 authenticated_request.set()
             body = (
                 "<!doctype html><html><head><title>Offline intranet session</title>"
-                f"</head><body><h1>{marker}</h1></body></html>"
+                "<style>#offscreen-action{position:fixed;top:-854px;left:10px}"
+                ".el-select-dropdown__item{display:none}</style></head><body>"
+                f"<h1>{marker}</h1>"
+                '<div class="el-select"><input id="custom-select-input" '
+                'role="combobox" readonly value=""><ul id="custom-options">'
+                '<li id="custom-option" role="option" '
+                'class="el-select-dropdown__item">生产环境</li></ul></div>'
+                '<div id="selection-status">CUSTOM-NOT-SELECTED</div>'
+                '<button id="offscreen-action">Offscreen action</button>'
+                '<div id="offscreen-status">OFFSCREEN-NOT-CLICKED</div>'
+                '<span id="log-cell">截断日志...</span>'
+                '<button id="page-two">2</button><div id="page-status">PAGE-1</div>'
+                "<script>"
+                "const input=document.getElementById('custom-select-input');"
+                "const option=document.getElementById('custom-option');"
+                "input.addEventListener('click',()=>{option.style.display='block'});"
+                "option.addEventListener('click',()=>{input.value='生产环境';"
+                "document.getElementById('selection-status').textContent='CUSTOM-SELECTED'});"
+                "document.getElementById('offscreen-action').addEventListener('click',()=>{"
+                "document.getElementById('offscreen-status').textContent='OFFSCREEN-CLICKED'});"
+                "document.getElementById('log-cell').addEventListener('mouseenter',()=>{"
+                "let tip=document.getElementById('full-tooltip');if(!tip){tip=document.createElement('div');"
+                "tip.id='full-tooltip';tip.setAttribute('role','tooltip');"
+                "tip.textContent='FULL-OFFLINE-TOOLTIP-TEXT';document.body.appendChild(tip)}});"
+                "document.getElementById('page-two').addEventListener('click',()=>{setTimeout(()=>{"
+                "document.getElementById('page-status').textContent='PAGE-2-READY'},300)});"
+                "</script></body></html>"
             ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -270,16 +296,31 @@ def exercise(args: argparse.Namespace) -> tuple[str, int]:
             for item in tools
             if isinstance(item, dict) and isinstance(item.get("name"), str)
         }
-        required = {"browser_navigate", "browser_snapshot"}
+        required = {
+            "browser_click_and_wait",
+            "browser_navigate",
+            "browser_read_tooltip",
+            "browser_select_custom_option",
+            "browser_snapshot",
+        }
         if not required.issubset(names):
             raise ExerciseError("installed MCP is missing browser exercise tools")
         url = f"http://127.0.0.1:{port}/authenticated-intranet-page"
-        mcp.request(
+        navigation = mcp.request(
             3,
             "tools/call",
             {"name": "browser_navigate", "arguments": {"url": url}},
             args.tool_timeout,
         )
+        navigation_rendered = json.dumps(navigation, ensure_ascii=False)
+        expected_navigation_marker = (
+            AUTHENTICATED_MARKER if args.mode == "extension" else MISSING_MARKER
+        )
+        if expected_navigation_marker not in navigation_rendered:
+            raise ExerciseError(
+                "navigation did not return a non-empty inline compact snapshot: "
+                f"{navigation_rendered[-2000:]}"
+            )
         snapshot = mcp.request(
             4,
             "tools/call",
@@ -309,6 +350,56 @@ def exercise(args: argparse.Namespace) -> tuple[str, int]:
                 raise ExerciseError(
                     "dedicated Profile sent the existing browser session cookie"
                 )
+        selected = mcp.request(
+            5,
+            "tools/call",
+            {
+                "name": "browser_select_custom_option",
+                "arguments": {
+                    "target": "#custom-select-input",
+                    "optionText": "生产环境",
+                },
+            },
+            args.tool_timeout,
+        )
+        if "CUSTOM-SELECTED" not in json.dumps(selected, ensure_ascii=False):
+            raise ExerciseError("custom readonly dropdown selection was not verified")
+        tooltip = mcp.request(
+            6,
+            "tools/call",
+            {"name": "browser_read_tooltip", "arguments": {"target": "#log-cell"}},
+            args.tool_timeout,
+        )
+        if "FULL-OFFLINE-TOOLTIP-TEXT" not in json.dumps(tooltip, ensure_ascii=False):
+            raise ExerciseError("tooltip full text was not returned inline")
+        offscreen = mcp.request(
+            7,
+            "tools/call",
+            {
+                "name": "browser_click_and_wait",
+                "arguments": {
+                    "target": "#offscreen-action",
+                    "waitForText": "OFFSCREEN-CLICKED",
+                },
+            },
+            args.tool_timeout,
+        )
+        if "OFFSCREEN-CLICKED" not in json.dumps(offscreen, ensure_ascii=False):
+            raise ExerciseError("offscreen same-target click fallback was not verified")
+        page_two = mcp.request(
+            8,
+            "tools/call",
+            {
+                "name": "browser_click_and_wait",
+                "arguments": {
+                    "target": "#page-two",
+                    "waitForText": "PAGE-2-READY",
+                },
+            },
+            args.tool_timeout,
+        )
+        if "PAGE-2-READY" not in json.dumps(page_two, ensure_ascii=False):
+            raise ExerciseError("asynchronous pagination result was not verified")
         server_info = initialized.get("serverInfo")
         version = (
             server_info.get("version", "unknown")

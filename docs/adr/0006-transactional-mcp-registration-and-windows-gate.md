@@ -21,4 +21,4 @@
 
 ## 结果
 
-Claude 配置变更的高风险逻辑可以在构建侧重复自动测试，且目标安装前还会无副作用自检。仍然需要一个受控 Windows runner 证明 Windows PowerShell、目标 `node.exe + cli.js`、Claude CLI 和目标 Python 行为；没有该 runner 时只能交付明确标识且自动失败关闭的自检候选，不能声称已经过 Windows 验证或用于生产。
+Claude 配置变更的高风险逻辑可以在构建侧重复自动测试，且目标安装前还会无副作用自检。仍然需要一个受控 Windows runner 证明 Windows PowerShell、目标 `node.exe + bin\intranet-browser-agent-mcp.js + 同包上游 CLI`、Claude CLI 和目标 Python 行为（入口由 ADR-0010 更新）；没有该 runner 时只能交付明确标识且自动失败关闭的自检候选，不能声称已经过 Windows 验证或用于生产。
