@@ -2,11 +2,17 @@
 
 状态：截至 2026-09-01 的验证证据快照，不是规范性设计文档。
 
-## 1.0.14 Windows 验证状态（候选，尚未放行）
+## 1.0.14 Windows 验证状态（CI 已放行）
 
 1.0.14 候选增加安装后设置入口：Extension 可在逐次批准与当前用户令牌之间切换；独立 `%LOCALAPPDATA%` Profile 可选择有头/无头且不读取原 Chrome/Edge 登录态。设置工具随安装复制到版本化 maintenance 目录，不依赖原迁移包，使用与安装器相同的锁、路径检查、暂存 preflight/MCP 握手、原子目录切换和 Claude `remove → add → get` 事务。令牌通过短期进程环境变量进入注册器，读取后立即从子进程环境删除；不写设置暂存文件，Claude 错误输出会按当前和旧令牌脱敏。
 
-当前本地执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`：96 项中 94 项通过，2 项仅因需要 Windows PowerShell 5.1 而跳过；Python AST、JSON、GitHub Actions YAML、Bash 语法和 `git diff --check` 通过。新增 Windows package job 还要求真实安装的设置工具覆盖用户令牌、独立无头 Profile 的离线页面/登录态隔离 E2E、独立有头渲染、恢复逐次批准，以及 `remove/add` 后 `get` 故障的部署配置与 Claude 用户配置逐字节回滚和日志令牌防泄漏。上述 Windows PowerShell 5.1、真实 Chrome 和原生 package job 尚未执行，因此本候选不得作为 Windows 已验证正式包交付；只有 GitHub workflow 全绿后才能更新为放行状态。
+本地执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`：96 项中 94 项通过，2 项仅因需要 Windows PowerShell 5.1 而跳过；Python AST、JSON、GitHub Actions YAML、Bash 语法和 `git diff --check` 通过。[Windows release validation #60](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33482185127) 已在提交 `a3e0bd4872e9c55fafcbd8dd4e1ecaf3148acce7` 上全绿，总耗时 5 分 15 秒：`windows-2022`、`windows-latest` 两套 Windows PowerShell 5.1 源码/AST job 及 Windows 原生 package job 全部成功。下载的发布者门禁日志实际运行 96 项测试，并输出 `OK (skipped=2)`、`CLAUDE MCP REGISTRATION SELF-TEST PASSED`、包内 Node/MCP smoke 和 `WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED`。
+
+package job 使用目标形态的 Node v20.18.3 和真实 npm Claude Code 2.1.84，安装器仍自动使用包内 Node v24.19.0，单次顶层 launcher 完成无网安装、扩展人工回退续跑、Claude user-scope 注册、30 工具 MCP 握手和现有 Profile Cookie 复用。随后调用实际安装到 `%LOCALAPPDATA%` 的设置工具，依次证明当前用户扩展授权可保存、独立 Profile 无头模式在 Chrome Internet 出站被阻时仍能访问 loopback 页面且不发送原 Profile Cookie、独立有头渲染正确、切回逐次批准会删除令牌。最后故意让标准 npm Claude 入口在 `remove/add` 后的 `get` 失败，部署配置和 Claude 用户配置均逐字节恢复，证据日志未出现测试令牌。
+
+run #60 的 GitHub 迁移 artifact ZIP SHA-256 为 `580f13980f1543d112d11f7a5f886e45e5aead84c5a991f7e8591adfd1c19ea2`，证据 artifact ZIP 为 `f4e0eed964e9346682507735f1b498aa13d69f8567a4319e11bc15733c3d0568`，下载后复算一致且 ZIP 结构通过。迁移 archive SHA-256 为 `0791e874601493a3439c92d63b637a2d3e8b093d30899c42fdbed2791b59d026`，包内 Windows 原生 runtime archive 为 `b8f9aa8a0d9598a236e6dd25f2c90a69ebbc17b607ca4a0eb9ac758e70e509de`；archive 与解压目录均由当前校验器返回 `VALID`。元数据记录 72 个审查白名单源文件，`buildHost=windows/x64`、`target=windows/x64`、`crossBuilt=false`、`targetCliSmokeTested=true`、`bundledNode=true`。为用户一次解压，已将同一验证通过的迁移目录无内容改写地封装为单顶层目录 ZIP，SHA-256 为 `66af0521198cfd25407ca257bfe3ded25e7be41dddc6abd056e375b118685191`；无 `__MACOSX`/`.DS_Store`/symlink，解压后再次返回 `VALID`。
+
+[#56](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33479807101) 首先暴露了含中文的新设置脚本缺少 UTF-8 BOM，Windows PowerShell 5.1 按本地代码页解析失败；修复后用字节回归锁定 BOM。[#57](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33480115142) 与 [#58](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33480673475) 证明 Windows PowerShell 5.1 原生管道不能可靠传递该令牌，因此改为短期进程环境变量，注册器读取后在启动 Claude 子进程前立即删除。[#59](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33481679883) 已完成所有产品功能标记，但验收脚本末尾保留了故障注入子进程的预期非零 `$LASTEXITCODE`，因而正确拒绝上传正式包；#60 显式清零已断言的预期失败状态后完成放行。四个失败 run 均没有被当作已验证交付包。
 
 ## 1.0.13 Windows 验证状态（CI 已放行）
 
