@@ -333,10 +333,24 @@ function Publish-FileAtomically {
         ".{0}.tmp-{1}" -f ([IO.Path]::GetFileName($Destination)), `
             [guid]::NewGuid().ToString("N")
     )
+    $ReplacementBackup = Join-Path $Parent (
+        ".{0}.bak-{1}" -f ([IO.Path]::GetFileName($Destination)), `
+            [guid]::NewGuid().ToString("N")
+    )
     try {
         [IO.File]::Copy($Source, $Temporary, $false)
         if (Test-Path -LiteralPath $Destination -PathType Leaf) {
-            [IO.File]::Replace($Temporary, $Destination, $null, $true)
+            # Windows PowerShell 5.1 runs on .NET Framework, whose four-argument
+            # File.Replace overload rejects a null backup path.  This branch is
+            # exercised only during an upgrade because the launcher already
+            # exists, so use a legal same-directory backup and remove it after
+            # the atomic replacement completes.
+            [IO.File]::Replace(
+                $Temporary,
+                $Destination,
+                $ReplacementBackup,
+                $true
+            )
         } elseif (Test-Path -LiteralPath $Destination) {
             throw "发布目标已存在但不是普通文件：$Destination"
         } else {
@@ -345,6 +359,10 @@ function Publish-FileAtomically {
     } finally {
         if (Test-Path -LiteralPath $Temporary -PathType Leaf) {
             Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $ReplacementBackup -PathType Leaf) {
+            Remove-Item -LiteralPath $ReplacementBackup -Force `
+                -ErrorAction SilentlyContinue
         }
     }
 }

@@ -365,6 +365,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"current-version.txt"', installer)
         self.assertIn('"templates\\CLAUDE.browser.md"', installer)
         self.assertIn("SETTINGS TOOL RESTORE", installer)
+        self.assertIn("$ReplacementBackup = Join-Path $Parent", installer)
+        self.assertIn("$ReplacementBackup,", installer)
+        self.assertNotIn(
+            "[IO.File]::Replace($Temporary, $Destination, $null, $true)",
+            installer,
+        )
         self.assertIn("[IO.Directory]::Move", settings)
         self.assertNotIn("Move-Item", settings)
         self.assertIn('"extension", "dedicated"', settings)
