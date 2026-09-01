@@ -554,6 +554,18 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("CI SETTINGS FAILURE ROLLBACK PASSED", workflow)
         self.assertIn("$global:LASTEXITCODE = 0", workflow)
         self.assertIn("WINDOWS POST-INSTALL SETTINGS PASSED", workflow)
+        self.assertIn("Build and verify the one-extract Windows user package", workflow)
+        self.assertIn("Compress-Archive -LiteralPath $env:TRANSFER_ROOT", workflow)
+        self.assertIn("The ready ZIP must contain exactly one top-level directory", workflow)
+        self.assertIn("Get-ContentMap", workflow)
+        self.assertIn("byte-identical repack", workflow)
+        self.assertIn("READY WINDOWS PACKAGE SHA256", workflow)
+        ready_upload = workflow.split(
+            "- name: Upload the one-extract Windows user package", 1
+        )[1].split("- name: Upload the publisher transfer archive", 1)[0]
+        self.assertIn("archive: false", ready_upload)
+        self.assertIn("${{ env.READY_ARCHIVE }}", ready_upload)
+        self.assertNotIn("TRANSFER_ARCHIVE", ready_upload)
         self.assertIn("CI EXISTING NPM CLAUDE READY", workflow)
         self.assertIn("CI failed to hide native claude.exe from PATH", workflow)
         self.assertIn("The official per-user Claude Code fallback path is missing", workflow)

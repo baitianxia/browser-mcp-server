@@ -1597,6 +1597,75 @@ jobs:
           $global:LASTEXITCODE = 0
           Write-Host "WINDOWS POST-INSTALL SETTINGS PASSED"
 
+      - name: Build and verify the one-extract Windows user package
+        if: success()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ReadyOutput = Join-Path $env:RUNNER_TEMP "windows-ready"
+          $ReadyExtract = Join-Path $env:RUNNER_TEMP "windows-ready-verify"
+          New-Item -ItemType Directory -Path $ReadyOutput -Force | Out-Null
+          New-Item -ItemType Directory -Path $ReadyExtract -Force | Out-Null
+          $ReadyName = "intranet-browser-agent-transfer-1.0.15-windows-x64-ready.zip"
+          $ReadyArchive = Join-Path $ReadyOutput $ReadyName
+
+          # Passing the directory itself (not its children) keeps exactly one
+          # top-level transfer directory in the user-facing ZIP.
+          Compress-Archive -LiteralPath $env:TRANSFER_ROOT `
+              -DestinationPath $ReadyArchive -CompressionLevel Optimal
+          if (-not (Test-Path -LiteralPath $ReadyArchive -PathType Leaf)) {
+              throw "The one-extract Windows user package was not created."
+          }
+
+          Expand-Archive -LiteralPath $ReadyArchive -DestinationPath $ReadyExtract
+          $ReadyRoots = @(Get-ChildItem -LiteralPath $ReadyExtract -Directory)
+          $ReadyLooseFiles = @(Get-ChildItem -LiteralPath $ReadyExtract -File)
+          if ($ReadyRoots.Count -ne 1 -or $ReadyLooseFiles.Count -ne 0) {
+              throw "The ready ZIP must contain exactly one top-level directory."
+          }
+          if ($ReadyRoots[0].Name -ne (Split-Path -Leaf $env:TRANSFER_ROOT)) {
+              throw "The ready ZIP top-level directory name changed unexpectedly."
+          }
+          python .\scripts\verify-bundle.py $ReadyRoots[0].FullName
+          if ($LASTEXITCODE -ne 0) {
+              throw "The extracted one-extract Windows user package is invalid."
+          }
+
+          function Get-ContentMap {
+              param([Parameter(Mandatory = $true)][string]$Root)
+              $Prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+              return @(Get-ChildItem -LiteralPath $Root -File -Recurse |
+                  ForEach-Object {
+                      $Relative = $_.FullName.Substring($Prefix.Length).Replace('\', '/')
+                      $Hash = (Get-FileHash -LiteralPath $_.FullName `
+                          -Algorithm SHA256).Hash.ToLowerInvariant()
+                      "$Relative`t$($_.Length)`t$Hash"
+                  } | Sort-Object)
+          }
+
+          $SourceMap = @(Get-ContentMap -Root $env:TRANSFER_ROOT)
+          $ReadyMap = @(Get-ContentMap -Root $ReadyRoots[0].FullName)
+          $ContentDifferences = @(Compare-Object -ReferenceObject $SourceMap `
+              -DifferenceObject $ReadyMap -SyncWindow 0)
+          if ($ContentDifferences.Count -ne 0) {
+              throw "The ready ZIP is not a byte-identical repack of the gate-passed transfer directory."
+          }
+
+          $ReadyHash = (Get-FileHash -LiteralPath $ReadyArchive `
+              -Algorithm SHA256).Hash.ToLowerInvariant()
+          $Utf8NoBom = New-Object Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText(
+              "$ReadyArchive.sha256",
+              "$ReadyHash  $ReadyName`n",
+              $Utf8NoBom
+          )
+          Copy-Item -LiteralPath "$ReadyArchive.sha256" `
+              -Destination (Join-Path $env:RUNNER_TEMP `
+                  "windows-evidence\ready.zip.sha256")
+          "READY_ARCHIVE=$ReadyArchive" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "READY WINDOWS PACKAGE SHA256: $ReadyHash"
+
       - name: Upload Windows validation evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -1606,11 +1675,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Upload the gate-passed Windows transfer kit
+      - name: Upload the one-extract Windows user package without another ZIP wrapper
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: intranet-browser-agent-transfer-1.0.15-windows-x64-${{ github.run_id }}
+          path: ${{ env.READY_ARCHIVE }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload the publisher transfer archive and checksum
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: intranet-browser-agent-transfer-1.0.15-windows-x64-publisher-${{ github.run_id }}
           path: |
             ${{ env.TRANSFER_ARCHIVE }}
             ${{ env.TRANSFER_ARCHIVE }}.sha256

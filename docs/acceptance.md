@@ -14,6 +14,7 @@
 - 同一个 Windows package job 必须在启动 launcher 前预置一个缺少批准 CRX/已解压内容的旧扩展版本目录。安装器必须把该目录原子移动到唯一备份路径、逐字保留故障标记、从迁移包重建并重新验证正式目录；安装日志必须包含 `EXTENSION INVALID DIRECTORY QUARANTINED`，最终目录不得保留故障标记。
 - 上述真实 npm Claude Code 2.1.84 夹具必须运行在目标机已报告的 Node v20.18.3 上；不能只用构建 Node v24.19.0 代替目标形态。
 - 同一个 Windows package job 在一键安装和扩展登录态复用 E2E 通过后，必须调用 `%LOCALAPPDATA%` 中实际安装的设置脚本依次验证：保存格式正确的临时当前用户扩展令牌并核对 Claude user-scope 条目；切换独立 Profile 无头模式并在阻断 Chrome Internet 出站时完成真实 `navigate + snapshot`，证明原扩展 Profile 的会话 Cookie 没有被复用；切换独立 Profile 有头模式并核对渲染值；最后恢复 `extension + 有头 + 每次批准` 并证明令牌已经删除。随后使用标准 npm 形态的故障 Claude CLI，让 `remove/add` 实际改写后在 `get` 失败，必须逐字节恢复部署目录和 Claude 用户配置，且日志不得含令牌。临时令牌和独立 Profile 均不得进入上传证据；任何一步失败都不得上传正式包。
+- 全部 Windows 门禁通过后，package job 必须把同一个已验证迁移目录无内容改写地封装为 `intranet-browser-agent-transfer-<版本>-windows-x64-ready.zip`：ZIP 只能有一个顶层迁移目录，解压后必须再次通过 `verify-bundle.py`，且相对路径、文件长度和逐文件 SHA-256 必须与门禁目录完全相同。面向用户的 GitHub artifact 必须用 `actions/upload-artifact@v7` 的单文件 `archive: false` 上传该 ZIP，禁止再套一层 artifact ZIP；发布方使用的 `tar.gz + .sha256` 作为独立 artifact 保留。失败 run 不得上传两类正式包。
 - 生产清单 `validate` 返回 `VALID`，且没有占位符。
 - 完整迁移包、包内运行 archive 及二者的解压目录均通过 `verify-bundle.py`。
 - Windows 运行包的 `SYMLINKS.json` 为空，不含 symlink、junction、reparse point、pnpm 元数据或 `.node`/DLL 原生依赖。唯一允许的 EXE 是 `node/node.exe`；它必须属于声明了 `bundledNode=true` 的最小 Node distribution。
