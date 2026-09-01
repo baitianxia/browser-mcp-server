@@ -165,14 +165,17 @@ class WindowsPilotSetupTests(unittest.TestCase):
             self.assertNotIn("extension", rendered)
 
     def test_settings_tool_is_installed_for_later_user_changes(self) -> None:
+        settings_path = ROOT / "scripts" / "BROWSER-AGENT-SETTINGS.ps1"
         installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(
             encoding="utf-8"
         )
-        settings = (ROOT / "scripts" / "BROWSER-AGENT-SETTINGS.ps1").read_text(
-            encoding="utf-8"
-        )
+        settings = settings_path.read_text(encoding="utf-8")
         launcher = (ROOT / "scripts" / "BROWSER-AGENT-SETTINGS.cmd").read_text(
             encoding="utf-8"
+        )
+        self.assertTrue(
+            settings_path.read_bytes().startswith(b"\xef\xbb\xbf"),
+            "Windows PowerShell 5.1 requires a BOM for scripts containing Chinese text",
         )
         self.assertIn("Install-BrowserAgentSettingsTool", installer)
         self.assertIn('"BROWSER-AGENT-SETTINGS.cmd"', installer)
