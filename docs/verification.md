@@ -2,6 +2,16 @@
 
 状态：截至 2026-09-01 的验证证据快照，不是规范性设计文档。
 
+## 1.0.16 Windows 验证状态（CI 已放行）
+
+1.0.16 将再次双击新版 `INSTALL-WINDOWS-PILOT.cmd` 定义为覆盖升级：安装器在发布新运行时或移动现有配置前，先从受管的当前用户 manifest 中只提取受支持的浏览器模式、浏览器通道、有头/无头、扩展授权、快照和兼容模式；新配置始终重建为新版固定运行时及当前用户固定路径。扩展当前用户授权令牌只从 Claude 当前用户 MCP 条目读取，经严格格式验证后通过短期子进程环境变量重新注册，不进入命令行、升级偏好文件或日志。独立 Profile 模式覆盖升级不再检查或安装 Extension。旧配置不符合受管身份、路径或选项约束时，安装器会在移动旧配置前停止，不猜测迁移。
+
+本地完整回归实际运行 114 项，112 项通过，2 项仅因需要 Windows PowerShell 5.1 而跳过；GitHub Actions YAML、Bash 语法和 `git diff --check` 通过。[Windows release validation #66](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33509602584) 已在提交 `e68ea02ec255f3244541cc45b2ab57eb5a2e912e` 上全绿，总耗时 5 分 50 秒。`windows-2022` 与 `windows-latest` 两套 Windows PowerShell 5.1 源码/AST job 全部成功，Windows 原生 package job 又完成固定运行时、现有 npm Claude 2.1.84、单次首次安装、MCP 注册/握手、页面 E2E 和最终单次解压包校验。
+
+package job 随后实际调用顶层 `INSTALL-WINDOWS-PILOT.cmd` 两次完成覆盖升级。第一轮先设置 `extension + user authorization + headed + full + standard`，覆盖后逐项核对模式、当前用户令牌、新版运行时路径且日志不含令牌，输出 `CI ONE-CLICK EXTENSION SETTINGS UPGRADE PRESERVED`；第二轮先设置 `dedicated + session + headless + compact + robust`，覆盖后逐项核对独立 Profile、无头、无扩展令牌和新版运行时路径，且安装日志存在 `EXTENSION INSTALL SKIPPED: dedicated profile mode`、不存在人工扩展等待，输出 `CI ONE-CLICK DEDICATED SETTINGS UPGRADE PRESERVED`。两个覆盖安装日志分别保存为 `UPGRADE-EXTENSION-USER.log` 和 `UPGRADE-DEDICATED-HEADLESS.log`。#65 首次真实执行这一分支时暴露 Windows PowerShell 5.1 / .NET Framework 的四参数 `File.Replace` 不接受空备份路径；#66 已改用合法的同目录临时备份，并由同一真实覆盖流程证明修复。
+
+run #66 的用户包为 `intranet-browser-agent-transfer-1.0.16-windows-x64-ready.zip`（artifact `9801308810`，37.2 MB），构建日志和 GitHub 无二次封装 artifact digest 共同给出 SHA-256 `38de76d6c9471abf36c26781f224dcd986fccfeda064b4702440d5ce99a5c941`。验证证据 artifact `9801306641` 的 GitHub SHA-256 为 `58694adfb8c7e5c64907e2a929e3e62c748f5f24f0a8a88cfa7ca735950f94fb`；发布者迁移包 artifact `9801310366` 的 GitHub SHA-256 为 `6326a7c66f118eb58c804828ee0c01413ce4837276f5be2ad98476b17ac7a2fb`。三者只在全部 Windows 门禁成功后上传。
+
 ## 1.0.15 Windows 验证状态（CI 已放行）
 
 1.0.15 在固定上游 Playwright MCP 前增加同包离线兼容层，默认使用内联限深快照与动态页面稳定等待；提供同目标点击回退、自定义只读下拉、tooltip 全文和点击后条件确认。安装后设置可独立切换 `compact|full` 与 `robust|standard`。本地完整回归为 111 项通过、2 项 Windows PowerShell 5.1 专属用例按设计跳过；其中 14 项为真实 JSON-RPC 子进程兼容层回归。固定上游服务 `1.63.0-alpha-2026-08-05`（27 个工具）与真实无头 Chrome 的离线 E2E 已通过，覆盖非空导航快照、自定义下拉、tooltip、视口外同目标回退、异步翻页和独立 Profile Cookie 隔离。
