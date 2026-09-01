@@ -64,6 +64,7 @@ function Invoke-Python {
     )
     $Prefix = $script:PythonPrefix
     $PreviousErrorActionPreference = $ErrorActionPreference
+    $PreviousOutputEncoding = $OutputEncoding
     $HadDontWriteBytecode = Test-Path Env:PYTHONDONTWRITEBYTECODE
     $PreviousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
     $Output = @()
@@ -72,6 +73,9 @@ function Invoke-Python {
         $ErrorActionPreference = "Continue"
         $env:PYTHONDONTWRITEBYTECODE = "1"
         if ($PSBoundParameters.ContainsKey("StandardInput")) {
+            # Windows PowerShell 5.1 otherwise uses its ambient native-pipeline
+            # encoding, which can insert NUL bytes into the extension token.
+            $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
             $Output = $StandardInput |
                 & $script:PythonExe @Prefix @Arguments 2>&1
         } else {
@@ -84,6 +88,7 @@ function Invoke-Python {
         } else {
             Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
         }
+        $OutputEncoding = $PreviousOutputEncoding
         $ErrorActionPreference = $PreviousErrorActionPreference
     }
     foreach ($Line in @($Output)) {

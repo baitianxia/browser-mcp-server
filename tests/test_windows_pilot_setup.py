@@ -192,6 +192,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/status.html", settings)
         self.assertIn('"--extension-token-stdin"', settings)
         self.assertIn("-StandardInput $ExtensionToken", settings)
+        self.assertIn(
+            "$OutputEncoding = New-Object System.Text.UTF8Encoding($false)",
+            settings,
+        )
+        self.assertIn("$OutputEncoding = $PreviousOutputEncoding", settings)
         self.assertNotIn('"extension-token.txt"', settings)
         self.assertIn("$ConfigBackedUp = $true", settings)
         self.assertIn("Resolve-ClaudeCodeInvocation", settings)
