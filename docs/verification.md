@@ -2,9 +2,13 @@
 
 状态：截至 2026-09-01 的验证证据快照，不是规范性设计文档。
 
-## 1.0.15 验证状态（候选）
+## 1.0.15 Windows 验证状态（CI 已放行）
 
-1.0.15 在固定上游 Playwright MCP 前增加同包离线兼容层，默认使用内联限深快照与动态页面稳定等待；提供同目标点击回退、自定义只读下拉、tooltip 全文和点击后条件确认。安装后设置可独立切换 `compact|full` 与 `robust|standard`。本地完整回归为 111 项通过、2 项 Windows PowerShell 5.1 专属用例按设计跳过；其中 14 项为真实 JSON-RPC 子进程兼容层回归。固定上游服务 `1.63.0-alpha-2026-08-05`（27 个工具）与真实无头 Chrome 的离线 E2E 已通过，覆盖非空导航快照、自定义下拉、tooltip、视口外同目标回退、异步翻页和独立 Profile Cookie 隔离。Windows 原生打包、PowerShell 5.1、单次安装、Extension 登录态和设置切换仍以本次 GitHub Windows 流水线结果为准，未通过前不得标记为 Windows 已放行。
+1.0.15 在固定上游 Playwright MCP 前增加同包离线兼容层，默认使用内联限深快照与动态页面稳定等待；提供同目标点击回退、自定义只读下拉、tooltip 全文和点击后条件确认。安装后设置可独立切换 `compact|full` 与 `robust|standard`。本地完整回归为 111 项通过、2 项 Windows PowerShell 5.1 专属用例按设计跳过；其中 14 项为真实 JSON-RPC 子进程兼容层回归。固定上游服务 `1.63.0-alpha-2026-08-05`（27 个工具）与真实无头 Chrome 的离线 E2E 已通过，覆盖非空导航快照、自定义下拉、tooltip、视口外同目标回退、异步翻页和独立 Profile Cookie 隔离。
+
+[Windows release validation #62](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33503291931) 已在提交 `3845025fca00e04af3bd60e081de4ef535f2d3fe` 上全绿，总耗时 6 分 11 秒。`windows-2022` 与 `windows-latest` 两套 Windows PowerShell 5.1 源码/AST job 全部成功；Windows 原生 package job 又完成固定 Node/Playwright Extension 构建、原生 Claude 隔离发布门禁、目标形态 npm Claude 2.1.84 入口下的单次顶层安装、扩展人工回退同进程续跑、user-scope 注册、现有 Chrome 会话 Cookie 复用，以及安装后设置的 `full + standard`、`compact + robust`、独立 Profile 无头/有头和安全 Extension 基线恢复。安装后的 Windows MCP 实际核对了兼容层与上游 CLI 两个固定入口；设置阶段 stdio smoke 返回服务 `1.63.0-alpha-2026-08-05` 与 33 个 Extension 模式工具，独立 Profile E2E 同时验证新增动态页面场景和 Cookie 隔离。
+
+run #62 上传的正式迁移 artifact 为 `intranet-browser-agent-transfer-1.0.15-windows-x64-33503291931`（37.1 MB），GitHub 报告 artifact ZIP SHA-256 为 `247b477edf060641128e13062ff22490e98468b45ed6e86703f6274aa370cc11`；验证证据 artifact SHA-256 为 `75aefe19692c6fabe28467b7e2d3a42c1cffbcb40d011ad19f5670dfe546d2b9`。package job 只在发布门禁、迁移/运行包完整性校验、单次安装和两种浏览器 E2E 全部成功后上传正式包；本记录不把 GitHub 页面显示的 artifact digest 冒充迁移 archive 内层 sidecar 哈希。
 
 ## 1.0.14 Windows 验证状态（CI 已放行）
 
