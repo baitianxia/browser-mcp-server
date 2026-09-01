@@ -1565,6 +1565,9 @@ jobs:
           $SettingsLogs |
               Copy-Item -Destination $EvidenceRoot
           Remove-Item -LiteralPath $TokenFile -Force
+          # The injected child failure is an asserted success case. GitHub's
+          # Windows shell otherwise exits with its stale native exit code.
+          $global:LASTEXITCODE = 0
           Write-Host "WINDOWS POST-INSTALL SETTINGS PASSED"
 
       - name: Upload Windows validation evidence

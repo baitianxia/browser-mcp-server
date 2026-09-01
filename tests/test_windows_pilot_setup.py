@@ -521,6 +521,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("CI DEDICATED HEADLESS PROFILE ISOLATION PASSED", workflow)
         self.assertIn("CI DEDICATED HEADED CONFIGURATION PASSED", workflow)
         self.assertIn("CI SETTINGS FAILURE ROLLBACK PASSED", workflow)
+        self.assertIn("$global:LASTEXITCODE = 0", workflow)
         self.assertIn("WINDOWS POST-INSTALL SETTINGS PASSED", workflow)
         self.assertIn("CI EXISTING NPM CLAUDE READY", workflow)
         self.assertIn("CI failed to hide native claude.exe from PATH", workflow)
