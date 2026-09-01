@@ -16,7 +16,7 @@ import tempfile
 import textwrap
 import uuid
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, MutableMapping, Sequence
 
 
 class RegistrationError(RuntimeError):
@@ -29,6 +29,7 @@ MCP_ENVIRONMENT_PATH = (
 )
 ENVIRONMENT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 EXTENSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+EXTENSION_TOKEN_INPUT_ENV = "INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"
 
 
 def _configure_standard_streams() -> None:
@@ -92,19 +93,24 @@ def _validated_extension_token(token: str) -> str:
     return token
 
 
+def _extension_token_from_text(value: str) -> str:
+    token = value.strip()
+    prefix = "PLAYWRIGHT_MCP_EXTENSION_TOKEN="
+    if token.startswith(prefix):
+        token = token[len(prefix) :].strip()
+    return _validated_extension_token(token)
+
+
 def load_extension_token(path: Path) -> str:
     try:
         if not path.is_file() or path.stat().st_size > 1024:
             raise RegistrationError(
                 f"extension token file is missing, not regular, or too large: {path}"
             )
-        token = path.read_text(encoding="utf-8-sig").strip()
+        token = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as exc:
         raise RegistrationError(f"cannot read extension token file: {exc}") from exc
-    prefix = "PLAYWRIGHT_MCP_EXTENSION_TOKEN="
-    if token.startswith(prefix):
-        token = token[len(prefix) :].strip()
-    return _validated_extension_token(token)
+    return _extension_token_from_text(token)
 
 
 def load_extension_token_stream(stream: object = sys.stdin) -> str:
@@ -117,11 +123,18 @@ def load_extension_token_stream(stream: object = sys.stdin) -> str:
         raise RegistrationError(f"cannot read extension token input: {exc}") from exc
     if not isinstance(token, str) or len(token) > 1024:
         raise RegistrationError("extension token input is too large")
-    prefix = "PLAYWRIGHT_MCP_EXTENSION_TOKEN="
-    token = token.strip()
-    if token.startswith(prefix):
-        token = token[len(prefix) :].strip()
-    return _validated_extension_token(token)
+    return _extension_token_from_text(token)
+
+
+def load_extension_token_environment(
+    environment: MutableMapping[str, str] | None = None,
+) -> str:
+    """Consume the transient token before any Claude child process is started."""
+    source = os.environ if environment is None else environment
+    token = source.pop(EXTENSION_TOKEN_INPUT_ENV, None)
+    if token is None:
+        raise RegistrationError("extension token input environment is missing")
+    return _extension_token_from_text(token)
 
 
 def _mcp_environment_arguments(environment: Mapping[str, str]) -> tuple[str, ...]:
@@ -728,6 +741,7 @@ def build_parser() -> argparse.ArgumentParser:
     token_source = register_parser.add_mutually_exclusive_group()
     token_source.add_argument("--extension-token-file", type=Path)
     token_source.add_argument("--extension-token-stdin", action="store_true")
+    token_source.add_argument("--extension-token-environment", action="store_true")
     subparsers.add_parser("self-test")
     return parser
 
@@ -744,6 +758,8 @@ def main() -> int:
                 if args.extension_token_file
                 else load_extension_token_stream()
                 if args.extension_token_stdin
+                else load_extension_token_environment()
+                if args.extension_token_environment
                 else None
             )
             register_user_mcp(

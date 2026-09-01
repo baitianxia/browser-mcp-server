@@ -190,13 +190,14 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("Read-Host \"扩展令牌\" -AsSecureString", settings)
         self.assertIn("绕过扩展批准页", settings)
         self.assertIn("chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/status.html", settings)
-        self.assertIn('"--extension-token-stdin"', settings)
-        self.assertIn("-StandardInput $ExtensionToken", settings)
+        self.assertIn('"--extension-token-environment"', settings)
         self.assertIn(
-            "$OutputEncoding = New-Object System.Text.UTF8Encoding($false)",
+            '"INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"',
             settings,
         )
-        self.assertIn("$OutputEncoding = $PreviousOutputEncoding", settings)
+        self.assertIn("$PreviousTokenInput", settings)
+        self.assertIn("[Environment]::SetEnvironmentVariable", settings)
+        self.assertNotIn("-StandardInput", settings)
         self.assertNotIn('"extension-token.txt"', settings)
         self.assertIn("$ConfigBackedUp = $true", settings)
         self.assertIn("Resolve-ClaudeCodeInvocation", settings)

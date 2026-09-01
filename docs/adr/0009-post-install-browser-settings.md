@@ -16,7 +16,7 @@ Windows user-scope pilot 的一键安装默认通过 Playwright Extension 复用
 2. `extension + 有头 + 当前用户令牌`：用户从官方扩展连接页复制一次令牌，设置工具将其注册到 Claude Code 当前用户 MCP 环境；后续连接不再显示批准页。
 3. `persistent + 独立 Profile + 有头/无头`：Profile 固定在 `%LOCALAPPDATA%\IntranetBrowserAgent\browser-profile\pilot`，不读取日常 Chrome/Edge Profile。首次需要交互登录时先使用有头模式，完成后可切换无头。
 
-扩展令牌不得进入迁移包、部署清单、项目文件、日志或命令输出；它只允许存在于当前用户 Claude Code MCP 配置中。切回“每次确认”或独立 Profile 时，注册事务必须删除该环境项。彻底吊销曾泄漏的令牌时，用户还需在官方扩展页重新生成令牌并重启浏览器。
+扩展令牌不得进入迁移包、部署清单、项目文件、日志或命令输出。设置进程只能通过短期进程环境变量将它交给注册器；注册器在启动 Claude 子进程前必须立即从自身环境删除，PowerShell 在成功或失败后必须恢复原环境。令牌唯一持久化位置是当前用户 Claude Code MCP 配置。切回“每次确认”或独立 Profile 时，注册事务必须删除该环境项。彻底吊销曾泄漏的令牌时，用户还需在官方扩展页重新生成令牌并重启浏览器。
 
 设置变更必须复用安装锁、`%LOCALAPPDATA%` 路径检查、暂存 preflight、MCP stdio 握手、配置整目录原子切换和 Claude user-scope `remove → add → get` 注册事务。失败时恢复旧部署配置和 Claude 用户配置。设置工具不得下载依赖、运行 npm/pnpm/npx、请求 UAC、修改项目文件或自动处理登录秘密。
 

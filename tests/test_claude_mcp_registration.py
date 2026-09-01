@@ -457,6 +457,16 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
                     io.StringIO(f"PLAYWRIGHT_MCP_EXTENSION_TOKEN={token}\n")
                 ),
             )
+            token_environment = {
+                registration.EXTENSION_TOKEN_INPUT_ENV: token,
+                "KEEP": "unchanged",
+            }
+            self.assertEqual(
+                token,
+                registration.load_extension_token_environment(token_environment),
+            )
+            self.assertNotIn(registration.EXTENSION_TOKEN_INPUT_ENV, token_environment)
+            self.assertEqual("unchanged", token_environment["KEEP"])
             expected_environment = registration.load_mcp_environment()
             expected_environment["PLAYWRIGHT_MCP_EXTENSION_TOKEN"] = token
 
@@ -509,6 +519,17 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
                 registration.RegistrationError, "canonical"
             ):
                 registration.load_extension_token_stream(io.StringIO("A" * 42 + "B"))
+            invalid_environment = {
+                registration.EXTENSION_TOKEN_INPUT_ENV: "not-a-token"
+            }
+            with self.assertRaisesRegex(
+                registration.RegistrationError, "invalid format"
+            ):
+                registration.load_extension_token_environment(invalid_environment)
+            self.assertNotIn(
+                registration.EXTENSION_TOKEN_INPUT_ENV,
+                invalid_environment,
+            )
 
     def test_extension_token_is_redacted_from_claude_failure(self) -> None:
         token = "A" * 43

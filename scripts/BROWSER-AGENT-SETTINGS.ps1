@@ -58,13 +58,9 @@ function Write-SettingsLog {
 }
 
 function Invoke-Python {
-    param(
-        [string[]]$Arguments,
-        [AllowNull()][string]$StandardInput = $null
-    )
+    param([string[]]$Arguments)
     $Prefix = $script:PythonPrefix
     $PreviousErrorActionPreference = $ErrorActionPreference
-    $PreviousOutputEncoding = $OutputEncoding
     $HadDontWriteBytecode = Test-Path Env:PYTHONDONTWRITEBYTECODE
     $PreviousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
     $Output = @()
@@ -72,15 +68,7 @@ function Invoke-Python {
     try {
         $ErrorActionPreference = "Continue"
         $env:PYTHONDONTWRITEBYTECODE = "1"
-        if ($PSBoundParameters.ContainsKey("StandardInput")) {
-            # Windows PowerShell 5.1 otherwise uses its ambient native-pipeline
-            # encoding, which can insert NUL bytes into the extension token.
-            $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-            $Output = $StandardInput |
-                & $script:PythonExe @Prefix @Arguments 2>&1
-        } else {
-            $Output = & $script:PythonExe @Prefix @Arguments 2>&1
-        }
+        $Output = & $script:PythonExe @Prefix @Arguments 2>&1
         $ExitCode = $LASTEXITCODE
     } finally {
         if ($HadDontWriteBytecode) {
@@ -88,7 +76,6 @@ function Invoke-Python {
         } else {
             Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue
         }
-        $OutputEncoding = $PreviousOutputEncoding
         $ErrorActionPreference = $PreviousErrorActionPreference
     }
     foreach ($Line in @($Output)) {
@@ -568,9 +555,27 @@ try {
         "--backup", (Join-Path $BackupRoot "claude-user-config.json.bak")
     )
     if ($ExtensionToken) {
-        $RegistrarArguments += "--extension-token-stdin"
-        Invoke-Python -Arguments $RegistrarArguments `
-            -StandardInput $ExtensionToken
+        $TokenInputEnvironmentName = `
+            "INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"
+        $PreviousTokenInput = [Environment]::GetEnvironmentVariable(
+            $TokenInputEnvironmentName,
+            [EnvironmentVariableTarget]::Process
+        )
+        try {
+            [Environment]::SetEnvironmentVariable(
+                $TokenInputEnvironmentName,
+                $ExtensionToken,
+                [EnvironmentVariableTarget]::Process
+            )
+            $RegistrarArguments += "--extension-token-environment"
+            Invoke-Python $RegistrarArguments
+        } finally {
+            [Environment]::SetEnvironmentVariable(
+                $TokenInputEnvironmentName,
+                $PreviousTokenInput,
+                [EnvironmentVariableTarget]::Process
+            )
+        }
     } else {
         Invoke-Python $RegistrarArguments
     }
