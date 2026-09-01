@@ -218,6 +218,16 @@ class BrowserAgentManifestTests(unittest.TestCase):
         errors = browser_agent.validate_manifest(manifest)
         self.assertTrue(any("manual-pilot" in error for error in errors))
 
+    def test_stored_extension_authorization_is_limited_to_windows_user_pilot(self) -> None:
+        pilot = self.valid_windows_manifest()
+        pilot["browser"]["manualConnectionApproval"] = False
+        self.assertEqual([], browser_agent.validate_manifest(pilot))
+
+        production = copy.deepcopy(pilot)
+        production["environment"] = "production"
+        errors = browser_agent.validate_manifest(production)
+        self.assertTrue(any("stored extension authorization" in error for error in errors))
+
     def test_all_risky_actions_are_required(self) -> None:
         manifest = copy.deepcopy(self.demo)
         manifest["controls"]["confirmationActions"].remove("delete")

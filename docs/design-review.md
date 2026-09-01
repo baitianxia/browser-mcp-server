@@ -12,7 +12,7 @@
 2. 动态页面采用 Observe → Reason → Act → Wait → Re-observe → Verify 循环；每个会改变页面状态的动作之后重新观察。
 3. 人负责 SSO、MFA、Passkey、验证码和扫码；Agent 不接收或保存认证秘密。
 4. 浏览器与 MCP 就近运行，Claude Code 通过本机 stdio 启动固定版本运行时。
-5. 使用独立 Chrome Profile，禁止与个人日常 Profile 混用。
+5. production 使用独立 Chrome Profile，禁止与个人日常 Profile 混用；Windows pilot 初始可为验证登录态复用而使用 Extension，安装后可切换独立 Profile。
 6. 内网运行时不访问 npm、GitHub 或在线更新服务。
 7. Chrome DevTools MCP 只在诊断阶段按需启用。
 
@@ -32,7 +32,7 @@ Playwright MCP 官方明确说明 origin allow/block 规则不构成安全边界
 
 ### 4. 不能把扩展令牌提交到项目配置
 
-`PLAYWRIGHT_MCP_EXTENSION_TOKEN` 可以绕过每次连接批准，它等价于对该浏览器 Profile 的持久连接授权。生产默认不使用该令牌；如确需无人值守，令牌必须由机器级秘密管理注入，并单独做风险批准，不能进入 `.mcp.json` 或代码仓库。
+`PLAYWRIGHT_MCP_EXTENSION_TOKEN` 可以绕过每次连接批准，它等价于对该浏览器会话的持久连接授权。生产默认不使用该令牌；如确需无人值守，令牌必须由机器级秘密管理注入，并单独做风险批准。Windows user-scope pilot 可以在用户明确选择后把官方扩展生成的令牌保存到该用户的 Claude MCP 配置，但必须先提示风险，并在切回逐次批准或独立 Profile 时删除。令牌始终不能进入项目 `.mcp.json`、代码仓库、迁移包、部署清单或日志。
 
 ### 5. CDP 是兼容回退，不是隔离方案
 
@@ -51,7 +51,8 @@ Playwright MCP 官方明确说明 origin allow/block 规则不构成安全边界
 | 场景 | 模式 | 原因 |
 |---|---|---|
 | 内网 VDI/开发机生产基线 | `persistent` | 无 Chrome Store 前置；独立身份边界；可由人完成企业认证 |
-| Windows 通用内网 pilot | `extension` | 离线包携带固定官方扩展；逐次批准现有 Tab；可复用目标机当前登录态 |
+| Windows 通用内网 pilot 初始值 | `extension` | 离线包携带固定官方扩展；逐次批准现有 Tab；可复用目标机当前登录态 |
+| Windows pilot 身份隔离/后台运行 | `persistent` | 安装后设置为独立 `%LOCALAPPDATA%` Profile；不共享原浏览器登录态；可选有头/无头 |
 | 已有 Chrome Enterprise 扩展治理 | `extension` | 可选择允许的 Tab，并复用企业浏览器插件和现有会话 |
 | 兼容性排障 | `cdp` | 无扩展依赖，但权限面更广，只允许本机连接 |
 | 页面内部诊断 | 可选 DevTools | 获取 Network/Console/Runtime；默认不安装/不启用 |

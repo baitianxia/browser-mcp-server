@@ -29,7 +29,7 @@ from validate_playwright_extension import (
 )
 
 
-TOOLKIT_VERSION = "1.0.13"
+TOOLKIT_VERSION = "1.0.14"
 RUNTIME_PREFIX = "browser-agent-runtime-"
 RUNTIME_SUFFIX = ".tar.gz"
 RUNTIME_NAME_PATTERN = re.compile(
@@ -67,6 +67,7 @@ EXACT_SOURCE_FILES = (
     "docs/adr/0006-transactional-mcp-registration-and-windows-gate.md",
     "docs/adr/0007-direct-windows-mcp-executable-and-release-hardening.md",
     "docs/adr/0008-publisher-gate-and-single-pass-target-install.md",
+    "docs/adr/0009-post-install-browser-settings.md",
     "examples/chrome-policy/extension-settings-self-hosted.json.template",
     "examples/chrome-policy/extension-settings-web-store.json",
     "runtime/bin/chrome-devtools-mcp",
@@ -85,6 +86,8 @@ EXACT_SOURCE_FILES = (
     "scripts/configure_windows_pilot.py",
     "scripts/create_bundle_archive.py",
     "scripts/generate_sbom.py",
+    "scripts/BROWSER-AGENT-SETTINGS.cmd",
+    "scripts/BROWSER-AGENT-SETTINGS.ps1",
     "scripts/INSTALL-WINDOWS-PILOT.cmd",
     "scripts/INSTALL-WINDOWS-PILOT.ps1",
     "scripts/prepare_runtime_tree.py",
@@ -213,6 +216,8 @@ def start_here(kit_name: str, runtime_name: str, metadata: dict[str, object]) ->
 双击本目录的 `INSTALL-WINDOWS-PILOT.cmd` 一次，无需 UAC，也不填写项目目录、网址或审批字段。启动器只启动一个安装事务，不运行单元测试或注册器自检。向导验证 Windows 原生发布元数据和所有包内制品，把运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome 或 Edge；若浏览器尚无扩展，先用包内 CRX 和当前用户浏览器策略尝试全自动离线安装。浏览器拒绝该策略时，向导会自动打开扩展页、把包内已解压扩展目录复制到剪贴板并显示三步操作；原安装进程持续等待，检测到加载成功后自动继续，无需重跑。随后复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，把直接执行包内 `node.exe + 固定 cli.js` 的 MCP 注册到 Claude Code user scope；当前用户未被同名高优先级配置覆盖的项目都能使用。npm 入口只解析现有安装并直接运行其 Node/CLI，不执行 npm；找不到可用 Claude 时安全停止，绝不安装、升级或修复 Claude Code。试点不配置网址白名单，Playwright MCP 可以操作人通过扩展批准的现有浏览器标签页，并复用其中的登录态。
 
 向导会自动验证运行包、在同盘暂存后发布固定版本、生成清单并先暂存/preflight 再整目录切换配置。随后逐字节备份真实 Claude 用户配置，事务化注册并核对用户级 MCP 命令、参数及固定环境。首次安装明确没有旧 MCP 条目时会直接继续，其他删除错误会恢复并停止。安装后还会以最终命令完成 MCP stdio `initialize + tools/list` 握手。它不会创建项目目录，也不会写项目 `.mcp.json`/`CLAUDE.md`。任何校验失败都会停止并恢复用户配置和旧部署配置；不会运行 `npm install`、`pnpm install` 或 `npx`。
+
+安装成功后可删除迁移包。以后双击 `%LOCALAPPDATA%\\IntranetBrowserAgent\\BROWSER-AGENT-SETTINGS.cmd`，可以记住当前用户的扩展授权、恢复逐次批准，或切换到不共享原 Chrome/Edge 登录态的独立 Profile；独立 Profile 可选有头/无头。保存后重启 Claude Code，不需要重装。
 
 完整操作说明见 `toolkit/docs/windows-quickstart.md`；只有生产部署、回滚或故障处理才需要阅读 `toolkit/docs/operations.md`。
 

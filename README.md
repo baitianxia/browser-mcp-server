@@ -1,122 +1,107 @@
-# 内网 Browser Agent 落地套件
+# Intranet Browser Agent
 
-[![Windows release validation](https://github.com/baitianxia/intranet-browser-agent/actions/workflows/windows-release.yml/badge.svg)](https://github.com/baitianxia/intranet-browser-agent/actions/workflows/windows-release.yml)
+让 Claude Code 操作当前 Windows 用户已经登录的 Chrome 或 Edge 网页。
 
-这是一套面向 Claude Code + Playwright MCP 的可审计、可离线交付基线。它不是另造一个浏览器 Agent；它把浏览器接入、部署前置条件、安全门禁、配置生成和验收固化成代码。
+安装后会注册一个名为 `intranet-browser-agent` 的本地 MCP。它只在 Claude Code 使用时启动，不是 Windows 服务，也不监听网络端口。
 
-只做 Windows 内网测试时，拿到发布流水线验证并解压的正式包后只需双击一次 `INSTALL-WINDOWS-PILOT.cmd`；目标机只运行一个安装事务，不重复发布测试。最短说明见 [`docs/windows-quickstart.md`](docs/windows-quickstart.md)，`docs/operations.md` 是生产、回滚和故障处理用的完整手册。
+## 可以做什么
 
-默认生产拓扑是：
+- 打开和读取网页。
+- 点击、输入、选择、查询和填写表单。
+- 操作标签页、弹窗、键盘和鼠标。
+- 截图并检查操作结果。
+- 复用用户已登录网页中的 Cookie、SSO 和登录状态。
+- 也可改用独立浏览器 Profile，不共享原有登录状态。
+- 在当前 Windows 用户的所有 Claude Code 项目中使用。
+
+它不配置网址白名单，可以访问目标机网络能够正常打开的内网或其他网页，但不会绕过防火墙、证书、网站权限、验证码或 MFA。
+
+## 安装要求
+
+- Windows x64。
+- 当前用户已经可以正常使用 Claude Code。
+- Chrome（优先）或 Edge。
+- Python 3.10 或更高版本。
+
+目标机可以完全断网。安装包已包含运行所需的 Node.js、Playwright MCP 和浏览器扩展，不需要升级系统 Node.js，也不会运行 npm、pnpm 或 npx。
+
+## 安装
+
+使用发布方提供的正式文件：
 
 ```text
-Claude Code ──stdio──> Playwright MCP ──local──> 企业 Chrome
-                                                └─ 专用持久化 Profile
+intranet-browser-agent-transfer-<版本>-windows-x64-ready.zip
 ```
 
-核心选择：
+用户只需：
 
-- 默认 `persistent` 模式：独立 Chrome Profile，人完成 SSO/MFA，Agent 在认证后工作。
-- `extension` 模式：Windows 通用内网 pilot 固定采用此模式来连接用户批准的现有 Tab；生产仅用于已经能通过 Chrome Enterprise 管理扩展的终端。两者都默认保留每次连接的人为批准。
-- `cdp` 模式：只允许 Chrome channel 或 loopback endpoint，作为兼容性回退，不作为隔离边界。
-- MCP 只使用本机 `stdio`；不生成监听 `0.0.0.0` 的服务配置。
-- Playwright 的 origin 过滤只作为可选防误操作护栏；Windows 通用内网试点不生成该白名单，默认允许浏览当前网络可访问的全部网址。生产如需限制范围，仍应使用企业代理、主机防火墙或隔离 VDI 网络。
-- `CLAUDE.md` 规则只约束 Agent 行为，不替代网络、文件系统、身份和审批控制。
+1. 解压 ZIP 一次。
+2. 进入解压后的唯一目录。
+3. 双击一次 `INSTALL-WINDOWS-PILOT.cmd`，等待安装成功。
 
-## 交付内容
+不需要管理员权限，也不需要填写项目目录、网址、防火墙、浏览器 Profile 或审批单号。
 
-- `tools/browser_agent.py`：部署清单校验、配置渲染、运行前检查。
-- `schema/deployment.schema.json`：部署清单结构契约。
-- `config/deployment.windows-pilot.json.template`：Windows x64 内网试点模板，默认失败关闭。
-- `config/deployment.windows-production.json.template`：Windows x64 生产模板，默认失败关闭。
-- `config/windows-mcp-environment.json`：Windows MCP 子进程的固定环境覆盖策略，阻断调用者遗留变量改写包内配置。
-- `config/windows-node-sources.json`：当前 Windows 发布批准的官方 Node 来源固定哈希。
-- `config/deployment.pilot.json.template`：Linux x64 试点模板。
-- `config/deployment.production.json.template`：故意保持未批准状态的生产模板。
-- `config/deployment.local-demo.json`：仅供本地回环演示的可渲染样例。
-- `templates/CLAUDE.browser.md`：Observe → Act → Re-observe → Verify 操作规则。
-- `scripts/build-offline-bundle.sh`：在有网构建区生成固定版本、带校验清单与 CycloneDX 清单的离线运行包。
-- `scripts/build-transfer-kit.py`：把已验证运行包和白名单部署工具链组装成一个内网迁移包。
-- `scripts/verify-bundle.py`：在内网安装前验证文件完整性。
-- `.github/workflows/windows-release.yml`：在 GitHub 托管的 Windows x64、Windows PowerShell 5.1 上运行回归，并原生构建、门禁和安装迁移包。
-- `INSTALL-WINDOWS-PILOT.cmd`：迁移包顶层的 Windows 试点双击安装入口。
-- `scripts/configure_windows_pilot.py`：向导调用的配置生成与 `%LOCALAPPDATA%` 路径/link 检查工具。
-- `docs/windows-quickstart.md`：Windows x64 内网试点的一页式操作入口。
-- `docs/`：评审、架构、威胁模型、完整运维和验收标准。
+### 如果提示手动加载浏览器扩展
 
-## 快速验证
+保持安装窗口打开，按窗口提示：
 
-源码工具要求 Python 3.10+；构建离线运行包另需 Node.js 20.19+ 和 pnpm 11.19.0。当前 Windows x64 试点迁移包自带最小 Node.js 运行时，目标机不需要安装或升级系统 Node.js。
+1. 打开 `chrome://extensions` 或 `edge://extensions`。
+2. 开启“开发者模式”，点击“加载已解压的扩展程序”。
+3. 选择窗口显示的扩展目录。
 
-```bash
-python3 -m unittest discover -s tests -v
+加载成功后安装器会自动继续，不需要重新运行。
 
-python3 tools/browser_agent.py validate \
-  --manifest config/deployment.local-demo.json
+## 使用
 
-python3 tools/browser_agent.py render \
-  --manifest config/deployment.local-demo.json \
-  --out build/local-demo
+1. 安装成功后重启 Claude Code。
+2. 在任意项目中输入 `/mcp`。
+3. 确认 `intranet-browser-agent` 已连接。
+4. 提出浏览器任务；默认在 Playwright Extension 中选择要授权的已登录标签页。
+
+第一次建议只做读取测试：
+
+```text
+使用 intranet-browser-agent 读取当前授权标签页的标题，不执行写操作。
 ```
 
-推送到 GitHub 后，`Windows release validation` 会在 `windows-2022` 和 `windows-latest` 上用 Windows PowerShell 5.1 跑完整测试；随后在 `windows-latest` 原生构建 Windows 运行包。一次性有网 CI VM 会准备固定 Claude Code 2.1.84 的原生和 npm 两种测试夹具：原生入口完成隔离门禁，真实 npm `claude.cmd` 入口完成顶层 `INSTALL-WINDOWS-PILOT.cmd` 的单次全流程。只有两种入口、MCP 握手、隔离 user-scope 注册、完整安装和安装后页面/Cookie 校验均通过，才上传可下载的 Windows 迁移包 artifact。CI 中安装固定 pnpm/Claude 测试夹具不属于目标机步骤，也不会被带入迁移包；内网安装器只复用已有 Claude Code，绝不安装或修复它，且不运行 npm、pnpm 或 npx。
+也可以这样使用：
 
-Windows 内网测试不要直接使用 demo，也不要使用交叉构建候选。完整测试、PowerShell AST 解析、假 Claude CLI 失败回滚和真实隔离探针只由发布方在受控 Windows x64 流水线运行；只有该门禁和随后的一键安装回归都通过，流水线才上传正式包。目标机一次双击 `INSTALL-WINDOWS-PILOT.cmd` 只启动一个安装事务，不再重复发布测试。安装器验证包来自 Windows x64 原生构建并已完成目标 CLI 冒烟，复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`；npm 入口安全解析为其现有 `node.exe + 已安装 cli.js`，不会运行包管理器。找不到可用 Claude 时在任何真实配置变更前停止，不会擅自安装。向导不请求 UAC、不询问项目目录，会把固定运行时安装到当前用户 `%LOCALAPPDATA%`，自动识别 Chrome/Edge，并事务化注册 user-scope MCP。迁移包已携带固定官方 CRX 和逐文件一致的已解压扩展：浏览器接受本地策略时自动安装；拒绝时向导自动打开扩展页、复制唯一目录并等待用户加载，成功后原进程续跑，无需第二次启动。实际 MCP 直接执行包内 `node.exe + 固定 cli.js + --browser=<channel> + --executable-path=<browser.exe> + config`，不依赖 `.cmd` shell shim；浏览器按自身 `last_used` Profile 复用用户明确批准标签页的登录态。固定环境映射会阻止遗留 Playwright MCP 配置变量、`NODE_OPTIONS` 和 `NODE_PATH` 改写包内配置。安装后该用户的项目均可使用（同名的 local/project 配置按 Claude Code 自身优先级覆盖 user scope）；试点不要求网址白名单、防火墙配置、浏览器选择或审批单号。具体只看 `docs/windows-quickstart.md`。
+```text
+打开内网 OA，列出前五条待办，不要修改内容。
 
-Windows 生产部署则从 Windows 生产模板开始：
+在当前系统中查询订单 20260831001，告诉我订单状态。
 
-```powershell
-Copy-Item .\config\deployment.windows-production.json.template C:\BrowserAgent\deployment.windows-production.json
-notepad.exe C:\BrowserAgent\deployment.windows-production.json
-
-py -3 .\tools\browser_agent.py validate --manifest C:\BrowserAgent\deployment.windows-production.json
-py -3 .\tools\browser_agent.py render --manifest C:\BrowserAgent\deployment.windows-production.json --out C:\BrowserAgent\rendered-production
+填写查询条件并点击查询；提交、删除或审批前先向我确认。
 ```
 
-生产如选用 project scope，可把手工生成目录中的 `.mcp.json` 放到 Claude Code 项目根，并按组织规范处理 `CLAUDE.browser.md`。Windows 通用试点固定使用 user scope，不写任何项目文件。
+默认是有头模式，用户可以看到并随时接管操作。MCP 只能访问用户明确授权的标签页，不会自动接管全部浏览器页面，也不会自动输入密码、验证码或 MFA 信息。
 
-## 离线包
+## 更改浏览器设置
 
-Windows 生产制品应在有网 Windows x64 受控构建机执行：
+安装后双击：
 
-```powershell
-powershell.exe -NoProfile -File .\scripts\build-offline-bundle.ps1 -Profile core -NodeDistribution C:\Build\node-minimal -OutputDir .\dist
+```text
+%LOCALAPPDATA%\IntranetBrowserAgent\BROWSER-AGENT-SETTINGS.cmd
 ```
 
-不要临时绕过 PowerShell 执行策略；使用组织签名脚本或批准策略。若当前只有 macOS/Linux 构建机，可为内网测试交叉组装一个明确标记为未经过 Windows 目标验证的候选包：
+可以选择记住当前用户的扩展授权（首次复制一次令牌）、恢复每次连接确认，或使用不共享原 Chrome/Edge 登录态的独立 Profile。独立 Profile 可选有头或无头；首次登录建议先用有头模式。保存后重启 Claude Code 即可，不需要保留安装包或重新安装。
 
-```bash
-PNPM_BIN=/absolute/path/to/pnpm \
-NODE_BIN=/absolute/path/to/node \
-scripts/build-offline-bundle.sh --profile core --target windows-x64 --output-dir dist \
-  --node-distribution /absolute/path/to/node-minimal
+## 安装包还需要保留吗
+
+安装成功并确认 `/mcp` 已连接后：
+
+- ZIP 和解压目录都可以删除。
+- 不要删除 `%LOCALAPPDATA%\IntranetBrowserAgent`。
+- 不要删除浏览器中的 Playwright Extension。
+
+如果以后需要离线重装，可以在内网软件库保留一份 ZIP。
+
+## 安装失败
+
+不要运行 npm、pnpm 或 npx 修复命令。直接提供安装日志：
+
+```text
+%TEMP%\IntranetBrowserAgent\INSTALL-WINDOWS-PILOT-*.log
 ```
 
-Windows 交叉构建仅允许 `core` 候选包，并强制携带由 `prepare_windows_node_distribution.py` 生成、与 `config/windows-node-sources.json` 批准哈希一致的 Windows x64 最小 Node distribution；它只含 `node.exe`、许可证、版本和来源记录，不含 npm、npx 或 corepack。交叉构建仍未在 Windows 执行目标 `node.exe`、Claude CLI、Chrome/Edge 和 preflight，因此不能作为生产制品。内网导入前：
-
-```bash
-python3 scripts/verify-bundle.py dist/browser-agent-runtime-*.tar.gz
-```
-
-运行包验证通过后，组装完整迁移包：
-
-```bash
-python3 scripts/build-transfer-kit.py \
-  --runtime-archive /absolute/path/to/browser-agent-runtime.tar.gz \
-  --extension-crx /absolute/path/to/playwright-extension-0.3.0.crx \
-  --output-dir dist
-```
-
-也可执行 `make transfer-kit RUNTIME_ARCHIVE=/absolute/path/to/runtime.tar.gz EXTENSION_CRX=/absolute/path/to/playwright-extension-0.3.0.crx`。最终迁移 `dist/intranet-browser-agent-transfer-*.tar.gz` 及其相邻 `.sha256`；包内 `START-HERE.md` 是内网操作入口。迁移包不会收录真实部署清单、`.git`、构建缓存或已有 `build/`、`dist/`。
-
-Windows V1 仅支持 x64 和安全的本机盘符路径，不支持 Windows ARM64、UNC 或 `%LOCALAPPDATA%` 以下的 link/junction。Windows 一键包固定 `bundledNode=true`，向导在完整性、批准来源和目标机版本校验后直接使用包内 Node.js，不探测或修改系统 Node。
-
-Windows 内网试点先看 `docs/windows-quickstart.md`；完整部署、回滚和人工认证步骤见 `docs/operations.md`，生产放行条件见 `docs/acceptance.md`。
-本次实际执行过的检查和仍待企业环境验证的项目见 `docs/verification.md`。
-
-## 文档权威顺序
-
-1. `docs/architecture.md`：本项目当前架构和不可变约束。
-2. `schema/deployment.schema.json` 与 `tools/browser_agent.py`：机器可执行契约；二者冲突属于缺陷。
-3. `docs/threat-model.md`：安全边界和残余风险。
-4. `docs/operations.md`、`docs/acceptance.md`：部署运行和放行要求。
-5. `docs/design-review.md`、`docs/adr/`：评审依据和已接受决策。
+如有问题，请联系 tianxiabai。

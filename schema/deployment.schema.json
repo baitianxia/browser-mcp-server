@@ -70,6 +70,7 @@
         "channel": { "enum": ["chrome", "msedge"] },
         "userDataDir": { "type": "string" },
         "executablePath": { "type": "string", "minLength": 1 },
+        "headless": { "type": "boolean" },
         "profileOwner": { "type": "string", "minLength": 1 },
         "maxConcurrentAgents": { "const": 1 },
         "cdpEndpoint": { "type": "string" },
@@ -168,6 +169,68 @@
       },
       "else": {
         "properties": { "workspaceRoots": { "minItems": 1 } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "mode": { "const": "persistent" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "properties": {
+          "browser": {
+            "required": ["userDataDir"],
+            "not": {
+              "anyOf": [
+                { "required": ["cdpEndpoint"] },
+                { "required": ["extensionDistribution"] },
+                { "required": ["manualConnectionApproval"] }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "mode": { "const": "extension" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "properties": {
+          "browser": {
+            "required": ["extensionDistribution", "manualConnectionApproval"],
+            "not": {
+              "anyOf": [
+                { "required": ["userDataDir"] },
+                { "required": ["headless"] },
+                { "required": ["cdpEndpoint"] }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "mode": { "const": "cdp" } },
+        "required": ["mode"]
+      },
+      "then": {
+        "properties": {
+          "browser": {
+            "required": ["cdpEndpoint"],
+            "not": {
+              "anyOf": [
+                { "required": ["userDataDir"] },
+                { "required": ["executablePath"] },
+                { "required": ["headless"] },
+                { "required": ["extensionDistribution"] },
+                { "required": ["manualConnectionApproval"] }
+              ]
+            }
+          }
+        }
       }
     },
     {

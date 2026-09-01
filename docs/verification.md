@@ -1,6 +1,12 @@
 # 本次验证记录
 
-状态：2026-08-31 的验证证据快照，不是规范性设计文档。
+状态：截至 2026-09-01 的验证证据快照，不是规范性设计文档。
+
+## 1.0.14 Windows 验证状态（候选，尚未放行）
+
+1.0.14 候选增加安装后设置入口：Extension 可在逐次批准与当前用户令牌之间切换；独立 `%LOCALAPPDATA%` Profile 可选择有头/无头且不读取原 Chrome/Edge 登录态。设置工具随安装复制到版本化 maintenance 目录，不依赖原迁移包，使用与安装器相同的锁、路径检查、暂存 preflight/MCP 握手、原子目录切换和 Claude `remove → add → get` 事务。令牌经标准输入进入注册器，不写设置暂存文件，Claude 错误输出会按当前和旧令牌脱敏。
+
+当前本地执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`：96 项中 94 项通过，2 项仅因需要 Windows PowerShell 5.1 而跳过；Python AST、JSON、GitHub Actions YAML、Bash 语法和 `git diff --check` 通过。新增 Windows package job 还要求真实安装的设置工具覆盖用户令牌、独立无头 Profile 的离线页面/登录态隔离 E2E、独立有头渲染、恢复逐次批准，以及 `remove/add` 后 `get` 故障的部署配置与 Claude 用户配置逐字节回滚和日志令牌防泄漏。上述 Windows PowerShell 5.1、真实 Chrome 和原生 package job 尚未执行，因此本候选不得作为 Windows 已验证正式包交付；只有 GitHub workflow 全绿后才能更新为放行状态。
 
 ## 1.0.13 Windows 验证状态（CI 已放行）
 

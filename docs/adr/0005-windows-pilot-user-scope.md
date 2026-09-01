@@ -1,6 +1,6 @@
 # ADR 0005：Windows 试点使用 Claude Code user scope
 
-状态：已接受；2026-08-30 按 Windows pilot extension 决策修订。
+状态：已接受；2026-09-01 由 ADR-0009 扩展安装后浏览器设置，以下 Extension 约束描述一键安装初始值。
 
 ## 背景
 
@@ -11,13 +11,13 @@ Claude Code 当前官方 scope 契约是：project scope 写项目根 `.mcp.json
 ## 决策
 
 - Windows 通用内网 pilot 固定使用 Claude Code `user` scope。
-- 运行时、配置、输出、离线 CRX 和已解压扩展副本全部放在 `%LOCALAPPDATA%\IntranetBrowserAgent`，不请求管理员权限。pilot 不创建专用浏览器 Profile，而是通过扩展连接人明确批准的现有 Tab。
+- 运行时、配置、输出、离线 CRX 和已解压扩展副本全部放在 `%LOCALAPPDATA%\IntranetBrowserAgent`，不请求管理员权限。pilot 初始不创建专用浏览器 Profile，而是通过扩展连接人批准的现有浏览器会话；安装后可按 ADR-0009 切换到同一根目录下的独立 Profile。
 - 向导使用 Claude Code CLI 注册绝对路径 stdio MCP；注册前备份用户配置，失败时恢复。
 - 注册前允许删除同名旧条目；首次安装没有旧条目时继续执行 `mcp add`。Windows PowerShell 5.1 捕获原生命令 stderr 时不得把普通诊断误判为终止错误，最终结果以退出码为准。
 - 向导不要求项目目录，也不写项目 `.mcp.json`、项目 `CLAUDE.md` 或固定工作区。
 - `workspaceRoots=[]` 明确表示安装时不绑定项目；实际根目录由 Claude Code 会话及 MCP roots 协商。
 - production 仍可按组织需要使用 project 或 managed scope，本决策只覆盖通用 Windows pilot。
-- preflight 自动检查所有 user-scope 安装路径位于 `%LOCALAPPDATA%`，并确认 extension 模式、浏览器 channel、无 `userDataDir` 和人工连接批准；安装人员不需要回答这些可计算的配置事实。
+- 初始 preflight 自动检查所有 user-scope 安装路径位于 `%LOCALAPPDATA%`，并确认 extension 模式、浏览器 channel、无 `userDataDir/headless` 和人工连接批准；安装后设置的模式专用检查由 ADR-0009 规定。安装人员不需要回答这些可计算的配置事实。
 
 ## 结果
 

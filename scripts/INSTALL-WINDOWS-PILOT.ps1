@@ -245,6 +245,170 @@ function Publish-StagedRuntime {
         -LogPrefix "RUNTIME PUBLISH"
 }
 
+function Publish-FileAtomically {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "待发布文件不存在：$Source"
+    }
+    $Parent = Split-Path -Parent $Destination
+    New-Item -ItemType Directory -Path $Parent -Force | Out-Null
+    $Temporary = Join-Path $Parent (
+        ".{0}.tmp-{1}" -f ([IO.Path]::GetFileName($Destination)), `
+            [guid]::NewGuid().ToString("N")
+    )
+    try {
+        [IO.File]::Copy($Source, $Temporary, $false)
+        if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+            [IO.File]::Replace($Temporary, $Destination, $null, $true)
+        } elseif (Test-Path -LiteralPath $Destination) {
+            throw "发布目标已存在但不是普通文件：$Destination"
+        } else {
+            [IO.File]::Move($Temporary, $Destination)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $Temporary -PathType Leaf) {
+            Remove-Item -LiteralPath $Temporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Install-BrowserAgentSettingsTool {
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolkitRoot,
+        [Parameter(Mandatory = $true)][string]$AgentRoot,
+        [Parameter(Mandatory = $true)][string]$StagingRoot,
+        [Parameter(Mandatory = $true)][string]$ToolkitVersion
+    )
+    if ($ToolkitVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw "设置工具版本不合法：$ToolkitVersion"
+    }
+    $Files = @(
+        "config\windows-mcp-environment.json",
+        "scripts\BROWSER-AGENT-SETTINGS.ps1",
+        "scripts\configure_windows_pilot.py",
+        "scripts\register_claude_user_mcp.py",
+        "scripts\smoke_playwright_mcp.py",
+        "scripts\windows-tool-discovery.ps1",
+        "templates\CLAUDE.browser.md",
+        "tools\browser_agent.py"
+    )
+    $LauncherSource = Join-Path $ToolkitRoot `
+        "scripts\BROWSER-AGENT-SETTINGS.cmd"
+    foreach ($RelativePath in @($Files) + @(
+        "scripts\BROWSER-AGENT-SETTINGS.cmd"
+    )) {
+        $SourcePath = Join-Path $ToolkitRoot $RelativePath
+        if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
+            throw "迁移包缺少设置工具文件：$SourcePath"
+        }
+    }
+
+    $MaintenanceRoot = Join-Path $AgentRoot "maintenance"
+    $VersionRoot = Join-Path $MaintenanceRoot $ToolkitVersion
+    $StagedVersionRoot = Join-Path $StagingRoot (
+        "settings-tool-" + [guid]::NewGuid().ToString("N")
+    )
+    New-Item -ItemType Directory -Path $StagedVersionRoot -Force | Out-Null
+    foreach ($RelativePath in $Files) {
+        $SourcePath = Join-Path $ToolkitRoot $RelativePath
+        $DestinationPath = Join-Path $StagedVersionRoot $RelativePath
+        New-Item -ItemType Directory -Path (Split-Path -Parent $DestinationPath) `
+            -Force | Out-Null
+        Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath
+    }
+
+    $ExistingIsValid = Test-Path -LiteralPath $VersionRoot -PathType Container
+    if ($ExistingIsValid) {
+        foreach ($RelativePath in $Files) {
+            $ExistingPath = Join-Path $VersionRoot $RelativePath
+            $SourcePath = Join-Path $ToolkitRoot $RelativePath
+            if (-not (Test-Path -LiteralPath $ExistingPath -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $ExistingPath -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256).Hash) {
+                $ExistingIsValid = $false
+                break
+            }
+        }
+    }
+    if (Test-Path -LiteralPath $VersionRoot) {
+        if ($ExistingIsValid) {
+            Remove-Item -LiteralPath $StagedVersionRoot -Recurse -Force
+        } else {
+            if (-not (Test-Path -LiteralPath $VersionRoot -PathType Container)) {
+                throw "设置工具版本路径已存在但不是目录：$VersionRoot"
+            }
+            $QuarantineRoot = Join-Path $AgentRoot (
+                "backups\settings-tool-{0}-{1}" -f `
+                    (Get-Date -Format "yyyyMMdd-HHmmss-fff"), `
+                    [guid]::NewGuid().ToString("N").Substring(0, 8)
+            )
+            New-Item -ItemType Directory -Path (Split-Path -Parent $QuarantineRoot) `
+                -Force | Out-Null
+            $ExistingToolQuarantined = $false
+            try {
+                Move-DirectoryAtomicallyWithRetry `
+                    -Source $VersionRoot `
+                    -Destination $QuarantineRoot `
+                    -OperationLabel "旧设置工具隔离" `
+                    -LogPrefix "SETTINGS TOOL QUARANTINE"
+                $ExistingToolQuarantined = $true
+                Move-DirectoryAtomicallyWithRetry `
+                    -Source $StagedVersionRoot `
+                    -Destination $VersionRoot `
+                    -OperationLabel "设置工具发布" `
+                    -LogPrefix "SETTINGS TOOL PUBLISH"
+            } catch {
+                $PublishError = $_
+                if ($ExistingToolQuarantined -and
+                    -not (Test-Path -LiteralPath $VersionRoot) -and
+                    (Test-Path -LiteralPath $QuarantineRoot `
+                        -PathType Container)) {
+                    try {
+                        Move-DirectoryAtomicallyWithRetry `
+                            -Source $QuarantineRoot `
+                            -Destination $VersionRoot `
+                            -OperationLabel "旧设置工具恢复" `
+                            -LogPrefix "SETTINGS TOOL RESTORE"
+                    } catch {
+                        throw ("{0}; 旧设置工具恢复失败：{1}" -f `
+                            $PublishError.Exception.Message, `
+                            $_.Exception.Message)
+                    }
+                }
+                throw $PublishError
+            }
+        }
+    } else {
+        New-Item -ItemType Directory -Path $MaintenanceRoot -Force | Out-Null
+        Move-DirectoryAtomicallyWithRetry `
+            -Source $StagedVersionRoot `
+            -Destination $VersionRoot `
+            -OperationLabel "设置工具发布" `
+            -LogPrefix "SETTINGS TOOL PUBLISH"
+    }
+
+    $LauncherDestination = Join-Path $AgentRoot `
+        "BROWSER-AGENT-SETTINGS.cmd"
+    Publish-FileAtomically -Source $LauncherSource -Destination $LauncherDestination
+    $VersionMarkerSource = Join-Path $StagingRoot (
+        "current-version-" + [guid]::NewGuid().ToString("N") + ".txt"
+    )
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText(
+        $VersionMarkerSource,
+        $ToolkitVersion + [Environment]::NewLine,
+        $Utf8NoBom
+    )
+    Publish-FileAtomically `
+        -Source $VersionMarkerSource `
+        -Destination (Join-Path $MaintenanceRoot "current-version.txt")
+    Remove-Item -LiteralPath $VersionMarkerSource -Force -ErrorAction SilentlyContinue
+    Write-InstallLog "SETTINGS TOOL INSTALLED: $LauncherDestination"
+}
+
 function Get-NodeInfo {
     param([string]$Executable)
     $Output = @()
@@ -531,6 +695,10 @@ try {
     $McpRegistrar = Join-Path $ToolkitRoot "scripts\register_claude_user_mcp.py"
     $McpSmoke = Join-Path $ToolkitRoot "scripts\smoke_playwright_mcp.py"
     $BrowserAgent = Join-Path $ToolkitRoot "tools\browser_agent.py"
+    $SettingsLauncher = Join-Path $ToolkitRoot `
+        "scripts\BROWSER-AGENT-SETTINGS.cmd"
+    $SettingsScript = Join-Path $ToolkitRoot `
+        "scripts\BROWSER-AGENT-SETTINGS.ps1"
     $KitMetadataPath = Join-Path $PSScriptRoot "KIT-METADATA.json"
     foreach ($RequiredPath in @(
         $Verifier,
@@ -544,6 +712,8 @@ try {
         $McpRegistrar,
         $McpSmoke,
         $BrowserAgent,
+        $SettingsLauncher,
+        $SettingsScript,
         $KitMetadataPath
     )) {
         if (-not (Test-Path -LiteralPath $RequiredPath -PathType Leaf)) {
@@ -556,6 +726,10 @@ try {
     $KitMetadata = Get-Content -LiteralPath $KitMetadataPath -Raw | ConvertFrom-Json
     $RuntimeMetadata = $KitMetadata.runtime
     $BuildMetadata = $RuntimeMetadata.buildMetadata
+    $ToolkitVersion = [string]$KitMetadata.toolkitVersion
+    if ($ToolkitVersion -ne [string]$BuildMetadata.runtimeVersion) {
+        throw "迁移包设置工具版本与运行时版本不一致。"
+    }
     $BrowserExtensionProperty = $KitMetadata.PSObject.Properties["browserExtension"]
     if ($null -eq $BrowserExtensionProperty -or
         $null -eq $BrowserExtensionProperty.Value) {
@@ -663,6 +837,8 @@ try {
         "--path", $InstalledExtensionUnpacked,
         "--path", (Join-Path $AgentRoot "staging"),
         "--path", (Join-Path $AgentRoot "backups"),
+        "--path", (Join-Path $AgentRoot "maintenance"),
+        "--path", (Join-Path $AgentRoot "BROWSER-AGENT-SETTINGS.cmd"),
         "--path", (Join-Path $AgentRoot ".install.lock")
     )
 
@@ -1204,6 +1380,11 @@ try {
     )
     $UserConfigChangeStarted = $true
     Invoke-Python $RegistrarArguments
+    Install-BrowserAgentSettingsTool `
+        -ToolkitRoot $ToolkitRoot `
+        -AgentRoot $AgentRoot `
+        -StagingRoot $StagingRoot `
+        -ToolkitVersion $ToolkitVersion
     $UserConfigCommitted = $true
     $ConfigCommitted = $true
     $ExtensionPolicyCommitted = $true
@@ -1219,6 +1400,7 @@ Claude MCP scope: user (all projects for the current Windows user)
 Browser mode: existing $BrowserChannel tabs through Playwright Extension $ExtensionVersion
 Extension install method: $ExtensionInstallMethod
 Backup: $BackupRoot
+Settings: $(Join-Path $AgentRoot "BROWSER-AGENT-SETTINGS.cmd")
 
 Next: restart Claude Code in any project, run /mcp to confirm intranet-browser-agent,
 approve the browser tab connection, and perform a read-only page-title test first.
@@ -1235,6 +1417,7 @@ approve the browser tab connection, and perform a read-only page-title test firs
     Write-Host "安装和 preflight 已完成。" -ForegroundColor Green
     Write-Host "下一步：重启 Claude Code，在任意项目中输入 /mcp 查看 intranet-browser-agent。"
     Write-Host "首次调用浏览器工具时，在 Playwright Extension 页面选择允许控制的现有标签页。"
+    Write-Host "后续切换授权、无头或独立 Profile：$AgentRoot\BROWSER-AGENT-SETTINGS.cmd"
     if ($SummaryWritten) {
         Write-Host "安装摘要：$SummaryPath"
     }

@@ -196,6 +196,12 @@ class TransferKitTests(unittest.TestCase):
                 f"{prefix}/toolkit/scripts/configure_windows_pilot.py", names
             )
             self.assertIn(
+                f"{prefix}/toolkit/scripts/BROWSER-AGENT-SETTINGS.cmd", names
+            )
+            self.assertIn(
+                f"{prefix}/toolkit/scripts/BROWSER-AGENT-SETTINGS.ps1", names
+            )
+            self.assertIn(
                 f"{prefix}/toolkit/scripts/check_playwright_extension.py", names
             )
             self.assertIn(

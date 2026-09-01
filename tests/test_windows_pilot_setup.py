@@ -64,6 +64,143 @@ class WindowsPilotSetupTests(unittest.TestCase):
         errors = configure.browser_agent.validate_manifest(manifest)
         self.assertTrue(any("must be empty for user-scoped MCP" in item for item in errors))
 
+    def test_post_install_browser_preferences_cover_supported_combinations(self) -> None:
+        user_root = r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
+        dedicated = configure.build_manifest(
+            self.template(),
+            runtime_root=user_root + r"\releases\runtime-1",
+            config_root=user_root + r"\config\pilot",
+            output_directory=user_root + r"\output\pilot",
+            profile_owner=r"CORP\pilot-user",
+            browser_channel="chrome",
+            browser_executable=(
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+            ),
+            node_executable=user_root + r"\releases\runtime-1\node\node.exe",
+            browser_mode="dedicated",
+            headless=True,
+            user_data_dir=user_root + r"\browser-profile\pilot",
+        )
+        self.assertEqual([], configure.browser_agent.validate_manifest(dedicated))
+        self.assertEqual("persistent", dedicated["mode"])
+        self.assertTrue(dedicated["browser"]["headless"])
+        self.assertEqual(
+            user_root + r"\browser-profile\pilot",
+            dedicated["browser"]["userDataDir"],
+        )
+        self.assertNotIn("manualConnectionApproval", dedicated["browser"])
+        playwright = configure.browser_agent._render_playwright(dedicated)
+        self.assertNotIn("extension", playwright)
+        self.assertTrue(playwright["browser"]["launchOptions"]["headless"])
+        self.assertEqual(
+            dedicated["browser"]["executablePath"],
+            playwright["browser"]["launchOptions"]["executablePath"],
+        )
+
+        remembered = self.manifest()
+        configure.apply_browser_preferences(
+            remembered,
+            browser_mode="extension",
+            headless=False,
+            extension_authorization="user",
+            user_data_dir=None,
+        )
+        self.assertEqual([], configure.browser_agent.validate_manifest(remembered))
+        self.assertFalse(remembered["browser"]["manualConnectionApproval"])
+
+        with self.assertRaisesRegex(
+            configure.ConfiguratorError, "headless mode cannot be combined"
+        ):
+            configure.apply_browser_preferences(
+                self.manifest(),
+                browser_mode="extension",
+                headless=True,
+                extension_authorization="session",
+                user_data_dir=None,
+            )
+
+    def test_reconfigure_writes_a_complete_rendered_dedicated_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed_manifest = root / "installed.json"
+            manifest_out = root / "staged" / "deployment.json"
+            render_out = root / "rendered"
+            installed_manifest.write_text(
+                json.dumps(self.manifest()), encoding="utf-8"
+            )
+            dedicated_profile = (
+                r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
+                r"\browser-profile\pilot"
+            )
+            configure.reconfigure(
+                argparse.Namespace(
+                    manifest=installed_manifest,
+                    manifest_out=manifest_out,
+                    render_out=render_out,
+                    browser_mode="dedicated",
+                    headless="true",
+                    extension_authorization="session",
+                    user_data_dir=dedicated_profile,
+                    force=False,
+                )
+            )
+            staged = json.loads(manifest_out.read_text(encoding="utf-8"))
+            rendered = json.loads(
+                (render_out / "playwright.config.json").read_text(encoding="utf-8")
+            )
+            mcp = json.loads((render_out / ".mcp.json").read_text(encoding="utf-8"))
+            self.assertEqual("persistent", staged["mode"])
+            self.assertEqual(dedicated_profile, staged["browser"]["userDataDir"])
+            self.assertTrue(rendered["browser"]["launchOptions"]["headless"])
+            self.assertEqual(
+                staged["browser"]["executablePath"],
+                rendered["browser"]["launchOptions"]["executablePath"],
+            )
+            arguments = mcp["mcpServers"]["intranet-browser-agent"]["args"]
+            self.assertIn("--browser=chrome", arguments)
+            self.assertIn(
+                f"--executable-path={staged['browser']['executablePath']}",
+                arguments,
+            )
+            self.assertNotIn("extension", rendered)
+
+    def test_settings_tool_is_installed_for_later_user_changes(self) -> None:
+        installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(
+            encoding="utf-8"
+        )
+        settings = (ROOT / "scripts" / "BROWSER-AGENT-SETTINGS.ps1").read_text(
+            encoding="utf-8"
+        )
+        launcher = (ROOT / "scripts" / "BROWSER-AGENT-SETTINGS.cmd").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Install-BrowserAgentSettingsTool", installer)
+        self.assertIn('"BROWSER-AGENT-SETTINGS.cmd"', installer)
+        self.assertIn('"current-version.txt"', installer)
+        self.assertIn('"templates\\CLAUDE.browser.md"', installer)
+        self.assertIn("SETTINGS TOOL RESTORE", installer)
+        self.assertIn("[IO.Directory]::Move", settings)
+        self.assertNotIn("Move-Item", settings)
+        self.assertIn('"extension", "dedicated"', settings)
+        self.assertIn('"headed", "headless"', settings)
+        self.assertIn('"session", "user"', settings)
+        self.assertIn("Read-Host \"扩展令牌\" -AsSecureString", settings)
+        self.assertIn("绕过扩展批准页", settings)
+        self.assertIn("chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/status.html", settings)
+        self.assertIn('"--extension-token-stdin"', settings)
+        self.assertIn("-StandardInput $ExtensionToken", settings)
+        self.assertNotIn('"extension-token.txt"', settings)
+        self.assertIn("$ConfigBackedUp = $true", settings)
+        self.assertIn("Resolve-ClaudeCodeInvocation", settings)
+        self.assertNotIn("npm.cmd", settings + launcher)
+        self.assertNotIn("npx", settings + launcher)
+        self.assertIn("maintenance\\%SETTINGS_VERSION%", launcher)
+        settings_install_call = installer.rindex("Install-BrowserAgentSettingsTool `")
+        registration_call = installer.index("Invoke-Python $RegistrarArguments")
+        commit_marker = installer.index("$UserConfigCommitted = $true")
+        self.assertLess(registration_call, settings_install_call)
+        self.assertLess(settings_install_call, commit_marker)
+
     def test_powershell_launcher_is_per_user_and_project_independent(self) -> None:
         installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(
             encoding="utf-8"
@@ -367,6 +504,15 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("process.exit(1)", loader)
 
         self.assertIn("exercise-extension-mcp.py", workflow)
+        self.assertIn(
+            "Exercise post-install authorization, headless, and Profile settings",
+            workflow,
+        )
+        self.assertIn("CI USER EXTENSION AUTHORIZATION PASSED", workflow)
+        self.assertIn("CI DEDICATED HEADLESS PROFILE ISOLATION PASSED", workflow)
+        self.assertIn("CI DEDICATED HEADED CONFIGURATION PASSED", workflow)
+        self.assertIn("CI SETTINGS FAILURE ROLLBACK PASSED", workflow)
+        self.assertIn("WINDOWS POST-INSTALL SETTINGS PASSED", workflow)
         self.assertIn("CI EXISTING NPM CLAUDE READY", workflow)
         self.assertIn("CI failed to hide native claude.exe from PATH", workflow)
         self.assertIn("The official per-user Claude Code fallback path is missing", workflow)
@@ -449,6 +595,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"browser_navigate"', exercise)
         self.assertIn('"browser_snapshot"', exercise)
         self.assertIn("OFFLINE-INTRANET-SESSION-REUSED", exercise)
+        self.assertIn("session_cookie=isolated", exercise)
+        self.assertIn("unexpectedly reused the existing browser session", exercise)
         self.assertIn("session_cookie=reused", exercise)
         self.assertNotIn('"browser_close"', exercise)
 

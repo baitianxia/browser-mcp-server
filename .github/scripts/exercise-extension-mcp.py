@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the installed Playwright MCP against an offline authenticated page."""
+"""Exercise extension reuse or a dedicated profile against an offline page."""
 
 from __future__ import annotations
 
@@ -189,18 +189,11 @@ def exercise(args: argparse.Namespace) -> tuple[str, int]:
     cli = _validated_file(args.playwright_cli, "Playwright CLI")
     config = _validated_file(args.playwright_config, "Playwright config")
     policy_file = _validated_file(args.environment_policy, "MCP environment policy")
-    token_file = _validated_file(args.token_file, "disposable extension token")
     browser_executable = _validated_file(args.browser_executable, "browser executable")
-    profile = args.profile.resolve()
-    if not profile.is_dir():
-        raise ExerciseError(f"Chrome user data directory is missing: {profile}")
     try:
-        token = token_file.read_text(encoding="utf-8").strip()
         policy_payload = json.loads(policy_file.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ExerciseError(f"cannot read CI extension inputs: {exc}") from exc
-    if len(token) < 32 or any(character.isspace() for character in token):
-        raise ExerciseError("disposable extension token has an invalid shape")
+        raise ExerciseError(f"cannot read CI MCP inputs: {exc}") from exc
     policy = policy_payload.get("environment") if isinstance(policy_payload, dict) else None
     if not isinstance(policy, dict) or any(
         not isinstance(name, str) or not isinstance(value, str)
@@ -215,11 +208,24 @@ def exercise(args: argparse.Namespace) -> tuple[str, int]:
     port = server.server_address[1]
     environment = dict(os.environ)
     environment.update(policy)
-    # Keep relay diagnostics available when CI fails before the extension
-    # connection is established. The relay logger does not print auth tokens.
-    environment["DEBUG"] = "pw:mcp:relay"
-    environment["PLAYWRIGHT_MCP_EXTENSION_TOKEN"] = token
-    environment["PWTEST_EXTENSION_USER_DATA_DIR"] = str(profile)
+    if args.mode == "extension":
+        if args.token_file is None or args.profile is None:
+            raise ExerciseError("extension mode requires --token-file and --profile")
+        token_file = _validated_file(args.token_file, "disposable extension token")
+        profile = args.profile.resolve()
+        if not profile.is_dir():
+            raise ExerciseError(f"Chrome user data directory is missing: {profile}")
+        try:
+            token = token_file.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ExerciseError(f"cannot read CI extension token: {exc}") from exc
+        if len(token) < 32 or any(character.isspace() for character in token):
+            raise ExerciseError("disposable extension token has an invalid shape")
+        # Keep relay diagnostics available when CI fails before the extension
+        # connection is established. The relay logger does not print auth tokens.
+        environment["DEBUG"] = "pw:mcp:relay"
+        environment["PLAYWRIGHT_MCP_EXTENSION_TOKEN"] = token
+        environment["PWTEST_EXTENSION_USER_DATA_DIR"] = str(profile)
     mcp: McpProcess | None = None
     try:
         mcp = McpProcess(
@@ -239,7 +245,10 @@ def exercise(args: argparse.Namespace) -> tuple[str, int]:
             {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "windows-extension-e2e", "version": "1"},
+                "clientInfo": {
+                    "name": f"windows-{args.mode}-e2e",
+                    "version": "1",
+                },
             },
             30,
         )
@@ -263,7 +272,7 @@ def exercise(args: argparse.Namespace) -> tuple[str, int]:
         }
         required = {"browser_navigate", "browser_snapshot"}
         if not required.issubset(names):
-            raise ExerciseError("installed MCP is missing extension exercise tools")
+            raise ExerciseError("installed MCP is missing browser exercise tools")
         url = f"http://127.0.0.1:{port}/authenticated-intranet-page"
         mcp.request(
             3,
@@ -278,14 +287,28 @@ def exercise(args: argparse.Namespace) -> tuple[str, int]:
             60,
         )
         rendered = json.dumps(snapshot, ensure_ascii=False)
-        if AUTHENTICATED_MARKER not in rendered or MISSING_MARKER in rendered:
-            raise ExerciseError(
-                "MCP snapshot did not contain the authenticated marker; "
-                f"authenticated_request={authenticated_request.is_set()}; "
-                f"snapshot={rendered[-2000:]}"
-            )
-        if not authenticated_request.wait(timeout=2):
-            raise ExerciseError("offline test server did not receive the persisted session cookie")
+        if args.mode == "extension":
+            if AUTHENTICATED_MARKER not in rendered or MISSING_MARKER in rendered:
+                raise ExerciseError(
+                    "MCP snapshot did not contain the authenticated marker; "
+                    f"authenticated_request={authenticated_request.is_set()}; "
+                    f"snapshot={rendered[-2000:]}"
+                )
+            if not authenticated_request.wait(timeout=2):
+                raise ExerciseError(
+                    "offline test server did not receive the persisted session cookie"
+                )
+        else:
+            if MISSING_MARKER not in rendered or AUTHENTICATED_MARKER in rendered:
+                raise ExerciseError(
+                    "dedicated Profile unexpectedly reused the existing browser session; "
+                    f"authenticated_request={authenticated_request.is_set()}; "
+                    f"snapshot={rendered[-2000:]}"
+                )
+            if authenticated_request.is_set():
+                raise ExerciseError(
+                    "dedicated Profile sent the existing browser session cookie"
+                )
         server_info = initialized.get("serverInfo")
         version = (
             server_info.get("version", "unknown")
@@ -307,8 +330,9 @@ def main() -> int:
     parser.add_argument("--playwright-cli", required=True, type=Path)
     parser.add_argument("--playwright-config", required=True, type=Path)
     parser.add_argument("--environment-policy", required=True, type=Path)
-    parser.add_argument("--token-file", required=True, type=Path)
-    parser.add_argument("--profile", required=True, type=Path)
+    parser.add_argument("--mode", choices=("extension", "dedicated"), default="extension")
+    parser.add_argument("--token-file", type=Path)
+    parser.add_argument("--profile", type=Path)
     parser.add_argument("--browser-channel", required=True, choices=("chrome", "msedge"))
     parser.add_argument("--browser-executable", required=True, type=Path)
     parser.add_argument("--tool-timeout", type=int, default=90)
@@ -320,10 +344,16 @@ def main() -> int:
     except ExerciseError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    print(
-        "PLAYWRIGHT EXTENSION MCP E2E PASSED: "
-        f"server={version}, tools={tool_count}, session_cookie=reused"
-    )
+    if args.mode == "extension":
+        print(
+            "PLAYWRIGHT EXTENSION MCP E2E PASSED: "
+            f"server={version}, tools={tool_count}, session_cookie=reused"
+        )
+    else:
+        print(
+            "PLAYWRIGHT DEDICATED MCP E2E PASSED: "
+            f"server={version}, tools={tool_count}, session_cookie=isolated"
+        )
     return 0
 
 

@@ -209,7 +209,7 @@ jobs:
               throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
           }
           $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-agent-runtime-1.0.13-core-windows-x64.tar.gz")
+              -Filter "browser-agent-runtime-1.0.14-core-windows-x64.tar.gz")
           if ($RuntimeArchives.Count -ne 1) {
               throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
           }
@@ -228,7 +228,7 @@ jobs:
               throw "Transfer-kit build failed."
           }
           $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "intranet-browser-agent-transfer-1.0.13-core-windows-x64.tar.gz")
+              -Filter "intranet-browser-agent-transfer-1.0.14-core-windows-x64.tar.gz")
           if ($TransferArchives.Count -ne 1) {
               throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
           }
@@ -1258,6 +1258,315 @@ jobs:
               -Destination (Join-Path $EvidenceRoot "transfer.tar.gz.sha256")
           Write-Host "Windows publisher gate and single-pass one-click install both passed."
 
+      - name: Exercise post-install authorization, headless, and Profile settings
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $AgentRoot = Join-Path $env:LOCALAPPDATA "IntranetBrowserAgent"
+          $CurrentVersionPath = Join-Path $AgentRoot `
+              "maintenance\current-version.txt"
+          if (-not (Test-Path -LiteralPath $CurrentVersionPath -PathType Leaf)) {
+              throw "The installed settings version marker is missing."
+          }
+          $SettingsVersion = (Get-Content -LiteralPath $CurrentVersionPath `
+              -Raw).Trim()
+          $SettingsScript = Join-Path $AgentRoot `
+              "maintenance\$SettingsVersion\scripts\BROWSER-AGENT-SETTINGS.ps1"
+          $SettingsLauncher = Join-Path $AgentRoot `
+              "BROWSER-AGENT-SETTINGS.cmd"
+          foreach ($Required in @($SettingsScript, $SettingsLauncher)) {
+              if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
+                  throw "The installed settings tool is missing: $Required"
+              }
+          }
+          $TokenFile = Join-Path $env:RUNNER_TEMP `
+              "settings-extension-token.txt"
+          [IO.File]::WriteAllText(
+              $TokenFile,
+              ("A" * 43),
+              (New-Object System.Text.ASCIIEncoding)
+          )
+          $ManifestPath = Join-Path $AgentRoot `
+              "config\pilot\deployment.windows-pilot.json"
+          $PlaywrightConfigPath = Join-Path $AgentRoot `
+              "config\pilot\playwright.config.json"
+          $UserConfigPath = Join-Path $env:CLAUDE_CONFIG_DIR ".claude.json"
+
+          function Invoke-InstalledSettings {
+              param(
+                  [string]$Mode,
+                  [string]$Authorization,
+                  [string]$Display,
+                  [string]$Token = ""
+              )
+              $Arguments = @(
+                  "-NoLogo", "-NoProfile", "-File", $SettingsScript,
+                  "-BrowserMode", $Mode,
+                  "-ExtensionAuthorization", $Authorization,
+                  "-DisplayMode", $Display
+              )
+              if ($Token) {
+                  $Arguments += @("-ExtensionTokenFile", $Token)
+              }
+              & powershell.exe @Arguments
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Installed settings failed for $Mode/$Authorization/$Display."
+              }
+          }
+
+          Invoke-InstalledSettings extension user headed $TokenFile
+          $Manifest = Get-Content -LiteralPath $ManifestPath -Raw |
+              ConvertFrom-Json
+          $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
+              ConvertFrom-Json
+          $RegisteredToken = [string]$ClaudePayload.mcpServers.`
+              'intranet-browser-agent'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
+          if ($Manifest.mode -ne "extension" -or
+              $Manifest.browser.manualConnectionApproval -ne $false -or
+              $RegisteredToken -ne ("A" * 43)) {
+              throw "Current-user extension authorization was not persisted exactly."
+          }
+          Write-Host "CI USER EXTENSION AUTHORIZATION PASSED"
+
+          Invoke-InstalledSettings dedicated session headless
+          $Manifest = Get-Content -LiteralPath $ManifestPath -Raw |
+              ConvertFrom-Json
+          $Rendered = Get-Content -LiteralPath $PlaywrightConfigPath -Raw |
+              ConvertFrom-Json
+          $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
+              ConvertFrom-Json
+          $RegisteredEnvironment = $ClaudePayload.mcpServers.`
+              'intranet-browser-agent'.env
+          $DedicatedProfile = Join-Path $AgentRoot "browser-profile\pilot"
+          if ($Manifest.mode -ne "persistent" -or
+              $Manifest.browser.headless -ne $true -or
+              [IO.Path]::GetFullPath([string]$Manifest.browser.userDataDir) -ine
+                  [IO.Path]::GetFullPath($DedicatedProfile) -or
+              $Rendered.browser.launchOptions.headless -ne $true -or
+              $null -ne $Rendered.extension -or
+              $null -ne $RegisteredEnvironment.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
+              throw "Dedicated headless settings do not match the requested isolation."
+          }
+
+          $OfflineRule = "Intranet Browser Agent settings offline $env:GITHUB_RUN_ID"
+          try {
+              New-NetFirewallRule -DisplayName $OfflineRule `
+                  -Direction Outbound -Program $env:CHROME_EXE `
+                  -RemoteAddress Internet -Action Block | Out-Null
+              $RuntimeRoot = [string]$Manifest.installRoot
+              python .\.github\scripts\exercise-extension-mcp.py `
+                  --mode dedicated `
+                  --node-executable $Manifest.nodeExecutable `
+                  --playwright-cli (Join-Path $RuntimeRoot `
+                      "node_modules\@playwright\mcp\cli.js") `
+                  --playwright-config $PlaywrightConfigPath `
+                  --environment-policy (Join-Path $env:TRANSFER_ROOT `
+                      "toolkit\config\windows-mcp-environment.json") `
+                  --browser-channel chrome `
+                  --browser-executable $env:CHROME_EXE
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Dedicated headless MCP E2E failed."
+              }
+          } finally {
+              Remove-NetFirewallRule -DisplayName $OfflineRule `
+                  -ErrorAction SilentlyContinue
+              @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
+                  Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "CI DEDICATED HEADLESS PROFILE ISOLATION PASSED"
+
+          Invoke-InstalledSettings dedicated session headed
+          $Rendered = Get-Content -LiteralPath $PlaywrightConfigPath -Raw |
+              ConvertFrom-Json
+          if ($Rendered.browser.launchOptions.headless -ne $false) {
+              throw "Dedicated headed setting was not rendered."
+          }
+          Write-Host "CI DEDICATED HEADED CONFIGURATION PASSED"
+
+          Invoke-InstalledSettings extension session headed
+          $Manifest = Get-Content -LiteralPath $ManifestPath -Raw |
+              ConvertFrom-Json
+          $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
+              ConvertFrom-Json
+          if ($Manifest.mode -ne "extension" -or
+              $Manifest.browser.manualConnectionApproval -ne $true -or
+              $null -ne $ClaudePayload.mcpServers.`
+                  'intranet-browser-agent'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
+              throw "The safe extension-session baseline was not restored."
+          }
+
+          function Get-ConfigFingerprint {
+              param([string]$Path)
+              return (@(Get-ChildItem -LiteralPath $Path -File -Recurse |
+                  Sort-Object FullName | ForEach-Object {
+                      $Relative = $_.FullName.Substring($Path.Length).TrimStart(
+                          [IO.Path]::DirectorySeparatorChar
+                      )
+                      "{0}={1}" -f $Relative, `
+                          (Get-FileHash -LiteralPath $_.FullName `
+                              -Algorithm SHA256).Hash
+                  }) -join "`n")
+          }
+
+          $ConfigRoot = Split-Path -Parent $ManifestPath
+          $ConfigBeforeFailure = Get-ConfigFingerprint $ConfigRoot
+          $UserConfigBeforeFailure = [Convert]::ToBase64String(
+              [IO.File]::ReadAllBytes($UserConfigPath)
+          )
+          $FakeClaudeRoot = Join-Path $env:RUNNER_TEMP `
+              "settings-failing-npm-claude"
+          $FakePackageRoot = Join-Path $FakeClaudeRoot `
+              "node_modules\@anthropic-ai\claude-code"
+          New-Item -ItemType Directory -Path $FakePackageRoot -Force |
+              Out-Null
+          [IO.File]::Copy(
+              $env:NPM_CLAUDE_NODE,
+              (Join-Path $FakeClaudeRoot "node.exe"),
+              $true
+          )
+          [IO.File]::WriteAllText(
+              (Join-Path $FakeClaudeRoot "claude.cmd"),
+              "@echo off`r`n",
+              (New-Object System.Text.ASCIIEncoding)
+          )
+          [IO.File]::WriteAllText(
+              (Join-Path $FakePackageRoot "package.json"),
+              '{"name":"@anthropic-ai/claude-code","bin":{"claude":"cli.js"}}',
+              (New-Object System.Text.UTF8Encoding($false))
+          )
+          $FakeCliSource = @'
+          const fs = require('fs');
+          const path = require('path');
+          const args = process.argv.slice(2);
+          fs.appendFileSync(process.env.SETTINGS_FAKE_EVENTS, JSON.stringify(args.slice(0, 2)) + '\n');
+          const config = path.join(process.env.CLAUDE_CONFIG_DIR, '.claude.json');
+          const load = () => fs.existsSync(config) ? JSON.parse(fs.readFileSync(config, 'utf8')) : {};
+          const save = payload => fs.writeFileSync(config, JSON.stringify(payload) + '\n');
+          if (args[0] === '--version') {
+            console.log('2.1.84 (Claude Code)');
+            process.exit(0);
+          }
+          if (args[0] === 'mcp' && args[1] === 'remove') {
+            const payload = load();
+            const servers = payload.mcpServers || (payload.mcpServers = {});
+            if (!(args[2] in servers)) {
+              console.error('No user-scoped MCP server found with name: ' + args[2]);
+              process.exit(1);
+            }
+            delete servers[args[2]];
+            save(payload);
+            process.exit(0);
+          }
+          if (args[0] === 'mcp' && args[1] === 'add') {
+            const scope = args.indexOf('--scope');
+            const separator = args.indexOf('--');
+            const name = args[scope + 2];
+            const environment = {};
+            for (let i = scope + 3; i < separator; i += 2) {
+              if (args[i] !== '--env' || !args[i + 1].includes('='))
+                process.exit(9);
+              const split = args[i + 1].indexOf('=');
+              environment[args[i + 1].slice(0, split)] = args[i + 1].slice(split + 1);
+            }
+            const payload = load();
+            const servers = payload.mcpServers || (payload.mcpServers = {});
+            servers[name] = {
+              type: 'stdio',
+              command: args[separator + 1],
+              args: args.slice(separator + 2),
+              env: environment
+            };
+            save(payload);
+            process.exit(0);
+          }
+          if (args[0] === 'mcp' && args[1] === 'get') {
+            console.error('simulated get failure after add');
+            process.exit(8);
+          }
+          process.exit(9);
+          '@
+          [IO.File]::WriteAllText(
+              (Join-Path $FakePackageRoot "cli.js"),
+              $FakeCliSource,
+              (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          $OriginalPath = $env:PATH
+          $OriginalUserProfile = $env:USERPROFILE
+          $FakeEventsPath = Join-Path $env:RUNNER_TEMP `
+              "settings-failing-claude-events.jsonl"
+          Remove-Item -LiteralPath $FakeEventsPath -Force `
+              -ErrorAction SilentlyContinue
+          try {
+              $env:USERPROFILE = Join-Path $env:RUNNER_TEMP `
+                  "settings-fake-user-profile"
+              New-Item -ItemType Directory -Path $env:USERPROFILE -Force |
+                  Out-Null
+              $PathWithoutNativeClaude = @($OriginalPath -split ";" |
+                  Where-Object {
+                      $_ -and -not (Test-Path -LiteralPath `
+                          (Join-Path $_ "claude.exe") -PathType Leaf)
+                  }) -join ";"
+              $env:PATH = $FakeClaudeRoot + ";" + $PathWithoutNativeClaude
+              $env:SETTINGS_FAKE_EVENTS = $FakeEventsPath
+              & powershell.exe -NoLogo -NoProfile -File $SettingsScript `
+                  -BrowserMode extension `
+                  -ExtensionAuthorization user `
+                  -DisplayMode headed `
+                  -ExtensionTokenFile $TokenFile
+              $ExpectedFailureExit = $LASTEXITCODE
+          } finally {
+              $env:PATH = $OriginalPath
+              $env:USERPROFILE = $OriginalUserProfile
+              Remove-Item Env:SETTINGS_FAKE_EVENTS `
+                  -ErrorAction SilentlyContinue
+          }
+          if ($ExpectedFailureExit -eq 0) {
+              throw "The injected Claude get failure unexpectedly succeeded."
+          }
+          if ((Get-ConfigFingerprint $ConfigRoot) -cne `
+                  $ConfigBeforeFailure -or
+              [Convert]::ToBase64String(
+                  [IO.File]::ReadAllBytes($UserConfigPath)
+              ) -cne $UserConfigBeforeFailure) {
+              throw "Settings failure did not restore config and Claude bytes exactly."
+          }
+          $FakeEvents = @(Get-Content -LiteralPath $FakeEventsPath)
+          $ExpectedFakeEvents = @(
+              '["--version"]',
+              '["mcp","remove"]',
+              '["mcp","add"]',
+              '["mcp","get"]'
+          )
+          if ($FakeEvents.Count -ne $ExpectedFakeEvents.Count -or
+              (Compare-Object -ReferenceObject $ExpectedFakeEvents `
+                  -DifferenceObject $FakeEvents -SyncWindow 0)) {
+              throw "The settings failure did not reach remove/add/get in order."
+          }
+          Remove-Item -LiteralPath $FakeEventsPath -Force
+          $SettingsLogs = @(Get-ChildItem -LiteralPath (Join-Path $env:TEMP `
+              "IntranetBrowserAgent") `
+              -Filter "BROWSER-AGENT-SETTINGS-*.log" -ErrorAction Stop)
+          if (-not ($SettingsLogs | Where-Object {
+              Select-String -LiteralPath $_.FullName `
+                  -SimpleMatch "FAILED:" -Quiet
+          })) {
+              throw "The settings rollback test produced no failure log."
+          }
+          if ($SettingsLogs | Where-Object {
+              Select-String -LiteralPath $_.FullName `
+                  -SimpleMatch ("A" * 43) -Quiet
+          }) {
+              throw "An extension token leaked into a settings log."
+          }
+          Write-Host "CI SETTINGS FAILURE ROLLBACK PASSED"
+
+          $EvidenceRoot = Join-Path $env:RUNNER_TEMP "windows-evidence"
+          $SettingsLogs |
+              Copy-Item -Destination $EvidenceRoot
+          Remove-Item -LiteralPath $TokenFile -Force
+          Write-Host "WINDOWS POST-INSTALL SETTINGS PASSED"
+
       - name: Upload Windows validation evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -1271,7 +1580,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: intranet-browser-agent-transfer-1.0.13-windows-x64-${{ github.run_id }}
+          name: intranet-browser-agent-transfer-1.0.14-windows-x64-${{ github.run_id }}
           path: |
             ${{ env.TRANSFER_ARCHIVE }}
             ${{ env.TRANSFER_ARCHIVE }}.sha256

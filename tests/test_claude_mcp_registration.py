@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -66,6 +67,7 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
         node_executable: Path,
         playwright_cli: Path,
         playwright_config: Path,
+        environment: dict[str, str] | None = None,
     ) -> None:
         payload = (
             json.loads(user_config.read_text(encoding="utf-8"))
@@ -76,7 +78,7 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
             "type": "stdio",
             "command": str(node_executable),
             "args": [str(playwright_cli), "--config", str(playwright_config)],
-            "env": registration.load_mcp_environment(),
+            "env": environment or registration.load_mcp_environment(),
         }
         user_config.write_bytes(
             (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
@@ -436,6 +438,91 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
         self.assertEqual("", environment["NODE_PATH"])
         self.assertEqual("5000", environment["PLAYWRIGHT_MCP_PING_TIMEOUT_MS"])
         self.assertNotIn("PLAYWRIGHT_MCP_EXTENSION_TOKEN", environment)
+
+    def test_current_user_extension_token_is_validated_and_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            node_executable, playwright_cli, playwright_config, user_config, backup = (
+                self.paths(root)
+            )
+            token_file = root / "token.txt"
+            token = "A" * 43
+            token_file.write_text(
+                f"PLAYWRIGHT_MCP_EXTENSION_TOKEN={token}\n", encoding="utf-8"
+            )
+            self.assertEqual(token, registration.load_extension_token(token_file))
+            self.assertEqual(
+                token,
+                registration.load_extension_token_stream(
+                    io.StringIO(f"PLAYWRIGHT_MCP_EXTENSION_TOKEN={token}\n")
+                ),
+            )
+            expected_environment = registration.load_mcp_environment()
+            expected_environment["PLAYWRIGHT_MCP_EXTENSION_TOKEN"] = token
+
+            calls: list[tuple[str, ...]] = []
+
+            def runner(_executable, _prefix, arguments, **_kwargs):
+                calls.append(tuple(arguments))
+                if arguments[1] == "add":
+                    self.write_registration(
+                        user_config,
+                        node_executable,
+                        playwright_cli,
+                        playwright_config,
+                        expected_environment,
+                    )
+                return subprocess.CompletedProcess(arguments, 0, "", "")
+
+            with mock.patch.object(registration, "_run_claude", side_effect=runner):
+                registration.register_user_mcp(
+                    claude_executable="claude.exe",
+                    claude_prefix=(),
+                    server_name="intranet-browser-agent",
+                    node_executable=node_executable,
+                    playwright_cli=playwright_cli,
+                    playwright_config=playwright_config,
+                    user_config=user_config,
+                    backup=backup,
+                    reporter=lambda _message: None,
+                    extension_token=token,
+                )
+
+            add = next(call for call in calls if call[1] == "add")
+            self.assertIn(
+                f"PLAYWRIGHT_MCP_EXTENSION_TOKEN={token}", add
+            )
+            payload = json.loads(user_config.read_text(encoding="utf-8"))
+            self.assertEqual(
+                token,
+                payload["mcpServers"]["intranet-browser-agent"]["env"][
+                    "PLAYWRIGHT_MCP_EXTENSION_TOKEN"
+                ],
+            )
+
+            token_file.write_text("not-a-token\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                registration.RegistrationError, "invalid format"
+            ):
+                registration.load_extension_token(token_file)
+            with self.assertRaisesRegex(
+                registration.RegistrationError, "canonical"
+            ):
+                registration.load_extension_token_stream(io.StringIO("A" * 42 + "B"))
+
+    def test_extension_token_is_redacted_from_claude_failure(self) -> None:
+        token = "A" * 43
+        result = subprocess.CompletedProcess(
+            ["claude"],
+            7,
+            f"unexpected output {token}",
+            f"rejected {token}",
+        )
+        message = registration._failure(
+            "claude mcp add", result, secrets=(token,)
+        )
+        self.assertNotIn(token, message)
+        self.assertEqual(2, message.count("<redacted>"))
 
     def test_get_failure_removes_newly_created_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

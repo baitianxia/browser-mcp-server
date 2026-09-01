@@ -18,7 +18,7 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 
-TOOL_VERSION = "1.0.13"
+TOOL_VERSION = "1.0.14"
 PLAYWRIGHT_MCP_VERSION = "0.0.79"
 CHROME_DEVTOOLS_MCP_VERSION = "1.8.0"
 MIN_NODE_VERSION = (20, 19, 0)
@@ -394,6 +394,7 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         optional={
             "userDataDir",
             "executablePath",
+            "headless",
             "cdpEndpoint",
             "devtoolsEndpoint",
             "extensionDistribution",
@@ -407,6 +408,8 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
     _string(browser.get("profileOwner"), "$.browser.profileOwner", errors)
     if browser.get("maxConcurrentAgents") != 1:
         errors.append("$.browser.maxConcurrentAgents must equal 1")
+    if "headless" in browser:
+        _boolean(browser.get("headless"), "$.browser.headless", errors)
 
     if mode == "persistent":
         profile = _absolute_path(
@@ -415,13 +418,27 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         if profile and _looks_like_default_profile(profile):
             errors.append("$.browser.userDataDir appears to be a personal/default browser profile")
         for key in (
-            "executablePath",
             "cdpEndpoint",
             "extensionDistribution",
             "manualConnectionApproval",
         ):
             if key in browser:
                 errors.append(f"$.browser.{key} is not valid in persistent mode")
+        executable_path = browser.get("executablePath")
+        if executable_path is not None:
+            if target_os == "windows":
+                executable_path = _absolute_path(
+                    executable_path,
+                    "$.browser.executablePath",
+                    target_os,
+                    errors,
+                )
+                if executable_path and not executable_path.lower().endswith(".exe"):
+                    errors.append("$.browser.executablePath must point to a Windows .exe")
+            else:
+                errors.append(
+                    "$.browser.executablePath is only supported for Windows persistent or extension mode"
+                )
     elif mode == "extension":
         executable_path = browser.get("executablePath")
         if target_os == "windows":
@@ -446,11 +463,22 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
             errors.append(
                 "$.browser.extensionDistribution must describe the approved extension channel"
             )
-        if browser.get("manualConnectionApproval") is not True:
-            errors.append("$.browser.manualConnectionApproval must be true")
+        manual_connection_approval = _boolean(
+            browser.get("manualConnectionApproval"),
+            "$.browser.manualConnectionApproval",
+            errors,
+        )
+        if manual_connection_approval is False and not (
+            environment == "pilot"
+            and target_os == "windows"
+            and mcp_scope == "user"
+        ):
+            errors.append(
+                "stored extension authorization is supported only for the Windows user-scoped pilot"
+            )
         if environment == "production" and distribution == "manual-pilot":
             errors.append("manual-pilot extension distribution is forbidden in production")
-        for key in ("userDataDir", "cdpEndpoint"):
+        for key in ("userDataDir", "headless", "cdpEndpoint"):
             if key in browser:
                 errors.append(f"$.browser.{key} is not valid in extension mode")
     elif mode == "cdp":
@@ -462,6 +490,7 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         for key in (
             "userDataDir",
             "executablePath",
+            "headless",
             "extensionDistribution",
             "manualConnectionApproval",
         ):
@@ -673,13 +702,16 @@ def _render_playwright(manifest: dict[str, Any]) -> dict[str, Any]:
             "cdpTimeout": min(manifest["timeouts"]["navigationMs"], 60_000),
         }
     else:
+        launch_options: dict[str, Any] = {
+            "channel": browser["channel"],
+            "headless": browser.get("headless", False),
+        }
+        if browser.get("executablePath"):
+            launch_options["executablePath"] = browser["executablePath"]
         config["browser"] = {
             "browserName": "chromium",
             "userDataDir": browser["userDataDir"],
-            "launchOptions": {
-                "channel": browser["channel"],
-                "headless": False,
-            },
+            "launchOptions": launch_options,
         }
     return config
 
@@ -736,7 +768,8 @@ def _render_mcp(manifest: dict[str, Any]) -> dict[str, Any]:
                 if windows
                 else []
             )
-            if manifest["mode"] == "extension"
+            if manifest["mode"] in {"extension", "persistent"}
+            and manifest["browser"].get("executablePath")
             else []
         )
         + [
@@ -1165,7 +1198,12 @@ def preflight(
         except (OSError, json.JSONDecodeError) as exc:
             checks.append({"name": name, "status": "fail", "detail": str(exc)})
 
-    browser_path = _find_browser(manifest["browser"]["channel"])
+    configured_browser = manifest["browser"].get("executablePath")
+    browser_path = (
+        configured_browser
+        if configured_browser and os.access(configured_browser, os.X_OK)
+        else _find_browser(manifest["browser"]["channel"])
+    )
     checks.append(
         {
             "name": "browser",
@@ -1330,21 +1368,31 @@ def preflight(
             except (OSError, subprocess.SubprocessError) as exc:
                 checks.append({"name": name, "status": "fail", "detail": str(exc)})
 
-    if manifest["mode"] == "extension" and target_system == "windows":
+    if (
+        manifest["mode"] in {"extension", "persistent"}
+        and target_system == "windows"
+        and manifest["browser"].get("executablePath")
+    ):
         executable_path = Path(manifest["browser"]["executablePath"])
         checks.append(
             {
-                "name": "extension-browser-executable",
+                "name": "browser-executable",
                 "status": "pass" if executable_path.is_file() else "fail",
                 "detail": str(executable_path),
             }
+        )
+    if manifest["mode"] == "extension" and target_system == "windows":
+        approval = (
+            "per-connection approval"
+            if manifest["browser"]["manualConnectionApproval"]
+            else "stored current-user extension token"
         )
         checks.append(
             {
                 "name": "extension-config",
                 "status": "pass",
                 "detail": (
-                    f"existing {manifest['browser']['channel']} tabs with per-connection approval; "
+                    f"existing {manifest['browser']['channel']} tabs with {approval}; "
                     "target installer verifies the approved extension separately"
                 ),
             }
@@ -1359,19 +1407,28 @@ def preflight(
         )
     elif manifest["mode"] == "persistent":
         profile_path = manifest["browser"]["userDataDir"]
+        display_mode = "headless" if manifest["browser"].get("headless") else "headed"
         checks.append(
             {
                 "name": "dedicated-profile",
                 "status": "pass",
-                "detail": f"dedicated non-default browser Profile configured: {profile_path}",
+                "detail": (
+                    f"dedicated non-default browser Profile configured ({display_mode}): "
+                    f"{profile_path}"
+                ),
             }
         )
     elif manifest["mode"] == "extension":
+        boundary = (
+            "each connection requires the Playwright Extension dialog"
+            if manifest["browser"]["manualConnectionApproval"]
+            else "the current-user extension token bypasses the connection dialog until revoked"
+        )
         checks.append(
             {
                 "name": "pilot-browser-boundary",
                 "status": "pass",
-                "detail": "tab access is granted through the Playwright Extension connection dialog",
+                "detail": boundary,
             }
         )
     else:

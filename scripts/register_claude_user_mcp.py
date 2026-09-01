@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import re
@@ -26,6 +28,7 @@ MCP_ENVIRONMENT_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "windows-mcp-environment.json"
 )
 ENVIRONMENT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+EXTENSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
 def _configure_standard_streams() -> None:
@@ -72,6 +75,53 @@ def load_mcp_environment(path: Path = MCP_ENVIRONMENT_PATH) -> dict[str, str]:
     if payload["schemaVersion"] != 1 or not isinstance(payload["environment"], dict):
         raise RegistrationError("unsupported Windows MCP environment policy schema")
     return _validated_mcp_environment(payload["environment"])
+
+
+def _validated_extension_token(token: str) -> str:
+    if not EXTENSION_TOKEN_RE.fullmatch(token):
+        raise RegistrationError("extension token has an invalid format")
+    try:
+        decoded = base64.urlsafe_b64decode(token + "=")
+    except (ValueError, binascii.Error) as exc:
+        raise RegistrationError("extension token is not valid base64url") from exc
+    if len(decoded) != 32:
+        raise RegistrationError("extension token must contain 32 random bytes")
+    canonical = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
+    if canonical != token:
+        raise RegistrationError("extension token is not canonical base64url")
+    return token
+
+
+def load_extension_token(path: Path) -> str:
+    try:
+        if not path.is_file() or path.stat().st_size > 1024:
+            raise RegistrationError(
+                f"extension token file is missing, not regular, or too large: {path}"
+            )
+        token = path.read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RegistrationError(f"cannot read extension token file: {exc}") from exc
+    prefix = "PLAYWRIGHT_MCP_EXTENSION_TOKEN="
+    if token.startswith(prefix):
+        token = token[len(prefix) :].strip()
+    return _validated_extension_token(token)
+
+
+def load_extension_token_stream(stream: object = sys.stdin) -> str:
+    reader = getattr(stream, "read", None)
+    if not callable(reader):
+        raise RegistrationError("extension token input stream is not readable")
+    try:
+        token = reader(1025)
+    except (OSError, UnicodeError) as exc:
+        raise RegistrationError(f"cannot read extension token input: {exc}") from exc
+    if not isinstance(token, str) or len(token) > 1024:
+        raise RegistrationError("extension token input is too large")
+    prefix = "PLAYWRIGHT_MCP_EXTENSION_TOKEN="
+    token = token.strip()
+    if token.startswith(prefix):
+        token = token[len(prefix) :].strip()
+    return _validated_extension_token(token)
 
 
 def _mcp_environment_arguments(environment: Mapping[str, str]) -> tuple[str, ...]:
@@ -150,12 +200,23 @@ def _run_claude(
         raise RegistrationError(f"cannot execute Claude Code CLI: {exc}") from exc
 
 
-def _failure(command_name: str, result: subprocess.CompletedProcess[str]) -> str:
+def _failure(
+    command_name: str,
+    result: subprocess.CompletedProcess[str],
+    *,
+    secrets: Sequence[str] = (),
+) -> str:
+    def redacted(value: str) -> str:
+        for secret in secrets:
+            if secret:
+                value = value.replace(secret, "<redacted>")
+        return value
+
     details: list[str] = [f"{command_name} exited with code {result.returncode}"]
     if result.stdout.strip():
-        details.append("stdout: " + result.stdout.strip()[-2000:])
+        details.append("stdout: " + redacted(result.stdout.strip())[-2000:])
     if result.stderr.strip():
-        details.append("stderr: " + result.stderr.strip()[-2000:])
+        details.append("stderr: " + redacted(result.stderr.strip())[-2000:])
     return "; ".join(details)
 
 
@@ -181,6 +242,25 @@ def _restore_user_config(
                 f"refusing to remove non-file user configuration: {user_config}"
             )
         user_config.unlink()
+
+
+def _existing_extension_tokens(user_config: Path, server_name: str) -> tuple[str, ...]:
+    """Return only known token-shaped values for diagnostic redaction."""
+    try:
+        payload = json.loads(user_config.read_text(encoding="utf-8-sig"))
+        servers = payload.get("mcpServers") if isinstance(payload, dict) else None
+        entry = servers.get(server_name) if isinstance(servers, dict) else None
+        environment = entry.get("env") if isinstance(entry, dict) else None
+        token = (
+            environment.get("PLAYWRIGHT_MCP_EXTENSION_TOKEN")
+            if isinstance(environment, dict)
+            else None
+        )
+        if isinstance(token, str) and EXTENSION_TOKEN_RE.fullmatch(token):
+            return (token,)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+    return ()
 
 
 def _verify_user_registration(
@@ -249,6 +329,7 @@ def register_user_mcp(
     reporter: Reporter = print,
     environment: Mapping[str, str] | None = None,
     mcp_environment: Mapping[str, str] | None = None,
+    extension_token: str | None = None,
 ) -> None:
     if not server_name or any(character.isspace() for character in server_name):
         raise RegistrationError("server name must be non-empty and contain no whitespace")
@@ -273,11 +354,11 @@ def register_user_mcp(
     if browser_channel is not None:
         if browser_executable is None or not browser_executable.is_file():
             raise RegistrationError(
-                "extension browser executable is not a regular file: "
+                "browser executable is not a regular file: "
                 f"{browser_executable}"
             )
         if browser_executable.suffix.lower() != ".exe":
-            raise RegistrationError("extension browser executable must end in .exe")
+            raise RegistrationError("browser executable must end in .exe")
     elif browser_executable is not None:
         raise RegistrationError("browser executable requires an extension browser channel")
     registered_environment = (
@@ -285,12 +366,22 @@ def register_user_mcp(
         if mcp_environment is None
         else _validated_mcp_environment(mcp_environment)
     )
+    if extension_token is not None:
+        extension_token = _validated_extension_token(extension_token)
+        registered_environment = dict(registered_environment)
+        registered_environment["PLAYWRIGHT_MCP_EXTENSION_TOKEN"] = extension_token
+        registered_environment = _validated_mcp_environment(registered_environment)
 
     was_present = user_config.is_file()
     if user_config.exists() and not was_present:
         raise RegistrationError(f"Claude user config is not a regular file: {user_config}")
     if was_present:
         _atomic_copy(user_config, backup, overwrite=False)
+    redaction_secrets = tuple(
+        dict.fromkeys(
+            (*_existing_extension_tokens(user_config, server_name), extension_token or "")
+        )
+    )
 
     change_started = False
     try:
@@ -306,7 +397,13 @@ def register_user_mcp(
         elif _remove_result_is_missing(remove_result):
             reporter("未发现可清理的旧 MCP 条目（首次安装时正常），继续注册。")
         else:
-            raise RegistrationError(_failure("claude mcp remove", remove_result))
+            raise RegistrationError(
+                _failure(
+                    "claude mcp remove",
+                    remove_result,
+                    secrets=redaction_secrets,
+                )
+            )
 
         add_result = _run_claude(
             claude_executable,
@@ -332,7 +429,13 @@ def register_user_mcp(
             environment=environment,
         )
         if add_result.returncode != 0:
-            raise RegistrationError(_failure("claude mcp add", add_result))
+            raise RegistrationError(
+                _failure(
+                    "claude mcp add",
+                    add_result,
+                    secrets=redaction_secrets,
+                )
+            )
 
         _verify_user_registration(
             user_config,
@@ -352,7 +455,13 @@ def register_user_mcp(
             environment=environment,
         )
         if get_result.returncode != 0:
-            raise RegistrationError(_failure("claude mcp get", get_result))
+            raise RegistrationError(
+                _failure(
+                    "claude mcp get",
+                    get_result,
+                    secrets=redaction_secrets,
+                )
+            )
         reporter("Claude Code 用户级 MCP 注册和读取验证已完成。")
     except Exception as exc:
         if not change_started:
@@ -616,6 +725,9 @@ def build_parser() -> argparse.ArgumentParser:
     register_parser.add_argument("--browser-executable", type=Path)
     register_parser.add_argument("--user-config", required=True, type=Path)
     register_parser.add_argument("--backup", required=True, type=Path)
+    token_source = register_parser.add_mutually_exclusive_group()
+    token_source.add_argument("--extension-token-file", type=Path)
+    token_source.add_argument("--extension-token-stdin", action="store_true")
     subparsers.add_parser("self-test")
     return parser
 
@@ -627,6 +739,13 @@ def main() -> int:
             self_test()
             print("CLAUDE MCP REGISTRATION SELF-TEST PASSED")
         else:
+            extension_token = (
+                load_extension_token(args.extension_token_file)
+                if args.extension_token_file
+                else load_extension_token_stream()
+                if args.extension_token_stdin
+                else None
+            )
             register_user_mcp(
                 claude_executable=args.claude_executable,
                 claude_prefix=args.claude_prefix,
@@ -638,6 +757,7 @@ def main() -> int:
                 browser_executable=args.browser_executable,
                 user_config=args.user_config,
                 backup=args.backup,
+                extension_token=extension_token,
             )
     except (OSError, RegistrationError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
