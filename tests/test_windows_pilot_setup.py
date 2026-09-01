@@ -136,6 +136,163 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 compatibility_mode="robust",
             )
 
+    def test_upgrade_extracts_only_supported_existing_user_preferences(self) -> None:
+        agent_root = r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
+        config_root = agent_root + r"\config\pilot"
+        dedicated_profile = agent_root + r"\browser-profile\pilot"
+        manifest = self.manifest()
+        runtime_root = (
+            agent_root
+            + r"\releases\browser-agent-runtime-1.0.14-core-windows-x64"
+        )
+        manifest["installRoot"] = runtime_root
+        manifest["nodeExecutable"] = runtime_root + r"\node\node.exe"
+        manifest["browser"]["manualConnectionApproval"] = False
+        manifest.pop("interaction")
+
+        legacy = configure.extract_upgrade_preferences(
+            manifest,
+            agent_root=agent_root,
+            config_root=config_root,
+            dedicated_user_data_dir=dedicated_profile,
+        )
+        self.assertEqual(
+            {
+                "source",
+                "browserMode",
+                "browserChannel",
+                "headless",
+                "extensionAuthorization",
+                "snapshotStrategy",
+                "compatibilityMode",
+                "legacyInteractionDefaultsApplied",
+            },
+            set(legacy),
+        )
+        self.assertEqual("extension", legacy["browserMode"])
+        self.assertEqual("user", legacy["extensionAuthorization"])
+        self.assertEqual("chrome", legacy["browserChannel"])
+        self.assertEqual("compact", legacy["snapshotStrategy"])
+        self.assertEqual("robust", legacy["compatibilityMode"])
+        self.assertTrue(legacy["legacyInteractionDefaultsApplied"])
+
+        configure.apply_browser_preferences(
+            manifest,
+            browser_mode="dedicated",
+            headless=True,
+            extension_authorization="session",
+            user_data_dir=dedicated_profile,
+        )
+        manifest["interaction"] = {
+            "snapshotStrategy": "full",
+            "compatibilityMode": "standard",
+            "defaultSnapshotDepth": 6,
+        }
+        dedicated = configure.extract_upgrade_preferences(
+            manifest,
+            agent_root=agent_root,
+            config_root=config_root,
+            dedicated_user_data_dir=dedicated_profile,
+        )
+        self.assertEqual("dedicated", dedicated["browserMode"])
+        self.assertTrue(dedicated["headless"])
+        self.assertEqual("full", dedicated["snapshotStrategy"])
+        self.assertEqual("standard", dedicated["compatibilityMode"])
+        self.assertFalse(dedicated["legacyInteractionDefaultsApplied"])
+
+    def test_upgrade_rejects_unmanaged_or_ambiguous_existing_preferences(self) -> None:
+        agent_root = r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
+        config_root = agent_root + r"\config\pilot"
+        dedicated_profile = agent_root + r"\browser-profile\pilot"
+        manifest = self.manifest()
+        runtime_root = (
+            agent_root
+            + r"\releases\browser-agent-runtime-1.0.15-core-windows-x64"
+        )
+        manifest["installRoot"] = runtime_root
+        manifest["nodeExecutable"] = runtime_root + r"\node\node.exe"
+
+        invalid_path = json.loads(json.dumps(manifest))
+        invalid_path["configRoot"] = r"D:\Unmanaged\pilot"
+        with self.assertRaisesRegex(configure.ConfiguratorError, "configRoot"):
+            configure.extract_upgrade_preferences(
+                invalid_path,
+                agent_root=agent_root,
+                config_root=config_root,
+                dedicated_user_data_dir=dedicated_profile,
+            )
+
+        ambiguous = json.loads(json.dumps(manifest))
+        ambiguous["browser"]["manualConnectionApproval"] = "false"
+        with self.assertRaisesRegex(configure.ConfiguratorError, "not boolean"):
+            configure.extract_upgrade_preferences(
+                ambiguous,
+                agent_root=agent_root,
+                config_root=config_root,
+                dedicated_user_data_dir=dedicated_profile,
+            )
+
+        malformed_interaction = json.loads(json.dumps(manifest))
+        malformed_interaction["interaction"]["snapshotStrategy"] = "automatic"
+        with self.assertRaisesRegex(
+            configure.ConfiguratorError, "snapshot strategy"
+        ):
+            configure.extract_upgrade_preferences(
+                malformed_interaction,
+                agent_root=agent_root,
+                config_root=config_root,
+                dedicated_user_data_dir=dedicated_profile,
+            )
+
+        wrong_type = json.loads(json.dumps(manifest))
+        wrong_type["interaction"]["snapshotStrategy"] = []
+        with self.assertRaisesRegex(
+            configure.ConfiguratorError, "snapshot strategy"
+        ):
+            configure.extract_upgrade_preferences(
+                wrong_type,
+                agent_root=agent_root,
+                config_root=config_root,
+                dedicated_user_data_dir=dedicated_profile,
+            )
+
+    def test_installer_upgrades_existing_user_settings_without_copying_old_paths(
+        self,
+    ) -> None:
+        installer_path = ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1"
+        installer = installer_path.read_text(encoding="utf-8")
+        self.assertTrue(
+            installer_path.read_bytes().startswith(b"\xef\xbb\xbf"),
+            "Windows PowerShell 5.1 requires a BOM for scripts containing Chinese text",
+        )
+        self.assertIn('"inspect-upgrade"', installer)
+        self.assertIn("UPGRADE SETTINGS PRESERVED", installer)
+        self.assertIn("UPGRADE LEGACY INTERACTION DEFAULTS APPLIED", installer)
+        self.assertIn("UPGRADE EXTENSION USER AUTHORIZATION PRESERVED", installer)
+        self.assertIn("EXTENSION INSTALL SKIPPED: dedicated profile mode", installer)
+        self.assertIn('"--snapshot-strategy", $InstallSnapshotStrategy', installer)
+        self.assertIn('"--compatibility-mode", $InstallCompatibilityMode', installer)
+        self.assertIn('"--extension-token-environment"', installer)
+        self.assertIn(
+            '"INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"', installer
+        )
+        self.assertIn("Get-ExistingExtensionToken", installer)
+        self.assertIn("[Convert]::FromBase64String($PaddedToken)", installer)
+        self.assertIn("$TokenBytes.Length -eq 32", installer)
+        self.assertIn("$ExistingExtensionToken = \"\"", installer)
+        self.assertNotIn("upgrade-preferences-token", installer)
+
+        inspection = installer.index('"inspect-upgrade"')
+        runtime_install = installer.index('Write-Step 3 "安装并验证固定运行时"')
+        config_change = installer.index("$ConfigChangeStarted = $true")
+        self.assertLess(inspection, runtime_install)
+        self.assertLess(inspection, config_change)
+        dedicated_skip = installer.index(
+            'if ($InstallBrowserMode -eq "dedicated")'
+        )
+        extension_policy = installer.index("$ExtensionPolicySubKey = if")
+        self.assertLess(dedicated_skip, extension_policy)
+
     def test_reconfigure_writes_a_complete_rendered_dedicated_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -310,7 +467,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('("mcp", "get", server_name)', registrar)
         self.assertIn("claude-user-config.json.bak", installer)
         self.assertIn("ROLLBACK: restored Claude Code user configuration", installer)
-        self.assertIn('if ($BrowserChannel -eq "auto")', installer)
+        self.assertIn('$RequestedBrowserChannel = $BrowserChannel', installer)
+        self.assertIn('if ($RequestedBrowserChannel -eq "auto")', installer)
         self.assertIn('Test-BrowserInstalled "chrome"', installer)
         self.assertIn('Test-BrowserInstalled "msedge"', installer)
         self.assertIn("ExtensionInstallForcelist", installer)
@@ -549,6 +707,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("CI USER EXTENSION AUTHORIZATION PASSED", workflow)
+        self.assertIn(
+            "CI ONE-CLICK EXTENSION SETTINGS UPGRADE PRESERVED", workflow
+        )
+        self.assertIn(
+            "CI ONE-CLICK DEDICATED SETTINGS UPGRADE PRESERVED", workflow
+        )
         self.assertIn("CI DEDICATED HEADLESS PROFILE ISOLATION PASSED", workflow)
         self.assertIn("CI DEDICATED HEADED CONFIGURATION PASSED", workflow)
         self.assertIn("CI SETTINGS FAILURE ROLLBACK PASSED", workflow)
@@ -598,6 +762,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("playwright-extension-ci-ready.json", workflow)
         self.assertIn("playwright-extension-ci-stop.txt", workflow)
         self.assertIn("one-click-launcher.exit.txt", workflow)
+        self.assertIn('"one-click-upgrade-$Label.cmd"', workflow)
+        self.assertIn('Invoke-OneClickUpgrade "extension-user"', workflow)
+        self.assertIn("UPGRADE-EXTENSION-USER.log", workflow)
+        self.assertIn("UPGRADE-DEDICATED-HEADLESS.log", workflow)
+        self.assertIn("UPGRADE EXTENSION USER AUTHORIZATION PRESERVED", workflow)
+        self.assertIn("EXTENSION INSTALL SKIPPED: dedicated profile mode", workflow)
         self.assertIn("playwright-extension-ci.exit.txt", workflow)
         self.assertIn("runtime-publish-access-denied.exit.txt", workflow)
         self.assertIn("inject-runtime-publish-access-denied.ps1", workflow)

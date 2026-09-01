@@ -31,6 +31,8 @@ Windows 试点只使用发布流水线上传的 Windows x64 正式迁移包，�
 
 安装事务同时把设置所需的固定 Python/PowerShell 工具、环境策略和渲染模板复制到版本化 `%LOCALAPPDATA%\IntranetBrowserAgent\maintenance\<版本>`，校验已有版本的逐文件哈希后才复用，并原子更新稳定入口 `BROWSER-AGENT-SETTINGS.cmd`。迁移包删除后设置入口仍可使用。无效旧设置工具先隔离到唯一备份，发布失败必须恢复原版本，不能让这项后置能力把已存在的可用状态留成半成品。
 
+检测到已有受管安装时，同一个顶层入口自动进入升级：保留浏览器模式/channel、扩展授权、有头/无头和快照/兼容选项，但用新包的固定运行时和路径重新生成配置。它不会直接复制旧路径。旧版没有交互字段时只给新增选项使用“精简 + 动态兼容”；独立 Profile 模式不检查或安装扩展。保存的当前用户扩展令牌只从现有 Claude user-scope 条目读取并短期传给注册器，不进入日志或暂存文件。旧清单不受管、组合不合法或令牌无法保留时，在移动旧配置前停止。
+
 上述本地 CRX 策略是可选便利，不是安装前提。更新清单不可写、`HKCU\Software\Policies` 不可读/不可创建/不可写、企业 ACL 拒绝或浏览器自动启动失败时，安装器必须记录 `OFFLINE EXTENSION POLICY UNAVAILABLE` 并立即进入同一进程的人工加载等待。只有策略值已经实际写入、但无法恢复原值或删除本次值时，才因状态不安全而停止。自动打开扩展页和调用 `clip.exe` 也都是非致命便利；失败时仍显示扩展页地址和完整目录并继续等待。
 
 试点不生成 origin 白名单，允许浏览目标机网络当前可达的全部网址；向导不询问或修改防火墙，也不收集生产治理字段。它不修改系统 Node、不运行 npm/pnpm/npx、不绕过执行策略、不下载依赖、不自动完成 SSO/MFA。
@@ -56,7 +58,7 @@ powershell.exe -NoProfile -File .\toolkit\scripts\verify-windows-release.ps1 `
 2. 在解压前用 `Get-FileHash .\<transfer.tar.gz> -Algorithm SHA256` 与相邻 `.sha256` 比对。
 3. 用 Windows 自带 `tar.exe -xzf .\<transfer.tar.gz>` 解压迁移包，进入其顶层目录，先执行 `py -3 .\toolkit\scripts\verify-bundle.py .`，再执行 `py -3 .\toolkit\scripts\verify-bundle.py .\runtime\<runtime.tar.gz>`。Windows 运行包的 `SYMLINKS.json` 必须为空。
 4. 读取 `KIT-METADATA.json` 中嵌入的运行包构建元数据，确认 `buildHost` 与 `target` 都为 `windows/x64`、`crossBuilt=false`、`targetCliSmokeTested=true` 且 `bundledNode=true`。验证解压目录的 `node` 子目录只含 `node.exe`、`LICENSE`、`VERSION`、`SOURCE.json`，并执行 `validate_node_distribution.py --approval-file .\toolkit\config\windows-node-sources.json`。任何交叉构建候选都不得安装。
-5. production 将运行包解压到新的版本目录，例如 `C:\ProgramData\IntranetBrowserAgent\releases\browser-agent-runtime-1.0.15-core-windows-x64`；user-scope pilot 则使用 `%LOCALAPPDATA%\IntranetBrowserAgent\releases\...`。再次对解压后的运行目录执行同一校验器，再与其 `BUILD-METADATA.json` 对照。
+5. production 将运行包解压到新的版本目录，例如 `C:\ProgramData\IntranetBrowserAgent\releases\browser-agent-runtime-1.0.16-core-windows-x64`；user-scope pilot 则使用 `%LOCALAPPDATA%\IntranetBrowserAgent\releases\...`。再次对解压后的运行目录执行同一校验器，再与其 `BUILD-METADATA.json` 对照。
 6. 不直接覆盖当前版本。完成预检后，再由配置管理把 `C:\ProgramData\IntranetBrowserAgent\current` junction 切到新版本目录。
 
 迁移包顶层 `START-HERE.md` 和 `toolkit/docs/windows-quickstart.md` 给出试点最短操作路径；若与本文冲突，以本文为准。
@@ -110,7 +112,7 @@ powershell.exe -NoProfile -File .\toolkit\scripts\verify-windows-release.ps1 `
 
 ## 6. 升级与回滚
 
-升级必须新建版本目录，重新构建、扫描并跑全部验收。不得在内网运行 `pnpm update`、`npm install` 或 `npx ...@latest`。
+发布方升级必须新建版本目录，重新构建、扫描并跑全部验收。目标用户无需先卸载：解压新版正式 ZIP 后直接双击一次新版 `INSTALL-WINDOWS-PILOT.cmd`，安装器会自动识别升级并保留受支持的用户设置；旧配置和 Claude 用户配置先备份，失败时恢复。不得在内网运行 `pnpm update`、`npm install` 或 `npx ...@latest`。
 
 user-scope pilot 回滚时，停止 Claude Code 会话，优先使用安装/设置事务留下的同批次备份恢复用户配置和对应 Playwright 配置，再运行 preflight；不得只恢复其中一侧。也可用 Claude Code CLI 将 `intranet-browser-agent` 重新指向上一已验证版本。production 若采用 `current` junction，则由配置管理切回上一版本。Profile 数据格式如果被浏览器升级迁移，不能假定旧 Chrome 可安全读取；浏览器自身回滚由企业浏览器运维流程负责。
 

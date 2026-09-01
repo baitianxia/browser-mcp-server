@@ -54,6 +54,16 @@ $ExtensionPolicyCreatedPaths = @()
 $ExtensionPolicyChangeStarted = $false
 $ExtensionPolicyCommitted = $false
 $ExtensionInstallMethod = ""
+$UpgradeDetected = $false
+$InstallBrowserMode = "extension"
+$InstallHeadless = $false
+$InstallExtensionAuthorization = "session"
+$InstallSnapshotStrategy = "compact"
+$InstallCompatibilityMode = "robust"
+$ExistingBrowserChannel = ""
+$ExistingExtensionToken = ""
+$TokenInputEnvironmentName = "INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"
+$PreviousTokenInput = $null
 
 function Write-InstallLog {
     param([string]$Message)
@@ -135,6 +145,70 @@ function Invoke-Python {
     if ($ExitCode -ne 0) {
         throw "Python helper failed with exit code $ExitCode"
     }
+}
+
+function Get-ClaudeUserConfigPath {
+    if ($env:CLAUDE_CONFIG_DIR) {
+        $ClaudeConfigDirectory = [string]$env:CLAUDE_CONFIG_DIR
+        if (-not [IO.Path]::IsPathRooted($ClaudeConfigDirectory) -or
+            $ClaudeConfigDirectory -notmatch '^[A-Za-z]:[\\/]') {
+            throw "CLAUDE_CONFIG_DIR 必须是本机盘符绝对路径，不能使用相对路径或 ~。"
+        }
+        $ClaudeConfigDirectory = [IO.Path]::GetFullPath(
+            $ClaudeConfigDirectory
+        )
+        if ($ClaudeConfigDirectory -notmatch '^[A-Za-z]:\\') {
+            throw "CLAUDE_CONFIG_DIR 必须是本机盘符绝对路径，不能使用 UNC 路径。"
+        }
+        return Join-Path $ClaudeConfigDirectory ".claude.json"
+    }
+    return Join-Path $env:USERPROFILE ".claude.json"
+}
+
+function Get-ExistingExtensionToken {
+    param([Parameter(Mandatory = $true)][string]$UserConfigPath)
+    try {
+        if (-not (Test-Path -LiteralPath $UserConfigPath -PathType Leaf)) {
+            return ""
+        }
+        $Payload = Get-Content -LiteralPath $UserConfigPath -Raw |
+            ConvertFrom-Json
+        $ServersProperty = $Payload.PSObject.Properties["mcpServers"]
+        if ($null -eq $ServersProperty -or $null -eq $ServersProperty.Value) {
+            return ""
+        }
+        $EntryProperty = $ServersProperty.Value.PSObject.Properties[
+            "intranet-browser-agent"
+        ]
+        if ($null -eq $EntryProperty -or $null -eq $EntryProperty.Value) {
+            return ""
+        }
+        $EnvironmentProperty = $EntryProperty.Value.PSObject.Properties["env"]
+        if ($null -eq $EnvironmentProperty -or
+            $null -eq $EnvironmentProperty.Value) {
+            return ""
+        }
+        $TokenProperty = $EnvironmentProperty.Value.PSObject.Properties[
+            "PLAYWRIGHT_MCP_EXTENSION_TOKEN"
+        ]
+        if ($null -eq $TokenProperty) {
+            return ""
+        }
+        $Token = [string]$TokenProperty.Value
+        if ($Token -match '^[A-Za-z0-9_-]{43}$') {
+            $PaddedToken = $Token.Replace('-', '+').Replace('_', '/') + "="
+            $TokenBytes = [Convert]::FromBase64String($PaddedToken)
+            $CanonicalToken = [Convert]::ToBase64String($TokenBytes).TrimEnd(
+                [char]'='
+            ).Replace('+', '-').Replace('/', '_')
+            if ($TokenBytes.Length -eq 32 -and $CanonicalToken -ceq $Token) {
+                return $Token
+            }
+        }
+    } catch {
+        Write-InstallLog "WARNING: existing extension token could not be read"
+    }
+    return ""
 }
 
 function Test-RetryableDirectoryMoveError {
@@ -787,23 +861,8 @@ try {
     $NodeExe = ""
     Write-Host "系统 Node.js 不参与安装；将使用迁移包内的 $ExpectedNodeVersion。"
 
-    Write-Step 2 "自动识别浏览器并准备当前用户目录"
-    if ($BrowserChannel -eq "auto") {
-        if (Test-BrowserInstalled "chrome") {
-            $BrowserChannel = "chrome"
-        } elseif (Test-BrowserInstalled "msedge") {
-            $BrowserChannel = "msedge"
-        } else {
-            throw "未找到 Chrome 或 Edge。"
-        }
-        Write-Host "已自动选择浏览器：$BrowserChannel"
-    } elseif (-not (Test-BrowserInstalled $BrowserChannel)) {
-        throw "未找到指定浏览器：$BrowserChannel"
-    }
-    $BrowserExecutable = Get-BrowserExecutable $BrowserChannel
-    if (-not $BrowserExecutable) {
-        throw "无法解析浏览器可执行文件：$BrowserChannel"
-    }
+    Write-Step 2 "识别已有设置、浏览器并准备当前用户目录"
+    $RequestedBrowserChannel = $BrowserChannel
     $ProfileOwner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $LocalAppDataRoot = [IO.Path]::GetFullPath($env:LOCALAPPDATA).TrimEnd("\")
     $AgentRoot = [IO.Path]::GetFullPath((Join-Path $LocalAppDataRoot "IntranetBrowserAgent"))
@@ -818,12 +877,10 @@ try {
     $RuntimeRoot = Join-Path $ReleaseRoot $RuntimeName
     $ConfigRoot = Join-Path $AgentRoot "config\pilot"
     $OutputDirectory = Join-Path $AgentRoot "output\pilot"
+    $DedicatedProfile = Join-Path $AgentRoot "browser-profile\pilot"
     $ExtensionInstallRoot = Join-Path $AgentRoot "browser-extension\$ExtensionVersion"
     $InstalledExtensionCrx = Join-Path $ExtensionInstallRoot ([IO.Path]::GetFileName($ExtensionSourcePath))
     $InstalledExtensionUnpacked = Join-Path $ExtensionInstallRoot "unpacked"
-    $PlaywrightExtensionAlreadyInstalled = Test-PlaywrightExtension `
-        $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
-        $InstalledExtensionUnpacked
     Invoke-Python @(
         $Configurator,
         "assert-user-paths",
@@ -833,6 +890,7 @@ try {
         "--path", $RuntimeRoot,
         "--path", $ConfigRoot,
         "--path", $OutputDirectory,
+        "--path", $DedicatedProfile,
         "--path", $ExtensionInstallRoot,
         "--path", $InstalledExtensionUnpacked,
         "--path", (Join-Path $AgentRoot "staging"),
@@ -842,16 +900,6 @@ try {
         "--path", (Join-Path $AgentRoot ".install.lock")
     )
 
-    Write-Host ""
-    Write-Host "即将部署：" -ForegroundColor Cyan
-    Write-Host "  安装范围：当前用户的全部 Claude Code 项目"
-    Write-Host "  安装目录：$AgentRoot"
-    Write-Host "  浏览器：$BrowserChannel"
-    Write-Host "  浏览器登录态：连接当前 Profile 中已登录的标签页"
-    Write-Host "  Playwright Extension：$ExtensionVersion（离线包内安装）"
-    Write-Host "  运行账号：$ProfileOwner"
-
-    Write-Step 3 "安装并验证固定运行时"
     New-Item -ItemType Directory -Path $AgentRoot -Force | Out-Null
     $InstallLockPath = Join-Path $AgentRoot ".install.lock"
     try {
@@ -867,7 +915,135 @@ try {
     New-Item -ItemType Directory -Path $ReleaseRoot -Force | Out-Null
     $StagingRoot = Join-Path $AgentRoot "staging"
     New-Item -ItemType Directory -Path $StagingRoot -Force | Out-Null
+    $StageRoot = Join-Path $StagingRoot `
+        ("pilot-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 
+    $InstalledManifestBeforeUpgrade = Join-Path $ConfigRoot `
+        "deployment.windows-pilot.json"
+    if (Test-Path -LiteralPath $ConfigRoot) {
+        if (-not (Test-Path -LiteralPath $ConfigRoot -PathType Container)) {
+            throw "已有配置路径不是目录；未修改原安装：$ConfigRoot"
+        }
+        if (-not (Test-Path -LiteralPath $InstalledManifestBeforeUpgrade `
+                -PathType Leaf)) {
+            throw "已有安装缺少可迁移清单；未修改原安装：$InstalledManifestBeforeUpgrade"
+        }
+        $UpgradePreferencesPath = Join-Path $StageRoot `
+            "upgrade-preferences.json"
+        Invoke-Python @(
+            $Configurator,
+            "inspect-upgrade",
+            "--manifest", $InstalledManifestBeforeUpgrade,
+            "--agent-root", $AgentRoot,
+            "--config-root", $ConfigRoot,
+            "--dedicated-user-data-dir", $DedicatedProfile,
+            "--preferences-out", $UpgradePreferencesPath
+        )
+        $UpgradePreferences = Get-Content -LiteralPath $UpgradePreferencesPath `
+            -Raw | ConvertFrom-Json
+        $InstallBrowserMode = [string]$UpgradePreferences.browserMode
+        $InstallHeadless = $UpgradePreferences.headless -eq $true
+        $InstallExtensionAuthorization = `
+            [string]$UpgradePreferences.extensionAuthorization
+        $InstallSnapshotStrategy = `
+            [string]$UpgradePreferences.snapshotStrategy
+        $InstallCompatibilityMode = `
+            [string]$UpgradePreferences.compatibilityMode
+        $ExistingBrowserChannel = [string]$UpgradePreferences.browserChannel
+        $UpgradeDetected = $true
+        $ConfigWasPresent = $true
+        $PreservedSettings = (
+            "mode={0}; authorization={1}; headless={2}; snapshot={3}; compatibility={4}" -f `
+                $InstallBrowserMode,
+                $InstallExtensionAuthorization,
+                $InstallHeadless.ToString().ToLowerInvariant(),
+                $InstallSnapshotStrategy,
+                $InstallCompatibilityMode
+        )
+        Write-InstallLog "UPGRADE SETTINGS PRESERVED: $PreservedSettings"
+        Write-Host "检测到已有安装，将保留用户设置：$PreservedSettings" `
+            -ForegroundColor Green
+        if ($UpgradePreferences.legacyInteractionDefaultsApplied -eq $true) {
+            Write-Host "旧版本没有交互选项；仅为新增选项采用精简快照和动态兼容默认值。"
+            Write-InstallLog "UPGRADE LEGACY INTERACTION DEFAULTS APPLIED"
+        }
+    }
+
+    if ($RequestedBrowserChannel -eq "auto") {
+        if ($UpgradeDetected -and $ExistingBrowserChannel -and
+            (Test-BrowserInstalled $ExistingBrowserChannel)) {
+            $BrowserChannel = $ExistingBrowserChannel
+            Write-Host "升级继续使用原浏览器：$BrowserChannel"
+        } else {
+            if ($UpgradeDetected -and $ExistingBrowserChannel) {
+                Write-Host "原浏览器 $ExistingBrowserChannel 已不可用，将重新自动识别。" `
+                    -ForegroundColor Yellow
+                Write-InstallLog (
+                    "UPGRADE BROWSER CHANNEL UNAVAILABLE: {0}" -f `
+                        $ExistingBrowserChannel
+                )
+            }
+            if (Test-BrowserInstalled "chrome") {
+                $BrowserChannel = "chrome"
+            } elseif (Test-BrowserInstalled "msedge") {
+                $BrowserChannel = "msedge"
+            } else {
+                throw "未找到 Chrome 或 Edge。"
+            }
+            Write-Host "已自动选择浏览器：$BrowserChannel"
+        }
+    } else {
+        $BrowserChannel = $RequestedBrowserChannel
+        if (-not (Test-BrowserInstalled $BrowserChannel)) {
+            throw "未找到指定浏览器：$BrowserChannel"
+        }
+    }
+    $BrowserExecutable = Get-BrowserExecutable $BrowserChannel
+    if (-not $BrowserExecutable) {
+        throw "无法解析浏览器可执行文件：$BrowserChannel"
+    }
+    $PlaywrightExtensionAlreadyInstalled = $false
+    if ($InstallBrowserMode -eq "extension") {
+        $PlaywrightExtensionAlreadyInstalled = Test-PlaywrightExtension `
+            $ExtensionChecker $LocalAppDataRoot $BrowserChannel `
+            $ExtensionVersion $InstalledExtensionUnpacked
+    }
+
+    $ClaudeUserConfigPath = Get-ClaudeUserConfigPath
+    $UserConfigWasPresent = Test-Path -LiteralPath $ClaudeUserConfigPath `
+        -PathType Leaf
+    if ($UpgradeDetected -and $InstallBrowserMode -eq "extension" -and
+        $InstallExtensionAuthorization -eq "user") {
+        $ExistingExtensionToken = Get-ExistingExtensionToken `
+            $ClaudeUserConfigPath
+        if (-not $ExistingExtensionToken) {
+            throw "已有设置要求记住当前用户，但 Claude 用户配置中没有有效扩展令牌；未修改原安装。"
+        }
+        Write-InstallLog "UPGRADE EXTENSION USER AUTHORIZATION PRESERVED"
+    }
+
+    Write-Host ""
+    Write-Host "即将部署：" -ForegroundColor Cyan
+    Write-Host "  安装范围：当前用户的全部 Claude Code 项目"
+    Write-Host "  安装目录：$AgentRoot"
+    Write-Host "  浏览器：$BrowserChannel"
+    if ($InstallBrowserMode -eq "extension") {
+        $AuthorizationLabel = if ($InstallExtensionAuthorization -eq "user") {
+            "记住当前 Windows 用户"
+        } else {
+            "每次连接确认"
+        }
+        Write-Host "  浏览器登录态：连接当前 Profile 中已登录的标签页"
+        Write-Host "  Playwright Extension：$ExtensionVersion（$AuthorizationLabel）"
+    } else {
+        $DisplayLabel = if ($InstallHeadless) { "无头" } else { "有头" }
+        Write-Host "  浏览器登录态：独立 Profile，不共享原登录态（$DisplayLabel）"
+    }
+    Write-Host "  交互方式：$InstallSnapshotStrategy / $InstallCompatibilityMode"
+    Write-Host "  运行账号：$ProfileOwner"
+
+    Write-Step 3 "安装并验证固定运行时"
     if (Test-Path -LiteralPath $RuntimeRoot) {
         Write-Host "运行版本已存在，验证后复用：$RuntimeRoot"
         Invoke-Python @($Verifier, $RuntimeRoot)
@@ -924,7 +1100,12 @@ try {
     Write-Host "已启用包内 Node.js $($BundledNodeInfo.Text)；未修改系统 Node.js。" -ForegroundColor Green
     Write-InstallLog "Bundled Node.js selected: $BundledNodeExe ($($BundledNodeInfo.Text))"
 
-    if ($PlaywrightExtensionAlreadyInstalled) {
+    if ($InstallBrowserMode -eq "dedicated") {
+        $ExtensionInstallMethod = "not-required-dedicated"
+        Write-Host "已有设置使用独立 Profile；本次升级不要求安装或重新授权 Extension。" `
+            -ForegroundColor Green
+        Write-InstallLog "EXTENSION INSTALL SKIPPED: dedicated profile mode"
+    } elseif ($PlaywrightExtensionAlreadyInstalled) {
         Invoke-Python @(
             $ExtensionChecker,
             "check",
@@ -1242,12 +1423,9 @@ try {
     Write-InstallLog "EXTENSION INSTALL METHOD: $ExtensionInstallMethod"
 
     Write-Step 4 "自动生成配置并备份旧版本"
-    $StageRoot = Join-Path $StagingRoot `
-        ("pilot-" + [guid]::NewGuid().ToString("N"))
     $StageManifest = Join-Path $StageRoot "deployment.windows-pilot.json"
     $StageRendered = Join-Path $StageRoot "rendered"
     $StageDeploy = Join-Path $StageRoot "deploy"
-    New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 
     $GenerateArguments = @(
         $Configurator,
@@ -1261,7 +1439,13 @@ try {
         "--profile-owner", $ProfileOwner,
         "--node-executable", $NodeExe,
         "--browser-channel", $BrowserChannel,
-        "--browser-executable", $BrowserExecutable
+        "--browser-executable", $BrowserExecutable,
+        "--browser-mode", $InstallBrowserMode,
+        "--headless", $InstallHeadless.ToString().ToLowerInvariant(),
+        "--extension-authorization", $InstallExtensionAuthorization,
+        "--user-data-dir", $DedicatedProfile,
+        "--snapshot-strategy", $InstallSnapshotStrategy,
+        "--compatibility-mode", $InstallCompatibilityMode
     )
     Invoke-Python $GenerateArguments
     New-Item -ItemType Directory -Path $StageDeploy -Force | Out-Null
@@ -1337,21 +1521,6 @@ try {
         "--browser-executable", $BrowserExecutable
     )
 
-    if ($env:CLAUDE_CONFIG_DIR) {
-        $ClaudeConfigDirectory = [string]$env:CLAUDE_CONFIG_DIR
-        if (-not [IO.Path]::IsPathRooted($ClaudeConfigDirectory) -or
-            $ClaudeConfigDirectory -notmatch '^[A-Za-z]:[\\/]') {
-            throw "CLAUDE_CONFIG_DIR 必须是本机盘符绝对路径，不能使用相对路径或 ~。"
-        }
-        $ClaudeConfigDirectory = [IO.Path]::GetFullPath($ClaudeConfigDirectory)
-        if ($ClaudeConfigDirectory -notmatch '^[A-Za-z]:\\') {
-            throw "CLAUDE_CONFIG_DIR 必须是本机盘符绝对路径，不能使用 UNC 路径。"
-        }
-        $ClaudeUserConfigPath = Join-Path $ClaudeConfigDirectory ".claude.json"
-    } else {
-        $ClaudeUserConfigPath = Join-Path $env:USERPROFILE ".claude.json"
-    }
-    $UserConfigWasPresent = Test-Path -LiteralPath $ClaudeUserConfigPath -PathType Leaf
     if ($UserConfigWasPresent) {
         $ClaudeUserConfigBackup = Join-Path $BackupRoot "claude-user-config.json.bak"
     } else {
@@ -1380,7 +1549,30 @@ try {
         "--backup", $ClaudeUserConfigBackup
     )
     $UserConfigChangeStarted = $true
-    Invoke-Python $RegistrarArguments
+    if ($ExistingExtensionToken) {
+        $PreviousTokenInput = [Environment]::GetEnvironmentVariable(
+            $TokenInputEnvironmentName,
+            [EnvironmentVariableTarget]::Process
+        )
+        try {
+            [Environment]::SetEnvironmentVariable(
+                $TokenInputEnvironmentName,
+                $ExistingExtensionToken,
+                [EnvironmentVariableTarget]::Process
+            )
+            $RegistrarArguments += "--extension-token-environment"
+            Invoke-Python $RegistrarArguments
+        } finally {
+            [Environment]::SetEnvironmentVariable(
+                $TokenInputEnvironmentName,
+                $PreviousTokenInput,
+                [EnvironmentVariableTarget]::Process
+            )
+            $ExistingExtensionToken = ""
+        }
+    } else {
+        Invoke-Python $RegistrarArguments
+    }
     Install-BrowserAgentSettingsTool `
         -ToolkitRoot $ToolkitRoot `
         -AgentRoot $AgentRoot `
@@ -1392,20 +1584,55 @@ try {
 
     Write-Step 6 "完成"
     $SummaryPath = Join-Path $AgentRoot "INSTALLATION.txt"
+    $InstallTypeSummary = if ($UpgradeDetected) {
+        "upgrade (existing user settings preserved)"
+    } else {
+        "fresh install (default user settings applied)"
+    }
+    if ($InstallBrowserMode -eq "extension") {
+        $AuthorizationSummary = if ($InstallExtensionAuthorization -eq "user") {
+            "remember this Windows user"
+        } else {
+            "approve each connection"
+        }
+        $BrowserModeSummary = (
+            "existing {0} tabs through Playwright Extension {1}; {2}" -f `
+                $BrowserChannel, $ExtensionVersion, $AuthorizationSummary
+        )
+        $NextSummary = (
+            "Next: restart Claude Code in any project, run /mcp to confirm " +
+            "intranet-browser-agent, connect an existing browser tab, and " +
+            "perform a read-only page-title test first."
+        )
+    } else {
+        $DisplaySummary = if ($InstallHeadless) { "headless" } else { "headed" }
+        $BrowserModeSummary = (
+            "dedicated {0} Profile; {1}; original browser login state is not shared" -f `
+                $BrowserChannel, $DisplaySummary
+        )
+        $NextSummary = (
+            "Next: restart Claude Code in any project, run /mcp to confirm " +
+            "intranet-browser-agent, and perform a read-only page-title test first."
+        )
+    }
+    $InteractionSummary = (
+        "{0} snapshots; {1} dynamic-page compatibility" -f `
+            $InstallSnapshotStrategy, $InstallCompatibilityMode
+    )
     $Summary = @"
 Windows Browser Agent pilot is installed.
 
+Install type: $InstallTypeSummary
 Runtime: $RuntimeRoot
 Manifest: $InstalledManifest
 Claude MCP scope: user (all projects for the current Windows user)
-Browser mode: existing $BrowserChannel tabs through Playwright Extension $ExtensionVersion
-Interaction: compact snapshots; robust dynamic-page compatibility
+Browser mode: $BrowserModeSummary
+Interaction: $InteractionSummary
 Extension install method: $ExtensionInstallMethod
 Backup: $BackupRoot
 Settings: $(Join-Path $AgentRoot "BROWSER-AGENT-SETTINGS.cmd")
 
-Next: restart Claude Code in any project, run /mcp to confirm intranet-browser-agent,
-approve the browser tab connection, and perform a read-only page-title test first.
+$NextSummary
 "@
     $SummaryWritten = $false
     try {
@@ -1418,7 +1645,17 @@ approve the browser tab connection, and perform a read-only page-title test firs
     Write-InstallLog "SUCCESS: installation and preflight completed"
     Write-Host "安装和 preflight 已完成。" -ForegroundColor Green
     Write-Host "下一步：重启 Claude Code，在任意项目中输入 /mcp 查看 intranet-browser-agent。"
-    Write-Host "首次调用浏览器工具时，在 Playwright Extension 页面选择允许控制的现有标签页。"
+    if ($InstallBrowserMode -eq "extension") {
+        if ($InstallExtensionAuthorization -eq "user") {
+            Write-Host "扩展已设置为记住当前 Windows 用户；选择要控制的现有浏览器标签页即可。"
+        } else {
+            Write-Host "首次调用浏览器工具时，在 Playwright Extension 页面允许本次连接并选择标签页。"
+        }
+    } elseif ($InstallHeadless) {
+        Write-Host "当前为独立无头模式，不会弹出浏览器；需要登录时先用设置工具切换为有头模式。"
+    } else {
+        Write-Host "当前使用独立有头 Profile；需要登录时请在弹出的专用浏览器窗口完成登录。"
+    }
     Write-Host "后续切换授权、无头、独立 Profile、快照或页面兼容方式：$AgentRoot\BROWSER-AGENT-SETTINGS.cmd"
     if ($SummaryWritten) {
         Write-Host "安装摘要：$SummaryPath"
@@ -1523,6 +1760,7 @@ approve the browser tab connection, and perform a read-only page-title test firs
     }
     exit 1
 } finally {
+    $ExistingExtensionToken = ""
     if ($RuntimeExtractionRoot -and (Test-Path -LiteralPath $RuntimeExtractionRoot)) {
         Remove-Item -LiteralPath $RuntimeExtractionRoot -Recurse -Force -ErrorAction SilentlyContinue
     }

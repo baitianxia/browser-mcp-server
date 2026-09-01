@@ -20,7 +20,7 @@
 
 兼容层不扩展 origin、文件或浏览器 Profile 权限，不解析登录秘密，不自动确认高风险业务动作，也不把页面内容当作授权指令。DOM 回退必须保持原调用目标，不得寻找并点击另一个“相似”元素。所有配置写入 `interaction.config.json`，由部署清单生成并纳入完整性、preflight、原子切换和回滚。
 
-Windows 一键安装初始值为 `compact + robust + settleMs=1500`。安装后的 `BROWSER-AGENT-SETTINGS.cmd` 允许用户在“精简/完整快照”和“动态兼容/标准上游行为”之间自由切换，不需要重装运行时或扩展。切换仍必须经过暂存渲染、MCP 握手、原子发布和 Claude user-scope 注册事务。
+Windows 首次一键安装的初始值为 `compact + robust + settleMs=1500`。再次运行新版安装包时必须保留已有 `compact|full` 与 `robust|standard` 选择；只有升级来源是尚未定义 `interaction` 的旧版受管清单时，才仅为这两个新增选项采用 `compact + robust`，不得同时重置浏览器设置。安装后的 `BROWSER-AGENT-SETTINGS.cmd` 允许用户在“精简/完整快照”和“动态兼容/标准上游行为”之间自由切换，不需要重装运行时或扩展。切换仍必须经过暂存渲染、MCP 握手、原子发布和 Claude user-scope 注册事务。
 
 ## 结果
 

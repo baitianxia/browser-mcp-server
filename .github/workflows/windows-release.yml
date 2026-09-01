@@ -209,7 +209,7 @@ jobs:
               throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
           }
           $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-agent-runtime-1.0.15-core-windows-x64.tar.gz")
+              -Filter "browser-agent-runtime-1.0.16-core-windows-x64.tar.gz")
           if ($RuntimeArchives.Count -ne 1) {
               throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
           }
@@ -228,7 +228,7 @@ jobs:
               throw "Transfer-kit build failed."
           }
           $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "intranet-browser-agent-transfer-1.0.15-core-windows-x64.tar.gz")
+              -Filter "intranet-browser-agent-transfer-1.0.16-core-windows-x64.tar.gz")
           if ($TransferArchives.Count -ne 1) {
               throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
           }
@@ -1327,6 +1327,82 @@ jobs:
               }
           }
 
+          $UpgradeLauncher = Join-Path $env:TRANSFER_ROOT `
+              "INSTALL-WINDOWS-PILOT.cmd"
+          function Invoke-OneClickUpgrade {
+              param([Parameter(Mandatory = $true)][string]$Label)
+              $KnownLogs = @{}
+              $InstallLogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
+              @(Get-ChildItem -LiteralPath $InstallLogRoot `
+                  -Filter "INSTALL-WINDOWS-PILOT-*.log" `
+                  -ErrorAction SilentlyContinue) | ForEach-Object {
+                  $KnownLogs[$_.FullName] = $true
+              }
+              $Wrapper = Join-Path $env:RUNNER_TEMP `
+                  "one-click-upgrade-$Label.cmd"
+              $ExitFile = Join-Path $env:RUNNER_TEMP `
+                  "one-click-upgrade-$Label.exit.txt"
+              $Stdout = Join-Path $env:RUNNER_TEMP `
+                  "one-click-upgrade-$Label.stdout.log"
+              $Stderr = Join-Path $env:RUNNER_TEMP `
+                  "one-click-upgrade-$Label.stderr.log"
+              foreach ($Stale in @($ExitFile, $Stdout, $Stderr)) {
+                  Remove-Item -LiteralPath $Stale -Force `
+                      -ErrorAction SilentlyContinue
+              }
+              $WrapperBody = @"
+          @echo off
+          call "$UpgradeLauncher" -ManualExtensionWaitSeconds 60 < nul
+          set "UPGRADE_EXIT=%errorlevel%"
+          > "$ExitFile" echo %UPGRADE_EXIT%
+          exit /b %UPGRADE_EXIT%
+          "@
+              [IO.File]::WriteAllText(
+                  $Wrapper,
+                  $WrapperBody,
+                  (New-Object System.Text.ASCIIEncoding)
+              )
+              $Process = Start-Process -FilePath $env:ComSpec `
+                  -ArgumentList @("/d", "/c", $Wrapper) `
+                  -RedirectStandardOutput $Stdout `
+                  -RedirectStandardError $Stderr `
+                  -PassThru
+              if (-not $Process.WaitForExit(180000)) {
+                  & (Join-Path $env:SystemRoot "System32\taskkill.exe") `
+                      /PID $Process.Id /T /F 2>$null | Out-Null
+                  $null = $Process.WaitForExit(5000)
+                  throw "One-click $Label upgrade timed out."
+              }
+              if (Test-Path -LiteralPath $Stdout -PathType Leaf) {
+                  Get-Content -LiteralPath $Stdout | Write-Host
+              }
+              if (Test-Path -LiteralPath $Stderr -PathType Leaf) {
+                  Get-Content -LiteralPath $Stderr | Write-Host
+              }
+              if (-not (Test-Path -LiteralPath $ExitFile -PathType Leaf)) {
+                  throw "One-click $Label upgrade did not preserve its exit code."
+              }
+              $ExitText = (Get-Content -LiteralPath $ExitFile -Raw).Trim()
+              $ExitCode = 0
+              if (-not [int]::TryParse($ExitText, [ref]$ExitCode) -or
+                  $ExitCode -ne 0) {
+                  throw "One-click $Label upgrade failed with exit code $ExitText."
+              }
+              $NewLogs = @(Get-ChildItem -LiteralPath $InstallLogRoot `
+                  -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
+                  Where-Object { -not $KnownLogs.ContainsKey($_.FullName) })
+              if ($NewLogs.Count -ne 1) {
+                  throw "One-click $Label upgrade did not create exactly one installer log."
+              }
+              $UpgradeLog = $NewLogs[0].FullName
+              if (-not (Select-String -LiteralPath $UpgradeLog `
+                  -SimpleMatch "SUCCESS: installation and preflight completed" `
+                  -Quiet)) {
+                  throw "One-click $Label upgrade has no success marker."
+              }
+              return $UpgradeLog
+          }
+
           Invoke-InstalledSettings extension user headed $TokenFile full standard
           $Manifest = Get-Content -LiteralPath $ManifestPath -Raw |
               ConvertFrom-Json
@@ -1349,6 +1425,155 @@ jobs:
               throw "Current-user authorization and full/standard interaction settings were not persisted exactly."
           }
           Write-Host "CI USER EXTENSION AUTHORIZATION PASSED"
+
+          # Keep the exact approved extension alive while the upgrade runs.
+          # This is the same CI-only surrogate used by the first-install test;
+          # it does not claim that a human folder-picker load survives restart.
+          $UpgradeApproval = Get-Content -LiteralPath (Join-Path `
+              $env:TRANSFER_ROOT `
+              "toolkit\config\playwright-extension-source.json") `
+              -Raw | ConvertFrom-Json
+          $UpgradeUnpacked = Join-Path $AgentRoot `
+              "browser-extension\$($UpgradeApproval.version)\unpacked"
+          $UpgradeCdpProbe = Join-Path $env:GITHUB_WORKSPACE `
+              ".github\scripts\load-unpacked-extension-cdp.js"
+          $UpgradeChromeProfile = Join-Path $env:LOCALAPPDATA `
+              "Google\Chrome\User Data"
+          $UpgradeSessionToken = Join-Path $env:RUNNER_TEMP `
+              "upgrade-extension-session-token.txt"
+          $UpgradeSessionReady = Join-Path $env:RUNNER_TEMP `
+              "upgrade-extension-session-ready.json"
+          $UpgradeSessionStop = Join-Path $env:RUNNER_TEMP `
+              "upgrade-extension-session-stop.txt"
+          $UpgradeSessionExit = Join-Path $env:RUNNER_TEMP `
+              "upgrade-extension-session.exit.txt"
+          $UpgradeSessionStdout = Join-Path $env:RUNNER_TEMP `
+              "upgrade-extension-session.stdout.log"
+          $UpgradeSessionStderr = Join-Path $env:RUNNER_TEMP `
+              "upgrade-extension-session.stderr.log"
+          $UpgradeSessionWrapper = Join-Path $env:RUNNER_TEMP `
+              "upgrade-extension-session.cmd"
+          foreach ($Stale in @(
+              $UpgradeSessionToken, $UpgradeSessionReady,
+              $UpgradeSessionStop, $UpgradeSessionExit,
+              $UpgradeSessionStdout, $UpgradeSessionStderr
+          )) {
+              Remove-Item -LiteralPath $Stale -Force `
+                  -ErrorAction SilentlyContinue
+          }
+          @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
+              Stop-Process -Force -ErrorAction SilentlyContinue
+          $UpgradeSessionWrapperBody = @"
+          @echo off
+          node.exe "$UpgradeCdpProbe" --chrome "$env:CHROME_EXE" --profile "$UpgradeChromeProfile" --extension "$UpgradeUnpacked" --expected-id "$($UpgradeApproval.extensionId)" --expected-version "$($UpgradeApproval.version)" --token-file "$UpgradeSessionToken" --ready-file "$UpgradeSessionReady" --stop-file "$UpgradeSessionStop" --maximum-seconds 300
+          set "SESSION_EXIT=%errorlevel%"
+          > "$UpgradeSessionExit" echo %SESSION_EXIT%
+          exit /b %SESSION_EXIT%
+          "@
+          [IO.File]::WriteAllText(
+              $UpgradeSessionWrapper,
+              $UpgradeSessionWrapperBody,
+              (New-Object System.Text.ASCIIEncoding)
+          )
+          $UpgradeSessionProcess = Start-Process -FilePath $env:ComSpec `
+              -ArgumentList @("/d", "/c", $UpgradeSessionWrapper) `
+              -RedirectStandardOutput $UpgradeSessionStdout `
+              -RedirectStandardError $UpgradeSessionStderr `
+              -PassThru
+          $ExtensionUpgradeLog = ""
+          $UpgradeSessionExitText = ""
+          try {
+              $UpgradeReadyDeadline = [DateTime]::UtcNow.AddSeconds(90)
+              while (-not $UpgradeSessionProcess.HasExited -and
+                  -not (Test-Path -LiteralPath $UpgradeSessionReady `
+                      -PathType Leaf) -and
+                  [DateTime]::UtcNow -lt $UpgradeReadyDeadline) {
+                  Start-Sleep -Milliseconds 250
+              }
+              if (-not (Test-Path -LiteralPath $UpgradeSessionReady `
+                  -PathType Leaf)) {
+                  throw "The extension upgrade CI session did not become ready."
+              }
+              $RuntimeBeforeExtensionUpgrade = [string]$Manifest.installRoot
+              $ExtensionUpgradeLog = Invoke-OneClickUpgrade "extension-user"
+              $Manifest = Get-Content -LiteralPath $ManifestPath -Raw |
+                  ConvertFrom-Json
+              $Rendered = Get-Content -LiteralPath $PlaywrightConfigPath -Raw |
+                  ConvertFrom-Json
+              $Interaction = Get-Content -LiteralPath $InteractionConfigPath -Raw |
+                  ConvertFrom-Json
+              $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
+                  ConvertFrom-Json
+              $RegisteredToken = [string]$ClaudePayload.mcpServers.`
+                  'intranet-browser-agent'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
+              $SummaryText = Get-Content -LiteralPath (Join-Path $AgentRoot `
+                  "INSTALLATION.txt") -Raw
+              if ($Manifest.mode -ne "extension" -or
+                  $Manifest.browser.manualConnectionApproval -ne $false -or
+                  $Manifest.interaction.snapshotStrategy -ne "full" -or
+                  $Manifest.interaction.compatibilityMode -ne "standard" -or
+                  $Rendered.snapshot.mode -ne "full" -or
+                  $Interaction.snapshotStrategy -ne "full" -or
+                  $Interaction.compatibilityMode -ne "standard" -or
+                  $RegisteredToken -ne ("A" * 43) -or
+                  ([string]$Manifest.installRoot) -cne `
+                      $RuntimeBeforeExtensionUpgrade -or
+                  $SummaryText -notmatch `
+                      "Install type: upgrade \(existing user settings preserved\)") {
+                  throw "One-click upgrade reset extension user settings."
+              }
+              if (-not (Select-String -LiteralPath $ExtensionUpgradeLog `
+                  -SimpleMatch "UPGRADE SETTINGS PRESERVED" -Quiet) -or
+                  -not (Select-String -LiteralPath $ExtensionUpgradeLog `
+                      -SimpleMatch `
+                      "UPGRADE EXTENSION USER AUTHORIZATION PRESERVED" `
+                      -Quiet) -or
+                  (Select-String -LiteralPath $ExtensionUpgradeLog `
+                      -SimpleMatch ("A" * 43) -Quiet)) {
+                  throw "Extension-user upgrade preservation evidence is incomplete or leaked the token."
+              }
+          } finally {
+              if (-not (Test-Path -LiteralPath $UpgradeSessionStop `
+                  -PathType Leaf)) {
+                  [IO.File]::WriteAllText(
+                      $UpgradeSessionStop,
+                      "stop",
+                      (New-Object System.Text.ASCIIEncoding)
+                  )
+              }
+              if (-not $UpgradeSessionProcess.WaitForExit(30000)) {
+                  & (Join-Path $env:SystemRoot "System32\taskkill.exe") `
+                      /PID $UpgradeSessionProcess.Id /T /F 2>$null | Out-Null
+                  $null = $UpgradeSessionProcess.WaitForExit(5000)
+              }
+              if (Test-Path -LiteralPath $UpgradeSessionExit `
+                  -PathType Leaf) {
+                  $UpgradeSessionExitText = (
+                      Get-Content -LiteralPath $UpgradeSessionExit -Raw
+                  ).Trim()
+              }
+              if (Test-Path -LiteralPath $UpgradeSessionStdout `
+                  -PathType Leaf) {
+                  Get-Content -LiteralPath $UpgradeSessionStdout | Write-Host
+              }
+              if (Test-Path -LiteralPath $UpgradeSessionStderr `
+                  -PathType Leaf) {
+                  Get-Content -LiteralPath $UpgradeSessionStderr | Write-Host
+              }
+              @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
+                  Stop-Process -Force -ErrorAction SilentlyContinue
+              foreach ($Marker in @(
+                  $UpgradeSessionToken, $UpgradeSessionReady,
+                  $UpgradeSessionStop, $UpgradeSessionExit
+              )) {
+                  Remove-Item -LiteralPath $Marker -Force `
+                      -ErrorAction SilentlyContinue
+              }
+          }
+          if ($UpgradeSessionExitText -ne "0") {
+              throw "The extension upgrade CI session failed with exit code $UpgradeSessionExitText."
+          }
+          Write-Host "CI ONE-CLICK EXTENSION SETTINGS UPGRADE PRESERVED"
 
           Invoke-InstalledSettings dedicated session headless
           $Manifest = Get-Content -LiteralPath $ManifestPath -Raw |
@@ -1374,6 +1599,42 @@ jobs:
               $null -ne $RegisteredEnvironment.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
               throw "Dedicated headless settings do not match the requested isolation."
           }
+
+          $RuntimeBeforeDedicatedUpgrade = [string]$Manifest.installRoot
+          $DedicatedUpgradeLog = Invoke-OneClickUpgrade "dedicated-headless"
+          $Manifest = Get-Content -LiteralPath $ManifestPath -Raw |
+              ConvertFrom-Json
+          $Rendered = Get-Content -LiteralPath $PlaywrightConfigPath -Raw |
+              ConvertFrom-Json
+          $Interaction = Get-Content -LiteralPath $InteractionConfigPath -Raw |
+              ConvertFrom-Json
+          $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
+              ConvertFrom-Json
+          $RegisteredEnvironment = $ClaudePayload.mcpServers.`
+              'intranet-browser-agent'.env
+          if ($Manifest.mode -ne "persistent" -or
+              $Manifest.browser.headless -ne $true -or
+              [IO.Path]::GetFullPath([string]$Manifest.browser.userDataDir) -ine
+                  [IO.Path]::GetFullPath($DedicatedProfile) -or
+              $Rendered.browser.launchOptions.headless -ne $true -or
+              $Rendered.snapshot.mode -ne "none" -or
+              $Interaction.snapshotStrategy -ne "compact" -or
+              $Interaction.compatibilityMode -ne "robust" -or
+              $null -ne $RegisteredEnvironment.PLAYWRIGHT_MCP_EXTENSION_TOKEN -or
+              ([string]$Manifest.installRoot) -cne `
+                  $RuntimeBeforeDedicatedUpgrade) {
+              throw "One-click upgrade reset dedicated headless settings."
+          }
+          if (-not (Select-String -LiteralPath $DedicatedUpgradeLog `
+              -SimpleMatch "UPGRADE SETTINGS PRESERVED" -Quiet) -or
+              -not (Select-String -LiteralPath $DedicatedUpgradeLog `
+                  -SimpleMatch `
+                  "EXTENSION INSTALL SKIPPED: dedicated profile mode" -Quiet) -or
+              (Select-String -LiteralPath $DedicatedUpgradeLog `
+                  -SimpleMatch "MANUAL EXTENSION LOAD REQUIRED" -Quiet)) {
+              throw "Dedicated upgrade did not skip extension installation cleanly."
+          }
+          Write-Host "CI ONE-CLICK DEDICATED SETTINGS UPGRADE PRESERVED"
 
           $OfflineRule = "Intranet Browser Agent settings offline $env:GITHUB_RUN_ID"
           try {
@@ -1591,6 +1852,12 @@ jobs:
           $EvidenceRoot = Join-Path $env:RUNNER_TEMP "windows-evidence"
           $SettingsLogs |
               Copy-Item -Destination $EvidenceRoot
+          Copy-Item -LiteralPath $ExtensionUpgradeLog `
+              -Destination (Join-Path $EvidenceRoot `
+                  "UPGRADE-EXTENSION-USER.log")
+          Copy-Item -LiteralPath $DedicatedUpgradeLog `
+              -Destination (Join-Path $EvidenceRoot `
+                  "UPGRADE-DEDICATED-HEADLESS.log")
           Remove-Item -LiteralPath $TokenFile -Force
           # The injected child failure is an asserted success case. GitHub's
           # Windows shell otherwise exits with its stale native exit code.
@@ -1606,7 +1873,7 @@ jobs:
           $ReadyExtract = Join-Path $env:RUNNER_TEMP "windows-ready-verify"
           New-Item -ItemType Directory -Path $ReadyOutput -Force | Out-Null
           New-Item -ItemType Directory -Path $ReadyExtract -Force | Out-Null
-          $ReadyName = "intranet-browser-agent-transfer-1.0.15-windows-x64-ready.zip"
+          $ReadyName = "intranet-browser-agent-transfer-1.0.16-windows-x64-ready.zip"
           $ReadyArchive = Join-Path $ReadyOutput $ReadyName
 
           # Passing the directory itself (not its children) keeps exactly one
@@ -1688,7 +1955,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: intranet-browser-agent-transfer-1.0.15-windows-x64-publisher-${{ github.run_id }}
+          name: intranet-browser-agent-transfer-1.0.16-windows-x64-publisher-${{ github.run_id }}
           path: |
             ${{ env.TRANSFER_ARCHIVE }}
             ${{ env.TRANSFER_ARCHIVE }}.sha256
