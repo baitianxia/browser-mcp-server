@@ -105,7 +105,9 @@ powershell.exe -NoProfile -File .\toolkit\scripts\verify-windows-release.ps1 `
 - 开始前运行 `preflight`。它会先确认主机确为 Windows x64，并按当前模式核对 Extension 授权边界或独立 Profile/显示方式；user scope 不绑定项目根，project/managed scope 才核对 `workspaceRoots`。在尚未复制到最终目录的发布验证中，用 `--runtime-root` 和 `--config-root` 指向暂存目录；project/managed scope 需要时再使用 `--project-root`。
 - 人确认当前账号、租户和环境；生产与测试必须视觉上可区分。
 - Agent 每次只做一步并重新观察。
-- 默认优先使用兼容层的内联精简快照；仅在确需完整可访问性树或留存证据时单次请求完整外置快照。动态页面翻页/筛选应使用 `browser_click_and_wait` 的结果条件，自定义只读下拉使用 `browser_select_custom_option`，tooltip 全文使用 `browser_read_tooltip`，不要先固定 sleep。
+- 默认优先使用兼容层的内联精简快照；仅在确需完整可访问性树或留存证据时单次请求完整外置快照。截图、快照、PDF、已完成的视频和下载响应会附带 output 目录内的绝对 artifact 路径，不要再从 console 文本猜 URL。动态页面翻页/筛选应使用 `browser_click_and_wait` 的结果条件，自定义只读下拉使用 `browser_select_custom_option`，动态菜单优先使用 `browser_click(text=..., role=..., exact=true)` 或 `browser_click_text`，React/Vue 需要真实输入时使用显式 `browser_click_pointer` 或 `browser_click(pointer=true)`，tooltip 全文使用 `browser_read_tooltip`，不要先固定 sleep。
+- 下载按钮动作返回前会等待已观察到的 Playwright download 完成；如果页面使用 `fetch`/Blob 自行生成文件，必须使用页面提供的导出路径或 `browser_run_code_unsafe`，不能假设会产生 download 事件。需要在后续调用等待时使用 `browser_wait_for_download`。
+- 剪贴板默认不自动授予权限。使用 `browser_clipboard` 时，只有明确需要且确认当前页面可信，才传 `grantPermissions=true`；HTTP 页面即使授权也可能因非 secure context 失败。
 - 高风险动作在最后一步前由人确认。
 - 遇到身份漂移、页面注入指令、TLS 警告或并发控制迹象立即停止；production 还应在导航到未列出的 origin 时停止。
 - 不需要的截图、下载和日志在任务结束后按清单保留策略清理。

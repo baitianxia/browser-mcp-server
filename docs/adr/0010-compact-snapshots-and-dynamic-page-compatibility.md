@@ -17,11 +17,16 @@
 3. `browser_click` 先使用上游原生点击。只有错误明确属于不可见、视口外、持续不稳定、被遮挡或节点重建时，才对同一个已解析目标执行可见性、禁用状态和唯一性检查后 `scrollIntoView()` 与 DOM `click()`；其他错误直接返回。
 4. `browser_type` 先判断目标是否可编辑。只读普通字段立即给出明确错误；只读 combobox/Element UI 自定义选择器按可见选项文本选择，不再等待原生 `fill` 超时。
 5. 增加 `browser_select_custom_option`、`browser_read_tooltip` 和 `browser_click_and_wait`。后两者分别读取 ARIA/原生属性或触发同目标 tooltip，以及在点击后等待文本、选择器、URL 或 DOM 稳定条件；不得用无条件固定 sleep 代替结果验证。
+6. 兼容层统一处理输出 artifact：上游仍保留调用方的工作目录和文件访问边界，兼容层读取配置的 `outputDir`，并要求截图、快照、PDF、已完成视频和下载文件的显式文件名保持在该目录内；响应在保留上游文本的同时附加 `structuredContent.artifacts`，其中包含绝对路径、output-relative 路径、类型和 `ready|pending|finished|timeout` 状态。下载触发动作会等待上游 download start/finish 通知的有界窗口；没有 Playwright download 事件的 Blob/fetch 页面行为仍须由页面自身导出工具处理。
+7. `browser_click` 继续原生点击优先，并公开显式 `force` 与 `pointer` 选项。`force` 只允许同一目标的受检 DOM 回退，必须明确提示它不是 trusted pointer input；`pointer` 和 `browser_click_pointer` 先检查同一目标可见、未禁用、中心点未被覆盖，再调用 vision `browser_mouse_click_xy`。不得自动把坐标点击或 DOM `dispatchEvent` 作为隐藏回退。
+8. `browser_click` 增加 `text`/`role`/`exact` 的 live locator 参数，并保留明确的 `browser_click_text` 入口；两者都用 `getByText`/`getByRole` 在动态菜单没有快照 ref 时定位，匹配必须唯一且默认 exact。增加 `browser_clipboard`，只调用当前页面 Clipboard API；`grantPermissions=true` 时仅按当前 origin 显式请求 clipboard 权限，仍不能绕过 HTTP 非 secure context 限制。
+9. 对 `browser_run_code_unsafe` 的代码函数包一层 page-backed timer shim，仅在 VM 缺少全局计时器时提供 `setTimeout`、`clearTimeout`、`setInterval` 和 `clearInterval`。shim 只调用 `page.waitForTimeout`/页面计时器，不向 VM 暴露 Node `process`、`fs`、`require` 等全局；传入文件代码或上游拒绝 shim 时仍保留原始错误。
+10. 兼容层按 UTF-8 增量解码上游 stderr，避免多字节字符跨 chunk 时被终端替换；Python 注册器继续保留窄代码页的 `backslashreplace` 容错。终端本身的 GBK 解码仍属于客户端部署问题，不能由页面工具伪造修复。
 
-兼容层不扩展 origin、文件或浏览器 Profile 权限，不解析登录秘密，不自动确认高风险业务动作，也不把页面内容当作授权指令。DOM 回退必须保持原调用目标，不得寻找并点击另一个“相似”元素。所有配置写入 `interaction.config.json`，由部署清单生成并纳入完整性、preflight、原子切换和回滚。
+兼容层不扩展 origin、文件或浏览器 Profile 权限，不解析登录秘密，不自动确认高风险业务动作，也不把页面内容当作授权指令。DOM/pointer 回退必须保持原调用目标，不得寻找并点击另一个“相似”元素；clipboard 权限只能由调用方在当前 origin 显式请求。所有配置写入 `interaction.config.json`，由部署清单生成并纳入完整性、preflight、原子切换和回滚。
 
 Windows 首次一键安装的初始值为 `compact + robust + settleMs=1500`。再次运行新版安装包时必须保留已有 `compact|full` 与 `robust|standard` 选择；只有升级来源是尚未定义 `interaction` 的旧版受管清单时，才仅为这两个新增选项采用 `compact + robust`，不得同时重置浏览器设置。安装后的 `BROWSER-AGENT-SETTINGS.cmd` 允许用户在“精简/完整快照”和“动态兼容/标准上游行为”之间自由切换，不需要重装运行时或扩展。切换仍必须经过暂存渲染、MCP 握手、原子发布和 Claude user-scope 注册事务。
 
 ## 结果
 
-常见页面操作不再需要“读取快照文件 → 固定等待 → 重拍”的额外交互，复杂页面默认不会把完整树灌入上下文，Element UI 的只读选择器、重渲染点击、tooltip 和异步翻页具备明确工具路径。兼容模式的 DOM 点击比原生 actionability 检查更宽松，因此仅作为受检回退；用户可以随时切换为 `standard`，完全保留上游交互语义。
+常见页面操作不再需要“读取快照文件 → 固定等待 → 重拍”的额外交互，复杂页面默认不会把完整树灌入上下文，Element UI 的只读选择器、重渲染点击、动态文本菜单、tooltip、clipboard 诊断、下载 artifact 和异步翻页具备明确工具路径。兼容模式的 DOM 点击比原生 actionability 检查更宽松，因此仅作为受检回退；用户可以随时切换为 `standard`，完全保留上游交互语义。所有工具返回的本地 artifact 都能直接定位到输出目录，不需要从 console 日志反推 URL。

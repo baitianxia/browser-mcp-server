@@ -83,6 +83,8 @@ Playwright 连接已开启远程调试的 Chrome。endpoint 只能是官方 chan
 - production 若配置 `allowedOrigins`，每项必须是显式 origin；不接受全局通配符或带路径 URL。该过滤仍不是网络安全边界。
 - 视觉坐标能力由 `controls.visionFallback` 显式开启。
 - DevTools 由 `controls.devtools` 显式开启，并要求 loopback 调试 endpoint。
+- artifact 统一落在清单 `output.directory`；兼容层只返回该目录内的绝对/相对路径元数据，不接受越界文件名。
+- `browser_click` 的 `force`、`pointer`、`text/role/exact`、`browser_click_text`、`browser_click_pointer` 和 `browser_clipboard` 都是显式调用能力；pointer 必须依赖已开启的 vision，clipboard 权限按当前 origin 单次请求，不改变默认权限边界。
 - `interaction.snapshotStrategy` 只允许 `compact|full`；Windows pilot 默认 `compact`，以关闭上游隐式完整快照并由兼容层返回内联限深、最多 16000 字符的快照，超限后引导使用 `browser_find`、目标局部快照或 `full`。`interaction.compatibilityMode` 只允许 `robust|standard`；`robust` 按 ADR-0010 增强动态页面，`standard` 透传上游动作。两项都必须渲染进 `interaction.config.json` 并可由安装后设置工具事务化切换。
 
 ## 状态机
@@ -95,7 +97,7 @@ Observe → Reason → Act(one step) → Wait/change detection
    └────────── Re-observe ← Verify ───┘
 ```
 
-导航、提交、弹窗、Tab 切换、AJAX 更新、SPA 路由和可能改变选中项的动作都会使旧快照失效。`robust` 模式中的导航与 `browser_click_and_wait` 必须在同一工具调用中等待可验证条件或 DOM 安静，并返回新的精简快照；不得返回空文件或用固定 sleep 假定完成。原生点击失败后的 DOM 回退只能作用于同一个唯一、连接、可见且未禁用的目标，不得扩大高风险动作权限。
+导航、提交、弹窗、Tab 切换、AJAX 更新、SPA 路由和可能改变选中项的动作都会使旧快照失效。`robust` 模式中的导航与 `browser_click_and_wait` 必须在同一工具调用中等待可验证条件或 DOM 安静，并返回新的精简快照；不得返回空文件或用固定 sleep 假定完成。原生点击失败后的 DOM/pointer 回退只能作用于同一个唯一、连接、可见且未禁用的目标，不得扩大高风险动作权限。截图、下载和其他 artifact 必须在返回中提供可读的本地绝对路径；下载若已产生 Playwright 事件，动作返回前必须等待有限的 finish 窗口。
 
 ## 发布模型
 

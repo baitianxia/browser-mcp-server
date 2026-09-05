@@ -65,7 +65,7 @@ INSTALL-WINDOWS-PILOT.cmd
 
 Extension 连接的是正在显示的浏览器，因此不能使用无头。设置工具会先验证新配置和真实 MCP 握手，成功后才切换；失败会恢复原配置。保存后重启 Claude Code。
 
-同一入口还可切换“精简/完整快照”和“动态页面兼容/标准上游行为”。默认精简模式直接返回限深快照，不需要再读取快照文件；动态兼容模式会处理常见的只读自定义下拉、Element UI 重绘点击、tooltip 全文和异步翻页确认。
+同一入口还可切换“精简/完整快照”和“动态页面兼容/标准上游行为”。默认精简模式直接返回限深快照，不需要再读取快照文件；动态兼容模式会处理常见的只读自定义下拉、Element UI 重绘点击、动态文本菜单、tooltip 全文和异步翻页确认。截图、下载、PDF、已完成的视频等结果会在响应 `structuredContent.artifacts` 中给出 output 目录内的绝对路径；需要 React/Vue 真实鼠标输入时使用显式 pointer 工具，剪贴板则只在可信 secure context 下按需授权。
 
 向导不会运行 `npm install`、`pnpm install`、`npx`，不会修改系统 Node.js，也不会临时绕过 PowerShell 执行策略。若脚本被企业策略拦截，应走组织签名或脚本批准流程。
 

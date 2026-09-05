@@ -7,7 +7,7 @@
 ## 自动验收
 
 - `python3 -m unittest discover -s tests -v` 全部通过。
-- 兼容层必须有独立 JSON-RPC 子进程测试，覆盖 `tools/list`、精简快照内联且非空、16000 字符硬上限、空快照内部重试、导航 DOM 稳定等待、原生点击成功不回退、仅 actionability 失败才同目标 DOM 回退、只读普通字段快速失败、自定义下拉选择、tooltip 属性/事件读取、点击后条件确认，以及 `standard/full` 完整透传。测试不得用固定 sleep 冒充页面结果。
+- 兼容层必须有独立 JSON-RPC 子进程测试，覆盖 `tools/list`、精简快照内联且非空、16000 字符硬上限、空快照内部重试、导航 DOM 稳定等待、artifact 文件名目录 containment 和绝对路径回传、下载 start/finish 等待、原生点击成功不回退、仅 actionability 失败才同目标 DOM 回退、显式 force、真实 pointer 坐标点击、动态文本 locator、只读普通字段快速失败、自定义下拉选择、tooltip 属性/事件读取、受控 clipboard 诊断与权限请求、`browser_run_code_unsafe` page-backed timer shim、点击后条件确认，以及 `standard/full` 完整透传。测试不得用固定 sleep 冒充页面结果。
 - 本文较早验收条款中的目标 MCP“`node.exe + cli.js`”自 ADR-0010 起均指 `node.exe + bin\intranet-browser-agent-mcp.js + 同包上游 Playwright CLI`；描述 npm Claude Code 自身入口的文字不受影响。
 - 每次推送到 `main` 的 `.github/workflows/windows-release.yml` 必须在 `windows-2022`、`windows-latest` 两个 Windows x64 runner 上以 Windows PowerShell 5.1 跑完源码测试和全部 PowerShell AST 解析；Windows 原生打包 job 还必须使用批准的 Node v24.19.0 来源和固定 pnpm 11.19.0 构建迁移包。job 只能在一次性有网 CI VM 内准备固定 Claude Code 2.1.84 的原生与 npm 两种测试夹具，且文档和日志必须明确这些不是目标机安装步骤。原生 `claude.exe` 必须先完成一次临时 `CLAUDE_CONFIG_DIR` 下的完整发布门禁；随后顶层 `INSTALL-WINDOWS-PILOT.cmd` 必须只启动一次安装器，并在原生入口已从 `PATH` 隐藏、真实 npm `claude.cmd` 可解析的环境中完成安装、注册和后置功能验证。目标 launcher 和安装日志不得包含单元测试发现器、PowerShell AST 全量扫描或注册器 `self-test`；共享探测器必须证明它选择 npm 入口并转换为现有 `node.exe + 已安装 cli.js` 直接调用，不通过 `cmd.exe` 拼接注册参数。同时必须阻断该 Node 与 Chrome 的 Internet 出站并保留 loopback，以证明目标流程不执行在线安装或修复。GitHub 托管 runner 没有可代表真人的受信任桌面输入，不能自动完成 Chrome 原生目录选择框，因此自动验收必须明确拆开这个人工边界：源码回归验证安装器先恢复临时策略、显示唯一目录、默认无限等待以及检测到扩展后在同一进程续跑；package job 进入该等待点后，只允许用 pipe-only `Extensions.loadUnpacked` 把精确批准目录加载到同一个仍存活的隔离 Chrome 会话，核对固定 ID、版本、启用状态和精确路径，并证明原 launcher 自动续跑。这个 Chrome 会话不得带 `--enable-automation`，必须保留单实例 URL 转发，使安装后的 MCP 能把扩展 `connect.html` 请求交给同一个已加载扩展的进程。该会话替身只验证等待/续跑状态机和后续功能，不得声称 CI 点过原生目录选择框，不得声称该加载在 Chrome 重启后持久，也不得替代目标机屏幕上明确给出的三步人工操作。安装完成后，在同一个 Internet 出站仍被阻断的 Chrome 会话中，必须由实际安装的 `node.exe + bin\intranet-browser-agent-mcp.js + 同包 @playwright/mcp` 调用 `browser_navigate`、精简快照及 ADR-0010 兼容工具访问本机离线页面，并证明页面收到预置到该 Profile 的会话 Cookie；CI 必须从隔离 Profile 的扩展状态页读取扩展自身已经生成并由后台使用的一次性令牌，只注入该次测试子进程，不得在扩展初始化后覆盖令牌，也不得把令牌写入迁移包、安装配置、日志或证据。最终必须分别保留发布门禁 PASS、npm 入口下单次安装 SUCCESS、安装摘要、user-scope 配置和安装后运行时完整性证据，并断言安装日志没有发布自检标记。失败 run 的产物不得作为 Windows 已验证迁移包交付。
 - Windows 原生 package job 必须在精确的 Chrome `HKCU\Software\Policies\Google\Chrome\ExtensionInstallForcelist` 键上保留原 ACL，并对当前用户真实添加 `SetValue` 拒绝规则；确认操作系统实际拒绝写值后，才启动顶层 launcher。安装日志必须在同一进程依次出现 `OFFLINE EXTENSION POLICY UNAVAILABLE`、`MANUAL EXTENSION LOAD REQUIRED` 和最终 `SUCCESS`，且 `Windows pilot installer started` 仍只出现一次。进入人工等待后必须逐字恢复原 ACL；源码回归还必须证明更新清单写入、策略访问、自动打开扩展页或 `clip.exe` 失败均不绕过精确扩展检测，也不要求重启安装。
@@ -61,6 +61,8 @@
 9. 设置工具选择“记住当前用户”后只需首次复制一次扩展令牌，重启 Claude Code 后再次连接不出现逐次授权页；切回“每次连接确认”后该令牌从 user-scope 条目删除。
 10. 设置工具切换独立 Profile 后，目标机原 Chrome/Edge 登录态不可见；首次登录在有头模式由人完成，随后切换无头仍能复用的只能是该独立 Profile 自己的会话。
 11. 在 Vue/Element UI 测试页验证：首次导航直接返回非空精简快照；只读 `el-select` 能按可见选项选择；视口外或重渲染元素在原生点击失败后只回退同一目标；tooltip 能返回未截断全文；分页在返回前已回读当前页状态。切换 `standard` 后不发生 DOM 回退，切换 `full` 后仍可显式取得完整快照。
+12. 在动态菜单测试页验证：菜单未出现在旧快照中时，`browser_click(text=..., role=...)` 或 `browser_click_text` 能用唯一 `getByText`/`getByRole` locator 点击；React/Vue 组件需要 pointerdown/up 时，显式 pointer 工具能触发真实鼠标事件并由页面状态独立验证。遮挡目标必须拒绝坐标点击，不得误点覆盖层。
+13. 在 HTTPS/localhost 与 HTTP 测试页分别调用 `browser_clipboard`：前者在用户明确传 `grantPermissions=true` 后可读/写（若浏览器允许），后者返回 secure-context 诊断，不得伪称成功。截图和下载结果必须能直接读取 `structuredContent.artifacts[*].path`，且所有路径位于配置 output 目录。
 
 ## 人工安全与运维验收
 

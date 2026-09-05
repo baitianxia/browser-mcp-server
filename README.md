@@ -11,7 +11,9 @@
 - 兼容只读自定义下拉框、动态重绘按钮、tooltip 全文和异步翻页。
 - 操作标签页、弹窗、键盘和鼠标。
 - 默认返回精简快照，减少大页面占用；也可切换完整快照。
-- 截图并检查操作结果。
+- 截图、下载、PDF 和已完成的视频结果都返回输出目录内的绝对 artifact 路径。
+- 动态菜单可按唯一可见文本/ARIA role 定位；React/Vue 控件可显式使用真实 pointer 点击。
+- 提供受控的页面 clipboard 读写诊断和 page-backed 定时器兼容，不扩大 Node 权限。
 - 复用用户已登录网页中的 Cookie、SSO 和登录状态。
 - 也可改用独立浏览器 Profile，不共享原有登录状态。
 - 在当前 Windows 用户的所有 Claude Code 项目中使用。
@@ -79,6 +81,12 @@ intranet-browser-agent-transfer-<版本>-windows-x64-ready.zip
 ```
 
 默认是有头模式，用户可以看到并随时接管操作。MCP 只能访问用户明确授权的标签页，不会自动接管全部浏览器页面，也不会自动输入密码、验证码或 MFA 信息。
+
+### 动态页面与文件结果
+
+优先使用 `browser_click(text="导出", role="menuitem")` 或明确的 `browser_click_text` 处理刚渲染且没有快照 ref 的菜单。需要完整真实鼠标事件时使用 `browser_click_pointer`；工具会先确认目标可见、未禁用且中心未被遮挡。`browser_click(force=true)` 只允许同一目标的受检 DOM 回退，不等同于 trusted pointer。
+
+截图或下载完成后，响应中的 `structuredContent.artifacts` 会给出 `path`、`relativePath`、`kind` 和状态。剪贴板使用 `browser_clipboard`，只有在确认页面可信时才显式传 `grantPermissions=true`；HTTP 页面仍可能因浏览器 secure-context 规则不可用。
 
 ## 更改浏览器设置
 
