@@ -321,6 +321,16 @@ class McpCompatibilityTests(unittest.TestCase):
             "tools/call", {"name": name, "arguments": arguments}
         )
 
+    @staticmethod
+    def artifact_paths(result: dict[str, Any]) -> set[str]:
+        structured = result.get("structuredContent", {})
+        artifacts = structured.get("artifacts", [])
+        return {
+            str(item["path"])
+            for item in artifacts
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+
     def test_tools_list_exposes_compatibility_tools_and_navigation_waits(self) -> None:
         client = self.start()
         listed = client.request("tools/list", {})
@@ -392,7 +402,7 @@ class McpCompatibilityTests(unittest.TestCase):
         result = self.call_tool(
             "browser_snapshot", {"filename": "evidence.md", "target": "ref=table"}
         )
-        self.assertIn(str(self.output / "evidence.md"), json.dumps(result))
+        self.assertIn(str(self.output / "evidence.md"), self.artifact_paths(result))
         snapshot_call = next(
             item for item in self.calls() if item["name"] == "browser_snapshot"
         )
@@ -414,7 +424,7 @@ class McpCompatibilityTests(unittest.TestCase):
         )
         expected = output / "screens" / "menu.png"
         self.assertTrue(expected.is_file())
-        self.assertIn(str(expected), json.dumps(result))
+        self.assertIn(str(expected), self.artifact_paths(result))
         screenshot_call = next(
             item for item in self.calls() if item["name"] == "browser_take_screenshot"
         )
@@ -527,7 +537,7 @@ class McpCompatibilityTests(unittest.TestCase):
         self.start(FAKE_DOWNLOAD="1")
         self.call_tool("browser_click", {"target": "ref=download"})
         result = self.call_tool("browser_wait_for_download", {})
-        self.assertIn(str(output / "download.bin"), json.dumps(result))
+        self.assertIn(str(output / "download.bin"), self.artifact_paths(result))
 
     def test_wait_for_download_reconciles_a_late_pathless_event(self) -> None:
         output = self.root / "output"
@@ -546,7 +556,7 @@ class McpCompatibilityTests(unittest.TestCase):
         self.start(FAKE_DOWNLOAD="1", FAKE_DOWNLOAD_DELAY_MS="500")
         self.call_tool("browser_click", {"target": "ref=download"})
         result = self.call_tool("browser_wait_for_download", {"timeoutMs": 3000})
-        self.assertIn(str(output / "download.bin"), json.dumps(result))
+        self.assertIn(str(output / "download.bin"), self.artifact_paths(result))
 
     def test_pointer_click_uses_same_target_probe_and_mouse_tool(self) -> None:
         self.start()
