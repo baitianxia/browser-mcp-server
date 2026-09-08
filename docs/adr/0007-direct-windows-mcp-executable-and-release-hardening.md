@@ -2,6 +2,8 @@
 
 状态：已接受；2026-09-01 按 ADR-0009 补充 Windows pilot 独立 Profile 与用户令牌例外，Playwright 首个脚本参数按 ADR-0010 更新。
 
+> 2026-09-07 统一 Windows 交付更新：当前用户路径、包名、MCP 名称和入口以 `docs/architecture.md`、`docs/acceptance.md` 和 `docs/operations.md` 为准，取代本文中旧的 `%LOCALAPPDATA%` 根目录或历史身份描述。当前根目录是 `%USERPROFILE%\browser-mcp-server`，公共 MCP 名称是 `browser-mcp`；本文关于直接 `node.exe`、完整性和事务边界的约束继续有效。
+
 ## 背景
 
 1.0.7 复核发现：安装器能在 PowerShell 中成功执行 `playwright-mcp.cmd --help`，并不能证明 Claude Code 重启后也能拉起同一个 `.cmd`。Windows 上 Node 子进程直接启动 `.cmd`/`.bat` 会受 shell shim、`spawn EINVAL` 和命令行元字符影响；Claude Code 上游也有相同类别的 Windows MCP 报告。继续把 `.cmd` 写成 MCP `command` 会留下“安装成功、实际连接失败”的盲区。

@@ -7,16 +7,16 @@ if not exist "%~dp0INSTALL-WINDOWS-PILOT.ps1" (
   pause
   exit /b 2
 )
-set "INSTALL_LOG=%TEMP%\IntranetBrowserAgent\INSTALL-WINDOWS-PILOT-%RANDOM%-%RANDOM%.log"
+set "INSTALL_LOG=%TEMP%\browser-mcp-server\INSTALL-%RANDOM%-%RANDOM%.log"
 powershell.exe -NoProfile -File "%~dp0INSTALL-WINDOWS-PILOT.ps1" -LogPath "%INSTALL_LOG%" %*
 set "INSTALL_EXIT=%ERRORLEVEL%"
 
 if "%INSTALL_EXIT%"=="0" (
   echo.
-  echo Windows pilot setup completed.
+  echo browser-mcp-server setup completed.
 ) else (
   echo.
-  echo Windows pilot setup stopped with exit code %INSTALL_EXIT%.
+  echo browser-mcp-server setup stopped with exit code %INSTALL_EXIT%.
   echo No npm, pnpm, or npx repair command should be run on the intranet host.
   if exist "%INSTALL_LOG%" (
     echo.

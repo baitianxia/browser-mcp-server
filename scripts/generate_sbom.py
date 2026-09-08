@@ -90,7 +90,7 @@ def generate(node_modules: Path) -> dict[str, Any]:
         "metadata": {
             "component": {
                 "type": "application",
-                "name": "intranet-browser-agent-runtime",
+                "name": "browser-mcp-server-runtime",
                 "version": "1.0.16",
             }
         },

@@ -28,12 +28,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         )
 
     def manifest(self) -> dict:
-        user_root = r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
+        user_root = r"C:\Users\pilot\browser-mcp-server"
         return configure.build_manifest(
             self.template(),
             runtime_root=user_root + r"\releases\runtime-1",
-            config_root=user_root + r"\config\pilot",
-            output_directory=user_root + r"\output\pilot",
+            config_root=user_root + r"\config",
+            output_directory=user_root + r"\output",
             profile_owner=r"CORP\pilot-user",
             browser_channel="chrome",
             browser_executable=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -56,7 +56,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         )
         self.assertEqual("manual-pilot", manifest["browser"]["extensionDistribution"])
         self.assertTrue(manifest["browser"]["manualConnectionApproval"])
-        self.assertIn(r"\AppData\Local\IntranetBrowserAgent", manifest["installRoot"])
+        self.assertIn(r"\browser-mcp-server", manifest["installRoot"])
 
     def test_user_scope_rejects_project_roots(self) -> None:
         manifest = self.manifest()
@@ -65,12 +65,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertTrue(any("must be empty for user-scoped MCP" in item for item in errors))
 
     def test_post_install_browser_preferences_cover_supported_combinations(self) -> None:
-        user_root = r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
+        user_root = r"C:\Users\pilot\browser-mcp-server"
         dedicated = configure.build_manifest(
             self.template(),
             runtime_root=user_root + r"\releases\runtime-1",
-            config_root=user_root + r"\config\pilot",
-            output_directory=user_root + r"\output\pilot",
+            config_root=user_root + r"\config",
+            output_directory=user_root + r"\output",
             profile_owner=r"CORP\pilot-user",
             browser_channel="chrome",
             browser_executable=(
@@ -137,8 +137,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
             )
 
     def test_upgrade_extracts_only_supported_existing_user_preferences(self) -> None:
-        agent_root = r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
-        config_root = agent_root + r"\config\pilot"
+        agent_root = r"C:\Users\pilot\browser-mcp-server"
+        config_root = agent_root + r"\config"
         dedicated_profile = agent_root + r"\browser-profile\pilot"
         manifest = self.manifest()
         runtime_root = (
@@ -148,9 +148,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         manifest["installRoot"] = runtime_root
         manifest["nodeExecutable"] = runtime_root + r"\node\node.exe"
         manifest["browser"]["manualConnectionApproval"] = False
-        manifest.pop("interaction")
 
-        legacy = configure.extract_upgrade_preferences(
+        existing = configure.extract_upgrade_preferences(
             manifest,
             agent_root=agent_root,
             config_root=config_root,
@@ -165,16 +164,14 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 "extensionAuthorization",
                 "snapshotStrategy",
                 "compatibilityMode",
-                "legacyInteractionDefaultsApplied",
             },
-            set(legacy),
+            set(existing),
         )
-        self.assertEqual("extension", legacy["browserMode"])
-        self.assertEqual("user", legacy["extensionAuthorization"])
-        self.assertEqual("chrome", legacy["browserChannel"])
-        self.assertEqual("compact", legacy["snapshotStrategy"])
-        self.assertEqual("robust", legacy["compatibilityMode"])
-        self.assertTrue(legacy["legacyInteractionDefaultsApplied"])
+        self.assertEqual("extension", existing["browserMode"])
+        self.assertEqual("user", existing["extensionAuthorization"])
+        self.assertEqual("chrome", existing["browserChannel"])
+        self.assertEqual("compact", existing["snapshotStrategy"])
+        self.assertEqual("robust", existing["compatibilityMode"])
 
         configure.apply_browser_preferences(
             manifest,
@@ -198,11 +195,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertTrue(dedicated["headless"])
         self.assertEqual("full", dedicated["snapshotStrategy"])
         self.assertEqual("standard", dedicated["compatibilityMode"])
-        self.assertFalse(dedicated["legacyInteractionDefaultsApplied"])
+        self.assertEqual("session", dedicated["extensionAuthorization"])
 
     def test_upgrade_rejects_unmanaged_or_ambiguous_existing_preferences(self) -> None:
-        agent_root = r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
-        config_root = agent_root + r"\config\pilot"
+        agent_root = r"C:\Users\pilot\browser-mcp-server"
+        config_root = agent_root + r"\config"
         dedicated_profile = agent_root + r"\browser-profile\pilot"
         manifest = self.manifest()
         runtime_root = (
@@ -267,14 +264,14 @@ class WindowsPilotSetupTests(unittest.TestCase):
         )
         self.assertIn('"inspect-upgrade"', installer)
         self.assertIn("UPGRADE SETTINGS PRESERVED", installer)
-        self.assertIn("UPGRADE LEGACY INTERACTION DEFAULTS APPLIED", installer)
+        self.assertNotIn("LEGACY INTERACTION DEFAULTS", installer)
         self.assertIn("UPGRADE EXTENSION USER AUTHORIZATION PRESERVED", installer)
         self.assertIn("EXTENSION INSTALL SKIPPED: dedicated profile mode", installer)
         self.assertIn('"--snapshot-strategy", $InstallSnapshotStrategy', installer)
         self.assertIn('"--compatibility-mode", $InstallCompatibilityMode', installer)
         self.assertIn('"--extension-token-environment"', installer)
         self.assertIn(
-            '"INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"', installer
+            '"BROWSER_MCP_EXTENSION_TOKEN_INPUT"', installer
         )
         self.assertIn("Get-ExistingExtensionToken", installer)
         self.assertIn("[Convert]::FromBase64String($PaddedToken)", installer)
@@ -303,7 +300,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 json.dumps(self.manifest()), encoding="utf-8"
             )
             dedicated_profile = (
-                r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
+                r"C:\Users\pilot\browser-mcp-server"
                 r"\browser-profile\pilot"
             )
             configure.reconfigure(
@@ -332,7 +329,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 staged["browser"]["executablePath"],
                 rendered["browser"]["launchOptions"]["executablePath"],
             )
-            arguments = mcp["mcpServers"]["intranet-browser-agent"]["args"]
+            arguments = mcp["mcpServers"]["browser-mcp"]["args"]
             self.assertIn("--browser=chrome", arguments)
             self.assertIn(
                 f"--executable-path={staged['browser']['executablePath']}",
@@ -361,7 +358,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
             "Windows PowerShell 5.1 requires a BOM for scripts containing Chinese text",
         )
         self.assertIn("Install-BrowserAgentSettingsTool", installer)
-        self.assertIn('"BROWSER-AGENT-SETTINGS.cmd"', installer)
+        self.assertIn('"CONFIGURE.cmd"', installer)
         self.assertIn('"current-version.txt"', installer)
         self.assertIn('"templates\\CLAUDE.browser.md"', installer)
         self.assertIn("SETTINGS TOOL RESTORE", installer)
@@ -386,7 +383,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/status.html", settings)
         self.assertIn('"--extension-token-environment"', settings)
         self.assertIn(
-            '"INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"',
+            '"BROWSER_MCP_EXTENSION_TOKEN_INPUT"',
             settings,
         )
         self.assertIn("$PreviousTokenInput", settings)
@@ -500,7 +497,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("clients2.google.com", installer)
         self.assertNotIn("AllowedOrigins", installer)
         self.assertNotIn("批准单号", installer)
-        self.assertIn('Invoke-Python @($Verifier, $PSScriptRoot)', installer)
+        self.assertIn('Invoke-Python @($Verifier, $PackageRoot)', installer)
         self.assertNotIn("BROWSER_AGENT_NODE", installer)
         self.assertIn("未修改系统 Node.js", installer)
         self.assertIn("Detailed error log:", launcher)
@@ -550,27 +547,25 @@ class WindowsPilotSetupTests(unittest.TestCase):
         )
         self.assertIn('$PSVersionTable.PSEdition -ne "Desktop"', gate)
         self.assertIn('[Management.Automation.Language.Parser]::ParseFile', gate)
-        self.assertIn("Get-ChildItem -LiteralPath $PSScriptRoot", gate)
+        self.assertIn('Get-ChildItem -LiteralPath $Root -Filter "*.ps1" -File -Recurse', gate)
         self.assertIn('"unittest", "discover"', gate)
-        self.assertIn('"register_claude_user_mcp.py"', gate)
+        self.assertIn("register_claude_user_mcp.py", gate)
         self.assertIn('"self-test"', gate)
-        self.assertIn("intranet-browser-agent-release-probe", gate)
+        self.assertIn('"--server-name", "browser-mcp"', gate)
         self.assertIn("$env:CLAUDE_CONFIG_DIR = $ProbeClaudeConfig", gate)
         self.assertIn(
             '"--claude-executable", [string]$ClaudeInvocation.Executable', gate
         )
-        self.assertIn('"--claude-prefix", [string]$ClaudePrefixArgument', gate)
-        self.assertIn('"--node-executable", $ProbeNode', gate)
-        self.assertIn('"--playwright-cli", $ProbePlaywrightCli', gate)
-        self.assertIn('"validate_node_distribution.py"', gate)
-        self.assertIn("Get-NativeOutput $ProbeNode", gate)
-        self.assertIn('"smoke_playwright_mcp.py"', gate)
+        self.assertIn('"--claude-prefix", [string]$Prefix', gate)
+        self.assertIn('"--node-executable", $NodeExe', gate)
+        self.assertIn('"--playwright-cli", $Wrapper', gate)
+        self.assertIn("validate_node_distribution.py", gate)
+        self.assertIn("Get-NativeOutput $NodeExe", gate)
+        self.assertIn("smoke_playwright_mcp.py", gate)
         self.assertIn('[string]$TransferPath = ""', gate)
-        self.assertIn("Resolve-Path -LiteralPath $TransferPath", gate)
-        self.assertIn("TransferPath must be the extracted transfer directory", gate)
-        self.assertIn(
-            "Release gate must run from the same extracted transfer directory", gate
-        )
+        self.assertIn("Resolve-Path -LiteralPath $InputPath", gate)
+        self.assertIn("TransferPath must be the public Windows ZIP or its extracted root", gate)
+        self.assertIn("Public ZIP must extract to exactly one top-level directory", gate)
         self.assertNotIn("TransferArchive", gate)
         self.assertIn('[string]$LogPath = ""', gate)
         self.assertIn("Start-Transcript -LiteralPath $LogPath", gate)
@@ -580,9 +575,9 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED", gate)
         self.assertIn('Join-Path $PSScriptRoot "windows-tool-discovery.ps1"', gate)
         self.assertIn("Resolve-ClaudeCodeInvocation", gate)
-        self.assertIn('"validate_windows_release_metadata.py"', gate)
+        self.assertIn("validate_windows_release_metadata.py", gate)
         self.assertLess(
-            gate.index('"validate_windows_release_metadata.py"'),
+            gate.index("validate_windows_release_metadata.py"),
             gate.index('"unittest", "discover"'),
         )
         launcher = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.cmd").read_text(
@@ -594,25 +589,17 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("verify-windows-release.ps1", launcher)
         self.assertNotIn('Invoke-Python @($McpRegistrar, "self-test")', installer)
 
-        verify_call = '(Join-Path $PSScriptRoot "verify-bundle.py")'
-        verify_positions: list[int] = []
-        offset = 0
-        while True:
-            position = gate.find(verify_call, offset)
-            if position < 0:
-                break
-            verify_positions.append(position)
-            offset = position + 1
-        self.assertEqual(4, len(verify_positions))
-        tests = gate.index('"unittest", "discover"')
-        probe = gate.index(
-            '"--server-name", "intranet-browser-agent-release-probe"'
+        # The verifier is resolved once and reused for the ZIP, extracted
+        # runtime, and final package checks before/after executable probes.
+        self.assertGreaterEqual(gate.count("Invoke-PythonChecked @($Verifier"), 3)
+        self.assertLess(
+            gate.index("Resolve-PublicPackageRoot"),
+            gate.index('"unittest", "discover"'),
         )
-        self.assertLess(verify_positions[0], tests)
-        self.assertLess(tests, verify_positions[1])
-        self.assertLess(verify_positions[1], verify_positions[2])
-        self.assertLess(verify_positions[2], probe)
-        self.assertLess(probe, verify_positions[3])
+        self.assertLess(
+            gate.index('"unittest", "discover"'),
+            gate.index('"--server-name", "browser-mcp"'),
+        )
 
     def test_optional_browser_automation_failures_use_manual_fallback(self) -> None:
         installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(
@@ -707,119 +694,40 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn('localStorage.setItem("auth-token"', loader)
         self.assertIn("process.exit(1)", loader)
 
-        self.assertIn("exercise-extension-mcp.py", workflow)
-        self.assertIn(
+        # The workflow keeps publisher-only checks separate from the user
+        # launcher and publishes the ZIP produced by the reviewed builder.
+        for marker in (
+            "Assemble and extract the reviewed Windows ZIP",
+            "browser-mcp-server-1.0.16-windows-x64.zip",
+            "Expand-Archive",
+            "Public Windows ZIP must extract to exactly one top-level directory",
+            "Prove native Claude compatibility in an isolated release gate",
+            "scripts\\verify-windows-release.ps1",
+            "-TransferPath $env:TRANSFER_ARCHIVE",
+            "Run the exact one-click package launcher",
+            '"INSTALL.cmd"',
             "Exercise post-install authorization, headless, and Profile settings",
-            workflow,
-        )
-        self.assertIn("CI USER EXTENSION AUTHORIZATION PASSED", workflow)
-        self.assertIn(
-            "CI ONE-CLICK EXTENSION SETTINGS UPGRADE PRESERVED", workflow
-        )
-        self.assertIn(
-            "CI ONE-CLICK DEDICATED SETTINGS UPGRADE PRESERVED", workflow
-        )
-        self.assertIn("CI DEDICATED HEADLESS PROFILE ISOLATION PASSED", workflow)
-        self.assertIn("CI DEDICATED HEADED CONFIGURATION PASSED", workflow)
-        self.assertIn("CI SETTINGS FAILURE ROLLBACK PASSED", workflow)
-        self.assertIn("$global:LASTEXITCODE = 0", workflow)
-        self.assertIn("WINDOWS POST-INSTALL SETTINGS PASSED", workflow)
-        self.assertIn("Build and verify the one-extract Windows user package", workflow)
-        self.assertIn("Compress-Archive -LiteralPath $env:TRANSFER_ROOT", workflow)
-        self.assertIn("The ready ZIP must contain exactly one top-level directory", workflow)
-        self.assertIn("Get-ContentMap", workflow)
-        self.assertIn("byte-identical repack", workflow)
-        self.assertIn("READY WINDOWS PACKAGE SHA256", workflow)
+            "browser-mcp",
+            "payload\\toolkit",
+            "USERPROFILE",
+            "READY WINDOWS PACKAGE SHA256",
+        ):
+            self.assertIn(marker, workflow)
+        self.assertNotIn("Compress-Archive", workflow)
+        self.assertNotIn("byte-identical repack", workflow)
+        self.assertNotIn("payload\\toolkit\\scripts\\verify-windows-release.ps1", workflow)
         ready_upload = workflow.split(
-            "- name: Upload the one-extract Windows user package", 1
-        )[1].split("- name: Upload the publisher transfer archive", 1)[0]
+            "- name: Upload the public Windows ZIP and checksum", 1
+        )[1]
         self.assertIn("archive: false", ready_upload)
         self.assertIn("${{ env.READY_ARCHIVE }}", ready_upload)
-        self.assertNotIn("TRANSFER_ARCHIVE", ready_upload)
-        self.assertIn("CI EXISTING NPM CLAUDE READY", workflow)
-        self.assertIn("CI failed to hide native claude.exe from PATH", workflow)
-        self.assertIn("The official per-user Claude Code fallback path is missing", workflow)
+        self.assertIn("${{ env.READY_ARCHIVE }}.sha256", ready_upload)
         self.assertIn("Prepare exact native and npm Claude Code CI fixtures", workflow)
         self.assertIn("CI-only native Claude Code", workflow)
         self.assertIn("CI-only npm Claude Code", workflow)
-        self.assertIn("Prove native Claude compatibility", workflow)
-        self.assertIn("PUBLISHER_GATE_LOG", workflow)
-        self.assertIn("WINDOWS-PUBLISHER-RELEASE-GATE.log", workflow)
-        self.assertIn("publisher release gate did not run the registration self-test", workflow)
-        self.assertIn("target installer unexpectedly ran the publisher-only self-test", workflow)
-        self.assertIn("publisher release gate did not run the complete Python suite", workflow)
-        self.assertIn("target installer unexpectedly ran the publisher-only unit suite", workflow)
-        self.assertIn("single-pass one-click install both passed", workflow)
         self.assertIn("Resolve-ClaudeCodeInvocation", workflow)
-        self.assertIn("The shared resolver did not select the existing npm", workflow)
         self.assertIn("NPM_CLAUDE_COMMAND", workflow)
         self.assertIn("NPM_CLAUDE_NODE", workflow)
-        fixture_step = workflow.split(
-            "- name: Prepare exact native and npm Claude Code CI fixtures", 1
-        )[1].split("- name: Prove native Claude compatibility", 1)[0]
-        self.assertIn("Select-Object -First 1", fixture_step)
-        self.assertIn("$ActualNpmNode", fixture_step)
-        self.assertIn("$env:CLAUDE_NPM_NODE_VERSION", fixture_step)
-        self.assertIn("$ClaudeFirewallRule", workflow)
-        self.assertIn('"CHROME_EXE=$ChromeExe"', workflow)
-        self.assertIn('$ChromeExe = [string]$env:CHROME_EXE', workflow)
-        self.assertIn("--browser-executable $ChromeExe", workflow)
-        self.assertIn("Installed Playwright MCP could not reuse", workflow)
-        self.assertIn("playwright-extension-ci-ready.json", workflow)
-        self.assertIn("playwright-extension-ci-stop.txt", workflow)
-        self.assertIn("one-click-launcher.exit.txt", workflow)
-        self.assertIn('"one-click-upgrade-$Label.cmd"', workflow)
-        self.assertIn('Invoke-OneClickUpgrade "extension-user"', workflow)
-        self.assertIn("UPGRADE-EXTENSION-USER.log", workflow)
-        self.assertIn("UPGRADE-DEDICATED-HEADLESS.log", workflow)
-        self.assertIn("UPGRADE EXTENSION USER AUTHORIZATION PRESERVED", workflow)
-        self.assertIn("EXTENSION INSTALL SKIPPED: dedicated profile mode", workflow)
-        self.assertIn("playwright-extension-ci.exit.txt", workflow)
-        self.assertIn("runtime-publish-access-denied.exit.txt", workflow)
-        self.assertIn("inject-runtime-publish-access-denied.ps1", workflow)
-        self.assertIn("RUNTIME PUBLISH RETRY", workflow)
-        self.assertIn("RUNTIME PUBLISH RECOVERED", workflow)
-        self.assertIn("CI EXTENSION POLICY ACCESS DENIED ARMED", workflow)
-        self.assertIn("CI EXTENSION POLICY ACCESS DENIED RESTORED", workflow)
-        self.assertIn("OFFLINE EXTENSION POLICY UNAVAILABLE", workflow)
-        self.assertIn("RegistryAccessRule", workflow)
-        self.assertIn("RegistryRights]::SetValue", workflow)
-        self.assertIn("$script:CiExtensionPolicyCreatedPaths", workflow)
-        self.assertIn("$CiCreatedPolicyIndex -= 1", workflow)
-        self.assertIn("$CiExtensionPolicySubKey -split '\\\\'", workflow)
-        self.assertIn("[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey", workflow)
-        self.assertIn(".GetAccessControl(", workflow)
-        self.assertIn(".SetAccessControl(", workflow)
-        self.assertIn("[Microsoft.Win32.Registry]::CurrentUser.DeleteSubKey", workflow)
-        self.assertNotIn("Get-Acl -LiteralPath $CiExtensionPolicyPath", workflow)
-        self.assertNotIn("Set-Acl -LiteralPath $CiExtensionPolicyPath", workflow)
-        self.assertIn("CiExtensionPolicyOriginalAccessSddl", workflow)
-        self.assertIn("RestoredPolicyAccessSddl", workflow)
-        self.assertIn("did not restore the exact extension-policy access ACL", workflow)
-        self.assertIn("did not restore the absent extension-policy path", workflow)
-        self.assertIn("ci-invalid-extension-leftover.txt", workflow)
-        self.assertIn("EXTENSION INVALID DIRECTORY QUARANTINED", workflow)
-        self.assertIn("was not preserved exactly once", workflow)
-        self.assertIn("exactly one installer process", workflow)
-        self.assertIn("Read-CiExitCode", workflow)
-        self.assertNotIn("$LauncherProcess.ExitCode", workflow)
-        self.assertNotIn("$CdpProcess.ExitCode", workflow)
-        self.assertNotIn("$RuntimeLockProcess.ExitCode", workflow)
-        self.assertIn("-RemoteAddress Internet", workflow)
-        self.assertIn("native folder picker", workflow)
-        self.assertIn("claiming that CI performed or persisted", workflow)
-        self.assertIn("One-click Windows launcher did not continue", workflow)
-        self.assertIn("Get-Content -LiteralPath $LauncherStdout", workflow)
-        self.assertIn("taskkill.exe", workflow)
-        self.assertIn("/PID $LauncherProcess.Id /T /F", workflow)
-        self.assertLess(
-            workflow.index("$CdpReady = Get-Content"),
-            workflow.index("$LauncherProcess.WaitForExit(300000)"),
-        )
-        self.assertLess(
-            workflow.index("python $ExtensionExercise"),
-            workflow.index("Remove-NetFirewallRule -DisplayName $FirewallRule"),
-        )
 
         self.assertIn('"browser_navigate"', exercise)
         self.assertIn('"browser_snapshot"', exercise)
@@ -1126,49 +1034,49 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("Invoke-Checked $RuntimeNode", build)
 
     def test_windows_user_scope_path_check_is_case_insensitive_and_contained(self) -> None:
-        local_app_data = r"C:\Users\Pilot\AppData\Local"
+        user_profile = r"C:\Users\Pilot"
         self.assertTrue(
             configure.browser_agent._windows_path_is_within(
-                r"c:\users\pilot\appdata\local\IntranetBrowserAgent\config",
-                local_app_data,
+                r"c:\users\pilot\browser-mcp-server\config",
+                user_profile,
             )
         )
         self.assertFalse(
             configure.browser_agent._windows_path_is_within(
-                r"C:\Users\Pilot\AppData\Local-Evil\config", local_app_data
+                r"C:\Users\Pilot-Evil\browser-mcp-server\config", user_profile
             )
         )
         self.assertFalse(
             configure.browser_agent._windows_path_is_within(
-                r"C:\Users\Pilot\AppData\Local\..\Roaming\config",
-                local_app_data,
+                r"C:\Users\Pilot\..\Roaming\config",
+                user_profile,
             )
         )
 
     def test_installer_user_path_guard_rejects_resolved_escape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            local_app_data = root / "Local"
-            local_app_data.mkdir()
+            user_profile = root / "profile"
+            user_profile.mkdir()
             self.assertEqual(
                 [],
                 configure.user_path_errors(
-                    local_app_data,
-                    [local_app_data / "IntranetBrowserAgent" / "config"],
+                    user_profile,
+                    [user_profile / "browser-mcp-server" / "config"],
                 ),
             )
             errors = configure.user_path_errors(
-                local_app_data, [root / "Roaming" / "IntranetBrowserAgent"]
+                user_profile, [root / "Roaming" / "browser-mcp-server"]
             )
-            self.assertTrue(any("outside LOCALAPPDATA" in error for error in errors))
-            real_profile = local_app_data / "real-profile"
+            self.assertTrue(any("outside the user profile root" in error for error in errors))
+            real_profile = user_profile / "real-profile"
             real_profile.mkdir()
-            linked_profile = local_app_data / "linked-profile"
+            linked_profile = user_profile / "linked-profile"
             try:
                 os.symlink(real_profile, linked_profile, target_is_directory=True)
             except OSError:
                 return
-            errors = configure.user_path_errors(local_app_data, [linked_profile])
+            errors = configure.user_path_errors(user_profile, [linked_profile])
             self.assertTrue(any("traverses a link/junction" in error for error in errors))
 
     def test_generate_renders_user_scope_stdio_configuration(self) -> None:
@@ -1176,14 +1084,14 @@ class WindowsPilotSetupTests(unittest.TestCase):
             root = Path(temporary)
             template = root / "template.json"
             template.write_text(json.dumps(self.template()), encoding="utf-8")
-            user_root = r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
+            user_root = r"C:\Users\pilot\browser-mcp-server"
             arguments = argparse.Namespace(
                 template=template,
                 manifest_out=root / "pilot.json",
                 render_out=root / "rendered",
                 runtime_root=user_root + r"\releases\runtime-1",
-                config_root=user_root + r"\config\pilot",
-                output_directory=user_root + r"\output\pilot",
+                config_root=user_root + r"\config",
+                output_directory=user_root + r"\output",
                 profile_owner=r"CORP\pilot-user",
                 browser_channel="chrome",
                 browser_executable=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -1195,7 +1103,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
             mcp = json.loads(
                 (root / "rendered" / ".mcp.json").read_text(encoding="utf-8")
             )
-            server = mcp["mcpServers"]["intranet-browser-agent"]
+            server = mcp["mcpServers"]["browser-mcp"]
             self.assertEqual("stdio", server["type"])
             self.assertTrue(server["command"].endswith(r"node\node.exe"))
             self.assertTrue(
@@ -1206,7 +1114,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 r"--executable-path=C:\Program Files\Google\Chrome\Application\chrome.exe",
                 server["args"][2],
             )
-            self.assertEqual("--config", server["args"][3])
+            self.assertEqual("--settings", server["args"][3])
+            self.assertEqual("--config", server["args"][5])
             playwright = json.loads(
                 (root / "rendered" / "playwright.config.json").read_text(
                     encoding="utf-8"

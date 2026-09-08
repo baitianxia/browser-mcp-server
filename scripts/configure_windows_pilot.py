@@ -23,6 +23,12 @@ class ConfiguratorError(RuntimeError):
     pass
 
 
+PRODUCT_ID = "browser-mcp-server"
+DISPLAY_NAME = "浏览器助手"
+MCP_SERVER_NAME = "browser-mcp"
+DEPLOYMENT_ID = "browser-mcp-server-windows-pilot"
+
+
 WINDOWS_RUNTIME_DIRECTORY_RE = re.compile(
     r"^browser-agent-runtime-\d+\.\d+\.\d+-core-windows-x64$"
 )
@@ -69,7 +75,6 @@ def extract_upgrade_preferences(
         raise ConfiguratorError("installed pilot manifest root must be an object")
     expected_identity = {
         "schemaVersion": 1,
-        "deploymentId": "corp-browser-agent-windows-pilot",
         "environment": "pilot",
         "target": {"os": "windows", "arch": "x64"},
         "mcpScope": "user",
@@ -80,7 +85,10 @@ def extract_upgrade_preferences(
             raise ConfiguratorError(
                 f"installed manifest {name} is not a supported Windows user pilot"
             )
-
+    if manifest.get("deploymentId") != DEPLOYMENT_ID:
+        raise ConfiguratorError(
+            "installed manifest deploymentId is not the current browser-mcp-server Windows user pilot"
+        )
     _require_exact_windows_path(
         manifest.get("configRoot"), config_root, "installed configRoot"
     )
@@ -103,7 +111,7 @@ def extract_upgrade_preferences(
         raise ConfiguratorError("installed manifest output is missing")
     _require_exact_windows_path(
         output.get("directory"),
-        ntpath.join(agent_root, "output", "pilot"),
+        ntpath.join(agent_root, "output"),
         "installed output directory",
     )
 
@@ -162,11 +170,7 @@ def extract_upgrade_preferences(
         raise ConfiguratorError("installed browser mode is unsupported")
 
     interaction = manifest.get("interaction")
-    legacy_interaction_defaults = interaction is None
-    if interaction is None:
-        snapshot_strategy = "compact"
-        compatibility_mode = "robust"
-    elif isinstance(interaction, dict):
+    if isinstance(interaction, dict):
         snapshot_strategy = interaction.get("snapshotStrategy")
         compatibility_mode = interaction.get("compatibilityMode")
         if snapshot_strategy not in ("compact", "full"):
@@ -188,42 +192,41 @@ def extract_upgrade_preferences(
         "extensionAuthorization": extension_authorization,
         "snapshotStrategy": snapshot_strategy,
         "compatibilityMode": compatibility_mode,
-        "legacyInteractionDefaultsApplied": legacy_interaction_defaults,
     }
 
 
-def user_path_errors(local_app_data: Path, paths: list[Path]) -> list[str]:
-    if not local_app_data.is_dir():
-        return [f"LOCALAPPDATA is not a directory: {local_app_data}"]
+def user_path_errors(user_root: Path, paths: list[Path]) -> list[str]:
+    if not user_root.is_dir():
+        return [f"user profile root is not a directory: {user_root}"]
     try:
-        root_absolute = os.path.normcase(os.path.abspath(local_app_data))
-        root = os.path.normcase(os.path.realpath(local_app_data))
+        root_absolute = os.path.normcase(os.path.abspath(user_root))
+        root = os.path.normcase(os.path.realpath(user_root))
     except OSError as exc:
-        return [f"cannot resolve LOCALAPPDATA: {exc}"]
+        return [f"cannot resolve user profile root: {exc}"]
     errors: list[str] = []
     for path in paths:
         try:
             candidate_absolute = os.path.normcase(os.path.abspath(path))
             if os.path.commonpath((candidate_absolute, root_absolute)) != root_absolute:
-                errors.append(f"path is outside LOCALAPPDATA: {path}")
+                errors.append(f"path is outside the user profile root: {path}")
                 continue
             relative = os.path.relpath(candidate_absolute, root_absolute)
             expected = os.path.normcase(os.path.join(root, relative))
             candidate = os.path.normcase(os.path.realpath(path))
             if os.path.commonpath((candidate, root)) != root or candidate == root:
-                errors.append(f"path escapes LOCALAPPDATA after resolving links: {path}")
+                errors.append(f"path escapes the user profile root after resolving links: {path}")
             elif candidate != expected:
-                errors.append(f"path traverses a link/junction below LOCALAPPDATA: {path}")
+                errors.append(f"path traverses a link/junction below the user profile root: {path}")
         except (OSError, ValueError) as exc:
             errors.append(f"cannot resolve user path {path}: {exc}")
     return errors
 
 
 def assert_user_paths(args: argparse.Namespace) -> None:
-    errors = user_path_errors(args.local_app_data, args.paths)
+    errors = user_path_errors(args.user_profile, args.paths)
     if errors:
         raise ConfiguratorError("user path validation failed:\n- " + "\n- ".join(errors))
-    print("VALID USER PATHS")
+    print("VALID USER PROFILE PATHS")
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -261,8 +264,9 @@ def build_manifest(
         raise ConfiguratorError("the installer accepts only a Windows x64 template")
 
     # The template's relative editor hint points into the toolkit tree. It would
-    # be broken after the generated manifest is moved into LOCALAPPDATA.
+    # be broken after the generated manifest is moved into the user profile.
     manifest.pop("$schema", None)
+    manifest["deploymentId"] = DEPLOYMENT_ID
     manifest["mcpScope"] = "user"
     manifest["installRoot"] = runtime_root
     manifest["nodeExecutable"] = node_executable
@@ -361,6 +365,27 @@ def reconfigure(args: argparse.Namespace) -> None:
         )
     if manifest.get("target") != {"os": "windows", "arch": "x64"}:
         raise ConfiguratorError("only a Windows x64 pilot can be reconfigured")
+    # The settings tool runs against an already-installed manifest.  When it
+    # supplies the managed roots, validate the full identity and every
+    # persisted path before copying anything into the staged render.  Keeping
+    # the arguments optional preserves the small in-process API used by older
+    # callers; the command-line settings workflow always supplies them.
+    managed_roots = (
+        getattr(args, "agent_root", None),
+        getattr(args, "config_root", None),
+        getattr(args, "dedicated_user_data_dir", None),
+    )
+    if all(isinstance(value, str) and value for value in managed_roots):
+        extract_upgrade_preferences(
+            manifest,
+            agent_root=managed_roots[0],
+            config_root=managed_roots[1],
+            dedicated_user_data_dir=managed_roots[2],
+        )
+    elif any(value is not None for value in managed_roots):
+        raise ConfiguratorError(
+            "managed agent, config, and dedicated Profile roots must be supplied together"
+        )
     apply_browser_preferences(
         manifest,
         browser_mode=args.browser_mode,
@@ -498,6 +523,9 @@ def build_parser() -> argparse.ArgumentParser:
     reconfigure_parser.add_argument("--manifest", required=True, type=Path)
     reconfigure_parser.add_argument("--manifest-out", required=True, type=Path)
     reconfigure_parser.add_argument("--render-out", required=True, type=Path)
+    reconfigure_parser.add_argument("--agent-root")
+    reconfigure_parser.add_argument("--config-root")
+    reconfigure_parser.add_argument("--dedicated-user-data-dir")
     reconfigure_parser.add_argument(
         "--browser-mode", required=True, choices=("extension", "dedicated")
     )
@@ -525,7 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--preferences-out", required=True, type=Path)
     inspect_parser.add_argument("--force", action="store_true")
     paths_parser = subparsers.add_parser("assert-user-paths")
-    paths_parser.add_argument("--local-app-data", required=True, type=Path)
+    paths_parser.add_argument("--user-profile", required=True, type=Path)
     paths_parser.add_argument("--path", action="append", required=True, dest="paths", type=Path)
     return parser
 

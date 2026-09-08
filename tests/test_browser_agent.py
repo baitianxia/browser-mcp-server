@@ -70,13 +70,13 @@ class BrowserAgentManifestTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        user_root = r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent"
+        user_root = r"C:\Users\pilot\browser-mcp-server"
         manifest["installRoot"] = user_root + r"\releases\runtime-1"
         manifest["nodeExecutable"] = (
             user_root + r"\releases\runtime-1\node\node.exe"
         )
-        manifest["configRoot"] = user_root + r"\config\pilot"
-        manifest["output"]["directory"] = user_root + r"\output\pilot"
+        manifest["configRoot"] = user_root + r"\config"
+        manifest["output"]["directory"] = user_root + r"\output"
         manifest["browser"]["executablePath"] = (
             r"C:\Program Files\Google\Chrome\Application\chrome.exe"
         )
@@ -108,13 +108,13 @@ class BrowserAgentManifestTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             browser_agent.render(manifest_path, root / "rendered", force=False)
             mcp = json.loads((root / "rendered" / ".mcp.json").read_text(encoding="utf-8"))
-            server = mcp["mcpServers"]["intranet-browser-agent"]
+            server = mcp["mcpServers"]["browser-mcp"]
             self.assertEqual(
-                r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent\releases\runtime-1\node\node.exe",
+                r"C:\Users\pilot\browser-mcp-server\releases\runtime-1\node\node.exe",
                 server["command"],
             )
             self.assertEqual(
-                r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent\releases\runtime-1\bin\intranet-browser-agent-mcp.js",
+                r"C:\Users\pilot\browser-mcp-server\releases\runtime-1\bin\intranet-browser-agent-mcp.js",
                 server["args"][0],
             )
             self.assertEqual("--browser=chrome", server["args"][1])
@@ -122,10 +122,15 @@ class BrowserAgentManifestTests(unittest.TestCase):
                 r"--executable-path=C:\Program Files\Google\Chrome\Application\chrome.exe",
                 server["args"][2],
             )
-            self.assertEqual("--config", server["args"][3])
+            self.assertEqual("--settings", server["args"][3])
             self.assertEqual(
-                r"C:\Users\pilot\AppData\Local\IntranetBrowserAgent\config\pilot\playwright.config.json",
+                r"C:\Users\pilot\browser-mcp-server\config\settings.json",
                 server["args"][4],
+            )
+            self.assertEqual("--config", server["args"][5])
+            self.assertEqual(
+                r"C:\Users\pilot\browser-mcp-server\config\playwright.config.json",
+                server["args"][6],
             )
             self.assertEqual(
                 browser_agent._load_windows_mcp_environment(), server["env"]
@@ -248,16 +253,21 @@ class BrowserAgentManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "rendered"
             written = browser_agent.render(self.demo_path, output, force=False)
-            self.assertEqual(6, len(written))
+            self.assertEqual(7, len(written))
             mcp = json.loads((output / ".mcp.json").read_text(encoding="utf-8"))
-            server = mcp["mcpServers"]["intranet-browser-agent"]
+            server = mcp["mcpServers"]["browser-mcp"]
             self.assertTrue(PurePosixPath(server["command"]).is_absolute())
             self.assertNotIn("npx", json.dumps(mcp))
             self.assertNotIn("@latest", json.dumps(mcp))
             self.assertNotIn("TOKEN", json.dumps(mcp).upper())
             self.assertEqual(
-                "/tmp/intranet-browser-agent-demo/config/playwright.config.json",
+                "/tmp/browser-mcp-server-demo/config/settings.json",
                 server["args"][1],
+            )
+            self.assertEqual("--config", server["args"][2])
+            self.assertEqual(
+                "/tmp/browser-mcp-server-demo/config/playwright.config.json",
+                server["args"][3],
             )
             playwright = json.loads(
                 (output / "playwright.config.json").read_text(encoding="utf-8")
@@ -361,7 +371,7 @@ class BrowserAgentManifestTests(unittest.TestCase):
 
             mcp_path = rendered / ".mcp.json"
             mcp = json.loads(mcp_path.read_text(encoding="utf-8"))
-            mcp["mcpServers"]["intranet-browser-agent"]["command"] = "/tmp/wrong"
+            mcp["mcpServers"]["browser-mcp"]["command"] = "/tmp/wrong"
             mcp_path.write_text(json.dumps(mcp), encoding="utf-8")
             with mock.patch.object(
                 browser_agent, "_host_system", return_value="darwin"

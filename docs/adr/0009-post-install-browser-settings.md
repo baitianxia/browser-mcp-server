@@ -2,6 +2,8 @@
 
 状态：已接受。
 
+> 2026-09-07 统一 Windows 交付更新：当前设置入口和路径由 `docs/architecture.md`、`docs/acceptance.md` 和 `docs/operations.md` 取代本文中的旧 `BROWSER-AGENT-SETTINGS.cmd`、`%LOCALAPPDATA%\IntranetBrowserAgent` 和历史 MCP 名称。当前入口为 `%USERPROFILE%\browser-mcp-server\CONFIGURE.cmd`，设置文件为 `%USERPROFILE%\browser-mcp-server\config\settings.json`；本文的模式与授权决策继续有效。
+
 ## 背景
 
 Windows user-scope pilot 的一键安装默认通过 Playwright Extension 复用当前 Chrome/Edge 登录态，并要求每次连接由用户确认。实际试点还需要三种可逆选择：记住当前用户的扩展授权、切换有头/无头，以及使用不共享日常浏览器登录态的独立 Profile。

@@ -1,8 +1,8 @@
 {
-  "name": "intranet-browser-agent-runtime",
+  "name": "browser-mcp-server-runtime",
   "version": "1.0.16",
   "private": true,
-  "description": "Pinned offline runtime for the intranet Browser Agent baseline",
+  "description": "Pinned offline runtime for browser-mcp-server",
   "engines": {
     "node": ">=20.19.0"
   },

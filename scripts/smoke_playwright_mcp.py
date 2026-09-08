@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Perform a browser-free MCP stdio handshake against the fixed Playwright CLI."""
+"""Perform a browser-free MCP stdio handshake against the packaged MCP wrapper."""
 
 from __future__ import annotations
 
@@ -60,6 +60,7 @@ def smoke(
     mcp_environment: dict[str, str] | None = None,
     browser_channel: str | None = None,
     browser_executable: Path | None = None,
+    expected_server_name: str = "browser-mcp",
 ) -> tuple[str, int]:
     for label, path in (
         ("Node.js executable", node_executable),
@@ -142,9 +143,17 @@ def smoke(
         raise SmokeError("Playwright MCP did not return an initialize result")
     if initialize_result.get("protocolVersion") != PROTOCOL_VERSION:
         raise SmokeError("Playwright MCP returned an unexpected protocol version")
+    if not isinstance(expected_server_name, str) or not expected_server_name:
+        raise SmokeError("expected MCP server name must be a non-empty string")
     server_info = initialize_result.get("serverInfo")
-    if not isinstance(server_info, dict) or server_info.get("name") != "Playwright":
-        raise SmokeError("Playwright MCP returned unexpected server information")
+    if (
+        not isinstance(server_info, dict)
+        or server_info.get("name") != expected_server_name
+    ):
+        raise SmokeError(
+            "MCP returned unexpected server information; expected "
+            f"{expected_server_name!r}"
+        )
     server_version = server_info.get("version")
     if not isinstance(server_version, str) or not server_version:
         raise SmokeError("Playwright MCP did not report a server version")
@@ -174,6 +183,7 @@ def main() -> int:
     parser.add_argument("--playwright-config", required=True, type=Path)
     parser.add_argument("--browser-channel", choices=("chrome", "msedge"))
     parser.add_argument("--browser-executable", type=Path)
+    parser.add_argument("--expected-server-name", default="browser-mcp")
     args = parser.parse_args()
     try:
         server_version, tool_count = smoke(
@@ -182,11 +192,12 @@ def main() -> int:
             args.playwright_config,
             browser_channel=args.browser_channel,
             browser_executable=args.browser_executable,
+            expected_server_name=args.expected_server_name,
         )
     except SmokeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    print(f"PLAYWRIGHT MCP STDIO SMOKE PASSED: server={server_version}, tools={tool_count}")
+    print(f"BROWSER MCP STDIO SMOKE PASSED: server={server_version}, tools={tool_count}")
     return 0
 
 

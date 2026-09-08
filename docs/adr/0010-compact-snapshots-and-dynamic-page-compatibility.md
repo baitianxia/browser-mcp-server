@@ -2,6 +2,8 @@
 
 状态：已接受。
 
+> 2026-09-07 统一 Windows 交付更新：当前 MCP 身份和设置入口以 `docs/architecture.md`、`docs/acceptance.md` 和 `docs/operations.md` 为准，取代本文中旧的 `intranet-browser-agent` 注册名和旧设置 launcher。当前注册名为 `browser-mcp`，设置文件为 `%USERPROFILE%\browser-mcp-server\config\settings.json`；本文的兼容层行为和交互约束继续有效。
+
 ## 背景
 
 固定版本 Playwright MCP 会把多数操作后的隐式快照写成外部文件；复杂页面的完整可访问性树可能达到数十 KB。导航只等待浏览器加载事件，Vue/Element UI 等页面仍可能继续异步渲染，因而首次快照可能为空或过早。标准 `fill` 会在只读自定义下拉框上等待到超时，标准 `click` 也可能因元素位于视口外或持续重渲染而失败。tooltip 全文和异步翻页结果还需要额外的低层 DOM 操作与重复等待。

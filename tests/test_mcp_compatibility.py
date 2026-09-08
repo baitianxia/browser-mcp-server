@@ -304,7 +304,7 @@ class McpCompatibilityTests(unittest.TestCase):
                 "clientInfo": {"name": "compat-test", "version": "1"},
             },
         )
-        self.assertEqual("Playwright", initialized["serverInfo"]["name"])
+        self.assertEqual("browser-mcp", initialized["serverInfo"]["name"])
         self.client.send(
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
         )

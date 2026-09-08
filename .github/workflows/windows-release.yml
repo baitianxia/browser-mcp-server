@@ -216,7 +216,7 @@ jobs:
           "RUNTIME_ARCHIVE=$($RuntimeArchives[0].FullName)" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Assemble and extract the reviewed transfer kit
+      - name: Assemble and extract the reviewed Windows ZIP
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
@@ -227,32 +227,34 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
               throw "Transfer-kit build failed."
           }
-          $TransferArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "intranet-browser-agent-transfer-1.0.16-core-windows-x64.tar.gz")
-          if ($TransferArchives.Count -ne 1) {
-              throw "Expected exactly one Windows transfer archive; found $($TransferArchives.Count)"
+          $PackageArchives = @(Get-ChildItem -LiteralPath .\dist `
+              -Filter "browser-mcp-server-1.0.16-windows-x64.zip")
+          if ($PackageArchives.Count -ne 1) {
+              throw "Expected exactly one public Windows ZIP; found $($PackageArchives.Count)"
           }
-          python .\scripts\verify-bundle.py $TransferArchives[0].FullName
+          python .\scripts\verify-bundle.py $PackageArchives[0].FullName
           if ($LASTEXITCODE -ne 0) {
-              throw "Transfer archive verification failed."
+              throw "Public Windows ZIP verification failed."
           }
           $ExtractionRoot = Join-Path $env:RUNNER_TEMP "windows-transfer"
           New-Item -ItemType Directory -Path $ExtractionRoot -Force | Out-Null
-          & tar.exe -xzf $TransferArchives[0].FullName -C $ExtractionRoot
+          Expand-Archive -LiteralPath $PackageArchives[0].FullName `
+              -DestinationPath $ExtractionRoot -Force
+          $PackageRoots = @(Get-ChildItem -LiteralPath $ExtractionRoot -Directory)
+          $LooseFiles = @(Get-ChildItem -LiteralPath $ExtractionRoot -File)
+          if ($PackageRoots.Count -ne 1 -or $LooseFiles.Count -ne 0) {
+              throw "Public Windows ZIP must extract to exactly one top-level directory."
+          }
+          if ($PackageRoots[0].Name -ne "browser-mcp-server-1.0.16-windows-x64") {
+              throw "Public Windows ZIP top-level directory has an unexpected name."
+          }
+          python .\scripts\verify-bundle.py $PackageRoots[0].FullName
           if ($LASTEXITCODE -ne 0) {
-              throw "Windows tar.exe could not extract the transfer kit."
+              throw "Extracted public Windows ZIP verification failed."
           }
-          $TransferRoots = @(Get-ChildItem -LiteralPath $ExtractionRoot -Directory)
-          if ($TransferRoots.Count -ne 1) {
-              throw "Expected one extracted transfer root; found $($TransferRoots.Count)"
-          }
-          python .\scripts\verify-bundle.py $TransferRoots[0].FullName
-          if ($LASTEXITCODE -ne 0) {
-              throw "Extracted transfer verification failed."
-          }
-          "TRANSFER_ARCHIVE=$($TransferArchives[0].FullName)" |
+          "TRANSFER_ARCHIVE=$($PackageArchives[0].FullName)" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "TRANSFER_ROOT=$($TransferRoots[0].FullName)" |
+          "TRANSFER_ROOT=$($PackageRoots[0].FullName)" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Set up the target-like existing npm Claude Node.js
@@ -341,13 +343,13 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          $Gate = Join-Path $env:TRANSFER_ROOT `
-              "toolkit\scripts\verify-windows-release.ps1"
+          $Gate = Join-Path $env:GITHUB_WORKSPACE `
+              "scripts\verify-windows-release.ps1"
           $PublisherGateLog = Join-Path $env:RUNNER_TEMP `
               "WINDOWS-PUBLISHER-RELEASE-GATE.log"
           & powershell.exe -NoLogo -NoProfile -File $Gate `
               -ClaudeExecutable $env:NATIVE_CLAUDE_EXECUTABLE `
-              -TransferPath $env:TRANSFER_ROOT `
+              -TransferPath $env:TRANSFER_ARCHIVE `
               -LogPath $PublisherGateLog
           if ($LASTEXITCODE -ne 0) {
               throw "The isolated native Claude release gate failed with exit code $LASTEXITCODE"
@@ -406,7 +408,7 @@ jobs:
               throw "PATH did not resolve the expected existing npm claude.cmd."
           }
           $Discovery = Join-Path $env:TRANSFER_ROOT `
-              "toolkit\scripts\windows-tool-discovery.ps1"
+              "payload\toolkit\scripts\windows-tool-discovery.ps1"
           . $Discovery
           $ClaudeInvocation = Resolve-ClaudeCodeInvocation
           if ($ClaudeInvocation.Kind -ne "npm" -or
@@ -426,10 +428,15 @@ jobs:
               throw "The resolved npm Claude invocation is unusable: $ResolvedClaudeVersion"
           }
           Write-Host "CI EXISTING NPM CLAUDE READY: $($ClaudeInvocation.CommandPath)"
-          $Launcher = Join-Path $env:TRANSFER_ROOT "INSTALL-WINDOWS-PILOT.cmd"
+          $Launcher = Join-Path $env:TRANSFER_ROOT "INSTALL.cmd"
           if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
               throw "Transfer launcher is missing: $Launcher"
           }
+          $PilotUserProfile = Join-Path $env:RUNNER_TEMP "pilot-user-profile"
+          New-Item -ItemType Directory -Path $PilotUserProfile -Force | Out-Null
+          $env:USERPROFILE = $PilotUserProfile
+          "USERPROFILE=$PilotUserProfile" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $PilotLocalAppData = Join-Path $env:RUNNER_TEMP "pilot-local-app-data"
           New-Item -ItemType Directory -Path $PilotLocalAppData -Force | Out-Null
           $env:LOCALAPPDATA = $PilotLocalAppData
@@ -476,9 +483,9 @@ jobs:
               "runtime-publish-access-denied.exit.txt"
           $RuntimeLockScript = Join-Path $env:GITHUB_WORKSPACE `
               ".github\scripts\inject-runtime-publish-access-denied.ps1"
-          $RuntimeLockStagingRoot = Join-Path $PilotLocalAppData `
-              "IntranetBrowserAgent\staging"
-          $InstallLogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
+          $RuntimeLockStagingRoot = Join-Path $env:USERPROFILE `
+              "browser-mcp-server\staging"
+          $InstallLogRoot = Join-Path $env:TEMP "browser-mcp-server"
           $CiExtensionPolicySubKey = `
               "Software\Policies\Google\Chrome\ExtensionInstallForcelist"
           $CiExtensionPolicyPath = "HKCU:\$CiExtensionPolicySubKey"
@@ -489,10 +496,10 @@ jobs:
           $script:CiExtensionPolicyAclRestored = $false
           $Approval = Get-Content -LiteralPath (Join-Path `
               $env:TRANSFER_ROOT `
-              "toolkit\config\playwright-extension-source.json") `
+              "payload\toolkit\config\playwright-extension-source.json") `
               -Raw | ConvertFrom-Json
-          $InstalledUnpacked = Join-Path $env:LOCALAPPDATA `
-              "IntranetBrowserAgent\browser-extension\$($Approval.version)\unpacked"
+          $InstalledUnpacked = Join-Path $env:USERPROFILE `
+              "browser-mcp-server\browser-extension\$($Approval.version)\unpacked"
           $PreparedExtensionRoot = Split-Path -Parent $InstalledUnpacked
           $InvalidExtensionMarkerName = "ci-invalid-extension-leftover.txt"
           New-Item -ItemType Directory -Path $PreparedExtensionRoot `
@@ -551,9 +558,9 @@ jobs:
           )
           $LauncherStdout = Join-Path $env:RUNNER_TEMP "one-click-launcher.stdout.log"
           $LauncherStderr = Join-Path $env:RUNNER_TEMP "one-click-launcher.stderr.log"
-          $FirewallRule = "IntranetBrowserAgent-Chrome-CI-$env:GITHUB_RUN_ID"
+          $FirewallRule = "browser-mcp-server-Chrome-CI-$env:GITHUB_RUN_ID"
           $ClaudeFirewallRule = `
-              "IntranetBrowserAgent-Claude-CI-$env:GITHUB_RUN_ID"
+              "browser-mcp-server-Claude-CI-$env:GITHUB_RUN_ID"
           $LauncherProcess = $null
           $CdpProcess = $null
           $RuntimeLockProcess = $null
@@ -830,8 +837,8 @@ jobs:
               while (-not $LauncherProcess.HasExited -and
                   [DateTime]::UtcNow -lt $MarkerDeadline) {
                   $InstallLogs = @(Get-ChildItem -LiteralPath `
-                      (Join-Path $env:TEMP "IntranetBrowserAgent") `
-                      -Filter "INSTALL-WINDOWS-PILOT-*.log" `
+                      (Join-Path $env:TEMP "browser-mcp-server") `
+                      -Filter "INSTALL-*.log" `
                       -ErrorAction SilentlyContinue)
                   if ($InstallLogs | Where-Object {
                       Select-String -LiteralPath $_.FullName `
@@ -854,7 +861,7 @@ jobs:
                   )
               }
               $FallbackInstallLog = Get-ChildItem -LiteralPath $InstallLogRoot `
-                  -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
+                  -Filter "INSTALL-*.log" -ErrorAction Stop |
                   Sort-Object LastWriteTime -Descending |
                   Select-Object -First 1
               if (-not $FallbackInstallLog -or
@@ -948,7 +955,7 @@ jobs:
               }
               $CurrentInstallLog = Get-ChildItem -LiteralPath `
                   $InstallLogRoot `
-                  -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
+                  -Filter "INSTALL-*.log" -ErrorAction Stop |
                   Sort-Object LastWriteTime -Descending |
                   Select-Object -First 1
               if (-not $CurrentInstallLog -or
@@ -963,8 +970,8 @@ jobs:
                   throw "The installer did not quarantine the invalid extension leftover."
               }
               $QuarantinedExtensionMarkers = @(
-                  Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA `
-                      "IntranetBrowserAgent\backups") `
+                  Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE `
+                      "browser-mcp-server\backups") `
                       -Filter $InvalidExtensionMarkerName -File -Recurse `
                       -ErrorAction Stop
               )
@@ -978,8 +985,8 @@ jobs:
                   $InvalidExtensionMarkerName)) {
                   throw "The rebuilt extension directory retained the invalid marker."
               }
-              $InstalledManifestPath = Join-Path $env:LOCALAPPDATA `
-                  "IntranetBrowserAgent\config\pilot\deployment.windows-pilot.json"
+              $InstalledManifestPath = Join-Path $env:USERPROFILE `
+                  "browser-mcp-server\config\deployment.windows-pilot.json"
               $InstalledManifest = Get-Content -LiteralPath $InstalledManifestPath `
                   -Raw | ConvertFrom-Json
               $InstalledPlaywrightCli = Join-Path $InstalledManifest.installRoot `
@@ -993,7 +1000,7 @@ jobs:
                   --playwright-cli $InstalledPlaywrightCli `
                   --playwright-config $InstalledPlaywrightConfig `
                   --environment-policy (Join-Path $env:TRANSFER_ROOT `
-                      "toolkit\config\windows-mcp-environment.json") `
+                      "payload\toolkit\config\windows-mcp-environment.json") `
                   --token-file $ExtensionTokenFile `
                   --profile $ChromeUserData `
                   --browser-channel chrome `
@@ -1106,9 +1113,9 @@ jobs:
               -not (Test-Path -LiteralPath $PublisherGateLog -PathType Leaf)) {
               throw "The publisher release-gate log is missing."
           }
-          $LogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
+          $LogRoot = Join-Path $env:TEMP "browser-mcp-server"
           $InstallLogs = @(Get-ChildItem -LiteralPath $LogRoot `
-              -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
+              -Filter "INSTALL-*.log" -ErrorAction Stop |
               Sort-Object LastWriteTime -Descending)
           if ($InstallLogs.Count -lt 1) {
               throw "The launcher did not preserve its installer log."
@@ -1159,9 +1166,9 @@ jobs:
           if ($InstallerStarts.Count -ne 1) {
               throw "The one-click flow did not use exactly one installer process."
           }
-          $Summary = Join-Path $env:LOCALAPPDATA "IntranetBrowserAgent\INSTALLATION.txt"
-          $ManifestPath = Join-Path $env:LOCALAPPDATA `
-              "IntranetBrowserAgent\config\pilot\deployment.windows-pilot.json"
+          $Summary = Join-Path $env:USERPROFILE "browser-mcp-server\INSTALLATION.txt"
+          $ManifestPath = Join-Path $env:USERPROFILE `
+              "browser-mcp-server\config\deployment.windows-pilot.json"
           $UserConfig = Join-Path $env:CLAUDE_CONFIG_DIR ".claude.json"
           foreach ($Required in @($Summary, $ManifestPath, $UserConfig)) {
               if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
@@ -1187,13 +1194,13 @@ jobs:
           }
           $ExtensionId = "mmlmfjhmonkocbjadbfplnigmagldckm"
           $ExtensionApproval = Get-Content -LiteralPath (Join-Path `
-              $env:TRANSFER_ROOT "toolkit\config\playwright-extension-source.json") `
+              $env:TRANSFER_ROOT "payload\toolkit\config\playwright-extension-source.json") `
               -Raw | ConvertFrom-Json
           $ExtensionVersion = [string]$ExtensionApproval.version
-          $ApprovedUnpacked = Join-Path $env:LOCALAPPDATA `
-              "IntranetBrowserAgent\browser-extension\$ExtensionVersion\unpacked"
+          $ApprovedUnpacked = Join-Path $env:USERPROFILE `
+              "browser-mcp-server\browser-extension\$ExtensionVersion\unpacked"
           python (Join-Path $env:TRANSFER_ROOT `
-              "toolkit\scripts\check_playwright_extension.py") check `
+              "payload\toolkit\scripts\check_playwright_extension.py") check `
               --local-app-data $env:LOCALAPPDATA `
               --browser-channel chrome `
               --expected-version $ExtensionVersion `
@@ -1216,7 +1223,7 @@ jobs:
           }
           $ClaudePayload = Get-Content -LiteralPath $UserConfig -Raw | ConvertFrom-Json
           $RegisteredArgs = @(
-              $ClaudePayload.mcpServers.'intranet-browser-agent'.args
+              $ClaudePayload.mcpServers.'browser-mcp'.args
           )
           if ($RegisteredArgs -notcontains "--browser=chrome") {
               throw "Registered MCP does not bind the selected Chrome channel."
@@ -1247,7 +1254,7 @@ jobs:
           } elseif ($SummaryText -notmatch "Extension install method: existing") {
               throw "The installer did not record a valid extension installation method."
           }
-          python (Join-Path $env:TRANSFER_ROOT "toolkit\scripts\verify-bundle.py") `
+          python (Join-Path $env:TRANSFER_ROOT "payload\toolkit\scripts\verify-bundle.py") `
               $Manifest.installRoot
           if ($LASTEXITCODE -ne 0) {
               throw "Installed runtime verification failed."
@@ -1256,20 +1263,20 @@ jobs:
               -Destination (Join-Path $EvidenceRoot `
                   "WINDOWS-PUBLISHER-RELEASE-GATE.log")
           Copy-Item -LiteralPath $InstallLogs[0].FullName `
-              -Destination (Join-Path $EvidenceRoot "INSTALL-WINDOWS-PILOT.log")
+              -Destination (Join-Path $EvidenceRoot "INSTALL.log")
           Copy-Item -LiteralPath $Summary `
               -Destination (Join-Path $EvidenceRoot "INSTALLATION.txt")
           Copy-Item -LiteralPath $ManifestPath `
               -Destination (Join-Path $EvidenceRoot "deployment.windows-pilot.json")
           Copy-Item -LiteralPath "$env:TRANSFER_ARCHIVE.sha256" `
-              -Destination (Join-Path $EvidenceRoot "transfer.tar.gz.sha256")
+              -Destination (Join-Path $EvidenceRoot "package.zip.sha256")
           Write-Host "Windows publisher gate and single-pass one-click install both passed."
 
       - name: Exercise post-install authorization, headless, and Profile settings
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          $AgentRoot = Join-Path $env:LOCALAPPDATA "IntranetBrowserAgent"
+          $AgentRoot = Join-Path $env:USERPROFILE "browser-mcp-server"
           $CurrentVersionPath = Join-Path $AgentRoot `
               "maintenance\current-version.txt"
           if (-not (Test-Path -LiteralPath $CurrentVersionPath -PathType Leaf)) {
@@ -1279,8 +1286,7 @@ jobs:
               -Raw).Trim()
           $SettingsScript = Join-Path $AgentRoot `
               "maintenance\$SettingsVersion\scripts\BROWSER-AGENT-SETTINGS.ps1"
-          $SettingsLauncher = Join-Path $AgentRoot `
-              "BROWSER-AGENT-SETTINGS.cmd"
+          $SettingsLauncher = Join-Path $AgentRoot "CONFIGURE.cmd"
           foreach ($Required in @($SettingsScript, $SettingsLauncher)) {
               if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
                   throw "The installed settings tool is missing: $Required"
@@ -1294,11 +1300,11 @@ jobs:
               (New-Object System.Text.ASCIIEncoding)
           )
           $ManifestPath = Join-Path $AgentRoot `
-              "config\pilot\deployment.windows-pilot.json"
+              "config\deployment.windows-pilot.json"
           $PlaywrightConfigPath = Join-Path $AgentRoot `
-              "config\pilot\playwright.config.json"
+              "config\playwright.config.json"
           $InteractionConfigPath = Join-Path $AgentRoot `
-              "config\pilot\interaction.config.json"
+              "config\interaction.config.json"
           $UserConfigPath = Join-Path $env:CLAUDE_CONFIG_DIR ".claude.json"
 
           function Invoke-InstalledSettings {
@@ -1327,14 +1333,13 @@ jobs:
               }
           }
 
-          $UpgradeLauncher = Join-Path $env:TRANSFER_ROOT `
-              "INSTALL-WINDOWS-PILOT.cmd"
+          $UpgradeLauncher = Join-Path $env:TRANSFER_ROOT "INSTALL.cmd"
           function Invoke-OneClickUpgrade {
               param([Parameter(Mandatory = $true)][string]$Label)
               $KnownLogs = @{}
-              $InstallLogRoot = Join-Path $env:TEMP "IntranetBrowserAgent"
+              $InstallLogRoot = Join-Path $env:TEMP "browser-mcp-server"
               @(Get-ChildItem -LiteralPath $InstallLogRoot `
-                  -Filter "INSTALL-WINDOWS-PILOT-*.log" `
+                  -Filter "INSTALL-*.log" `
                   -ErrorAction SilentlyContinue) | ForEach-Object {
                   $KnownLogs[$_.FullName] = $true
               }
@@ -1389,7 +1394,7 @@ jobs:
                   throw "One-click $Label upgrade failed with exit code $ExitText."
               }
               $NewLogs = @(Get-ChildItem -LiteralPath $InstallLogRoot `
-                  -Filter "INSTALL-WINDOWS-PILOT-*.log" -ErrorAction Stop |
+                  -Filter "INSTALL-*.log" -ErrorAction Stop |
                   Where-Object { -not $KnownLogs.ContainsKey($_.FullName) })
               if ($NewLogs.Count -ne 1) {
                   throw "One-click $Label upgrade did not create exactly one installer log."
@@ -1413,7 +1418,7 @@ jobs:
           $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
               ConvertFrom-Json
           $RegisteredToken = [string]$ClaudePayload.mcpServers.`
-              'intranet-browser-agent'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
+              'browser-mcp'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
           if ($Manifest.mode -ne "extension" -or
               $Manifest.browser.manualConnectionApproval -ne $false -or
               $Manifest.interaction.snapshotStrategy -ne "full" -or
@@ -1431,7 +1436,7 @@ jobs:
           # it does not claim that a human folder-picker load survives restart.
           $UpgradeApproval = Get-Content -LiteralPath (Join-Path `
               $env:TRANSFER_ROOT `
-              "toolkit\config\playwright-extension-source.json") `
+              "payload\toolkit\config\playwright-extension-source.json") `
               -Raw | ConvertFrom-Json
           $UpgradeUnpacked = Join-Path $AgentRoot `
               "browser-extension\$($UpgradeApproval.version)\unpacked"
@@ -1505,7 +1510,7 @@ jobs:
               $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
                   ConvertFrom-Json
               $RegisteredToken = [string]$ClaudePayload.mcpServers.`
-                  'intranet-browser-agent'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
+                  'browser-mcp'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN
               $SummaryText = Get-Content -LiteralPath (Join-Path $AgentRoot `
                   "INSTALLATION.txt") -Raw
               if ($Manifest.mode -ne "extension" -or
@@ -1585,7 +1590,7 @@ jobs:
           $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
               ConvertFrom-Json
           $RegisteredEnvironment = $ClaudePayload.mcpServers.`
-              'intranet-browser-agent'.env
+              'browser-mcp'.env
           $DedicatedProfile = Join-Path $AgentRoot "browser-profile\pilot"
           if ($Manifest.mode -ne "persistent" -or
               $Manifest.browser.headless -ne $true -or
@@ -1611,7 +1616,7 @@ jobs:
           $ClaudePayload = Get-Content -LiteralPath $UserConfigPath -Raw |
               ConvertFrom-Json
           $RegisteredEnvironment = $ClaudePayload.mcpServers.`
-              'intranet-browser-agent'.env
+              'browser-mcp'.env
           if ($Manifest.mode -ne "persistent" -or
               $Manifest.browser.headless -ne $true -or
               [IO.Path]::GetFullPath([string]$Manifest.browser.userDataDir) -ine
@@ -1636,7 +1641,7 @@ jobs:
           }
           Write-Host "CI ONE-CLICK DEDICATED SETTINGS UPGRADE PRESERVED"
 
-          $OfflineRule = "Intranet Browser Agent settings offline $env:GITHUB_RUN_ID"
+          $OfflineRule = "browser-mcp-server settings offline $env:GITHUB_RUN_ID"
           try {
               New-NetFirewallRule -DisplayName $OfflineRule `
                   -Direction Outbound -Program $env:CHROME_EXE `
@@ -1649,7 +1654,7 @@ jobs:
                       "bin\intranet-browser-agent-mcp.js") `
                   --playwright-config $PlaywrightConfigPath `
                   --environment-policy (Join-Path $env:TRANSFER_ROOT `
-                      "toolkit\config\windows-mcp-environment.json") `
+                      "payload\toolkit\config\windows-mcp-environment.json") `
                   --browser-channel chrome `
                   --browser-executable $env:CHROME_EXE
               if ($LASTEXITCODE -ne 0) {
@@ -1679,7 +1684,7 @@ jobs:
           if ($Manifest.mode -ne "extension" -or
               $Manifest.browser.manualConnectionApproval -ne $true -or
               $null -ne $ClaudePayload.mcpServers.`
-                  'intranet-browser-agent'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
+                  'browser-mcp'.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN) {
               throw "The safe extension-session baseline was not restored."
           }
 
@@ -1833,8 +1838,8 @@ jobs:
           }
           Remove-Item -LiteralPath $FakeEventsPath -Force
           $SettingsLogs = @(Get-ChildItem -LiteralPath (Join-Path $env:TEMP `
-              "IntranetBrowserAgent") `
-              -Filter "BROWSER-AGENT-SETTINGS-*.log" -ErrorAction Stop)
+              "browser-mcp-server") `
+              -Filter "CONFIGURE-*.log" -ErrorAction Stop)
           if (-not ($SettingsLogs | Where-Object {
               Select-String -LiteralPath $_.FullName `
                   -SimpleMatch "FAILED:" -Quiet
@@ -1864,69 +1869,38 @@ jobs:
           $global:LASTEXITCODE = 0
           Write-Host "WINDOWS POST-INSTALL SETTINGS PASSED"
 
-      - name: Build and verify the one-extract Windows user package
+      - name: Re-verify the exact public Windows ZIP for delivery
         if: success()
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          $ReadyOutput = Join-Path $env:RUNNER_TEMP "windows-ready"
-          $ReadyExtract = Join-Path $env:RUNNER_TEMP "windows-ready-verify"
-          New-Item -ItemType Directory -Path $ReadyOutput -Force | Out-Null
-          New-Item -ItemType Directory -Path $ReadyExtract -Force | Out-Null
-          $ReadyName = "intranet-browser-agent-transfer-1.0.16-windows-x64-ready.zip"
-          $ReadyArchive = Join-Path $ReadyOutput $ReadyName
-
-          # Passing the directory itself (not its children) keeps exactly one
-          # top-level transfer directory in the user-facing ZIP.
-          Compress-Archive -LiteralPath $env:TRANSFER_ROOT `
-              -DestinationPath $ReadyArchive -CompressionLevel Optimal
-          if (-not (Test-Path -LiteralPath $ReadyArchive -PathType Leaf)) {
-              throw "The one-extract Windows user package was not created."
+          $ReadyArchive = [IO.Path]::GetFullPath($env:TRANSFER_ARCHIVE)
+          $ReadyName = [IO.Path]::GetFileName($ReadyArchive)
+          if ($ReadyName -ne "browser-mcp-server-1.0.16-windows-x64.zip") {
+              throw "Unexpected public package name: $ReadyName"
           }
-
-          Expand-Archive -LiteralPath $ReadyArchive -DestinationPath $ReadyExtract
-          $ReadyRoots = @(Get-ChildItem -LiteralPath $ReadyExtract -Directory)
-          $ReadyLooseFiles = @(Get-ChildItem -LiteralPath $ReadyExtract -File)
-          if ($ReadyRoots.Count -ne 1 -or $ReadyLooseFiles.Count -ne 0) {
-              throw "The ready ZIP must contain exactly one top-level directory."
-          }
-          if ($ReadyRoots[0].Name -ne (Split-Path -Leaf $env:TRANSFER_ROOT)) {
-              throw "The ready ZIP top-level directory name changed unexpectedly."
-          }
-          python .\scripts\verify-bundle.py $ReadyRoots[0].FullName
+          python .\scripts\verify-bundle.py $ReadyArchive
           if ($LASTEXITCODE -ne 0) {
-              throw "The extracted one-extract Windows user package is invalid."
+              throw "The exact public Windows ZIP failed final verification."
           }
-
-          function Get-ContentMap {
-              param([Parameter(Mandatory = $true)][string]$Root)
-              $Prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
-              return @(Get-ChildItem -LiteralPath $Root -File -Recurse |
-                  ForEach-Object {
-                      $Relative = $_.FullName.Substring($Prefix.Length).Replace('\', '/')
-                      $Hash = (Get-FileHash -LiteralPath $_.FullName `
-                          -Algorithm SHA256).Hash.ToLowerInvariant()
-                      "$Relative`t$($_.Length)`t$Hash"
-                  } | Sort-Object)
+          $ReadySidecar = "$ReadyArchive.sha256"
+          if (-not (Test-Path -LiteralPath $ReadySidecar -PathType Leaf)) {
+              throw "The public ZIP sidecar checksum is missing."
           }
-
-          $SourceMap = @(Get-ContentMap -Root $env:TRANSFER_ROOT)
-          $ReadyMap = @(Get-ContentMap -Root $ReadyRoots[0].FullName)
-          $ContentDifferences = @(Compare-Object -ReferenceObject $SourceMap `
-              -DifferenceObject $ReadyMap -SyncWindow 0)
-          if ($ContentDifferences.Count -ne 0) {
-              throw "The ready ZIP is not a byte-identical repack of the gate-passed transfer directory."
-          }
-
           $ReadyHash = (Get-FileHash -LiteralPath $ReadyArchive `
               -Algorithm SHA256).Hash.ToLowerInvariant()
-          $Utf8NoBom = New-Object Text.UTF8Encoding($false)
-          [IO.File]::WriteAllText(
-              "$ReadyArchive.sha256",
-              "$ReadyHash  $ReadyName`n",
-              $Utf8NoBom
-          )
-          Copy-Item -LiteralPath "$ReadyArchive.sha256" `
+          $ExpectedSidecar = [Text.Encoding]::UTF8.GetBytes(
+              ("{0}  {1}`n" -f $ReadyHash, $ReadyName))
+          $ActualSidecar = [IO.File]::ReadAllBytes($ReadySidecar)
+          if ($ExpectedSidecar.Length -ne $ActualSidecar.Length) {
+              throw "The public ZIP sidecar is not the canonical checksum for the exact archive."
+          }
+          for ($Index = 0; $Index -lt $ExpectedSidecar.Length; $Index++) {
+              if ($ExpectedSidecar[$Index] -ne $ActualSidecar[$Index]) {
+                  throw "The public ZIP sidecar is not the canonical checksum for the exact archive."
+              }
+          }
+          Copy-Item -LiteralPath $ReadySidecar `
               -Destination (Join-Path $env:RUNNER_TEMP `
                   "windows-evidence\ready.zip.sha256")
           "READY_ARCHIVE=$ReadyArchive" |
@@ -1942,22 +1916,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Upload the one-extract Windows user package without another ZIP wrapper
+      - name: Upload the public Windows ZIP and checksum without another wrapper
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          path: ${{ env.READY_ARCHIVE }}
-          archive: false
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload the publisher transfer archive and checksum
-        if: success()
-        uses: actions/upload-artifact@v7
-        with:
-          name: intranet-browser-agent-transfer-1.0.16-windows-x64-publisher-${{ github.run_id }}
+          name: browser-mcp-server-1.0.16-windows-x64-${{ github.run_id }}
           path: |
-            ${{ env.TRANSFER_ARCHIVE }}
-            ${{ env.TRANSFER_ARCHIVE }}.sha256
+            ${{ env.READY_ARCHIVE }}
+            ${{ env.READY_ARCHIVE }}.sha256
+          archive: false
           if-no-files-found: error
           retention-days: 30

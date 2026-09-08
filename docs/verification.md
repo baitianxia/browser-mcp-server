@@ -1,6 +1,16 @@
 # 本次验证记录
 
-状态：截至 2026-09-01 的验证证据快照，不是规范性设计文档。
+状态：历史验证证据档案，不是规范性设计文档。当前契约以 `README.md`、`docs/architecture.md`、`docs/acceptance.md` 和 `docs/operations.md` 为准。
+
+## 统一 Windows 交付整改状态（2026-09-07）
+
+当前工作树已经把用户身份收敛为 `browser-mcp-server` / “浏览器助手” / `browser-mcp`，公共包收敛为 `browser-mcp-server-<版本>-windows-x64.zip`，安装与配置根目录收敛为 `%USERPROFILE%\browser-mcp-server`。历史身份、旧 MCP 别名和旧目录迁移明确不属于本次 breaking release。
+
+本次本地验证只证明 Python 回归、静态结构和可在当前主机运行的打包校验；当前 macOS 主机没有执行 Windows PowerShell 5.1、Windows x64 原生运行包构建、目标安装/升级/卸载、Chrome/Edge 扩展或真实 Claude user-scope 门禁。因此还不能把当前工作树标为 Windows 已放行。原生门禁完成后，应在本节追加实际 run、提交、ZIP SHA-256、门禁日志和人工边界证据。
+
+## 历史 1.0.x 证据（已被统一身份和交付契约取代）
+
+以下章节保留旧版本故障与修复证据。它们出现的旧包名、旧 MCP 名称、`%LOCALAPPDATA%` 路径和旧 launcher 只描述当时制品，不是当前安装说明，也不能覆盖现行规范。
 
 ## 1.0.16 Windows 验证状态（CI 已放行）
 

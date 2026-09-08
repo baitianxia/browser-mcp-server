@@ -1,28 +1,28 @@
 {
   "$schema": "../schema/deployment.schema.json",
   "schemaVersion": 1,
-  "deploymentId": "corp-browser-agent-windows-prod",
+  "deploymentId": "browser-mcp-server-windows-prod",
   "environment": "production",
   "target": {
     "os": "windows",
     "arch": "x64"
   },
   "mode": "persistent",
-  "installRoot": "C:\\ProgramData\\IntranetBrowserAgent\\current",
-  "nodeExecutable": "C:\\ProgramData\\IntranetBrowserAgent\\current\\node\\node.exe",
-  "configRoot": "C:\\ProgramData\\IntranetBrowserAgent\\config\\prod",
+  "installRoot": "C:\\ProgramData\\browser-mcp-server\\current",
+  "nodeExecutable": "C:\\ProgramData\\browser-mcp-server\\current\\node\\node.exe",
+  "configRoot": "C:\\ProgramData\\browser-mcp-server\\config\\prod",
   "workspaceRoots": [
-    "C:\\BrowserAgent\\Workspace"
+    "C:\\browser-mcp-server\\Workspace"
   ],
   "output": {
-    "directory": "C:\\ProgramData\\IntranetBrowserAgent\\output\\prod",
+    "directory": "C:\\ProgramData\\browser-mcp-server\\output\\prod",
     "maxBytes": 104857600,
     "retainSession": false,
     "retentionDays": 0
   },
   "browser": {
     "channel": "chrome",
-    "userDataDir": "C:\\ProgramData\\IntranetBrowserAgent\\profiles\\prod",
+    "userDataDir": "C:\\ProgramData\\browser-mcp-server\\profiles\\prod",
     "profileOwner": "REPLACE-ME-WINDOWS-ACCOUNT",
     "maxConcurrentAgents": 1
   },

@@ -27,7 +27,7 @@ $Registrar = Join-Path $PSScriptRoot "register_claude_user_mcp.py"
 $McpSmoke = Join-Path $PSScriptRoot "smoke_playwright_mcp.py"
 $Discovery = Join-Path $PSScriptRoot "windows-tool-discovery.ps1"
 $BrowserAgent = Join-Path $MaintenanceVersionRoot "tools\browser_agent.py"
-$ConfigRoot = Join-Path $AgentRoot "config\pilot"
+$ConfigRoot = Join-Path $AgentRoot "config"
 $InstalledManifest = Join-Path $ConfigRoot "deployment.windows-pilot.json"
 $InstallLockPath = Join-Path $AgentRoot ".install.lock"
 $InstallLockStream = $null
@@ -230,9 +230,7 @@ function Get-ExistingExtensionToken {
         if ($null -eq $ServersProperty -or $null -eq $ServersProperty.Value) {
             return ""
         }
-        $EntryProperty = $ServersProperty.Value.PSObject.Properties[
-            "intranet-browser-agent"
-        ]
+        $EntryProperty = $ServersProperty.Value.PSObject.Properties["browser-mcp"]
         if ($null -eq $EntryProperty -or $null -eq $EntryProperty.Value) {
             return ""
         }
@@ -248,7 +246,17 @@ function Get-ExistingExtensionToken {
             return ""
         }
         $Token = [string]$TokenProperty.Value
-        if ($Token -match '^[A-Za-z0-9_-]{43}$') {
+        if ($Token -notmatch '^[A-Za-z0-9_-]{43}$') {
+            return ""
+        }
+        # Playwright emits an unpadded base64url encoding of 32 random bytes.
+        # Decode and re-encode so a merely shape-valid value is not preserved.
+        $PaddedToken = $Token.Replace('-', '+').Replace('_', '/') + "="
+        $TokenBytes = [Convert]::FromBase64String($PaddedToken)
+        $CanonicalToken = [Convert]::ToBase64String($TokenBytes).TrimEnd(
+            [char]'='
+        ).Replace('+', '-').Replace('/', '_')
+        if ($TokenBytes.Length -eq 32 -and $CanonicalToken -ceq $Token) {
             return $Token
         }
     } catch {
@@ -295,6 +303,21 @@ function Normalize-ExtensionToken {
     if ($Token -notmatch '^[A-Za-z0-9_-]{43}$') {
         throw "扩展令牌格式不正确。"
     }
+    try {
+        # Playwright emits an unpadded base64url encoding of exactly 32 random
+        # bytes.  Shape-only validation would allow a malformed value to reach
+        # the user-scope Claude configuration.
+        $PaddedToken = $Token.Replace('-', '+').Replace('_', '/') + "="
+        $TokenBytes = [Convert]::FromBase64String($PaddedToken)
+        $CanonicalToken = [Convert]::ToBase64String($TokenBytes).TrimEnd(
+            [char]'='
+        ).Replace('+', '-').Replace('/', '_')
+        if ($TokenBytes.Length -ne 32 -or $CanonicalToken -cne $Token) {
+            throw "invalid token"
+        }
+    } catch {
+        throw "扩展令牌格式不正确。"
+    }
     return $Token
 }
 
@@ -304,13 +327,13 @@ try {
     }
     if (-not $script:LogPath) {
         $LogDirectory = Join-Path ([IO.Path]::GetTempPath()) `
-            "IntranetBrowserAgent"
+            "browser-mcp-server"
         $script:LogPath = Join-Path $LogDirectory (
-            "BROWSER-AGENT-SETTINGS-{0}-{1}.log" -f `
+            "CONFIGURE-{0}-{1}.log" -f `
                 $PID, (Get-Random -Minimum 1000 -Maximum 9999)
         )
     }
-    Write-SettingsLog "Browser Agent settings started"
+    Write-SettingsLog "browser-mcp-server settings started"
 
     foreach ($RequiredPath in @(
         $Configurator, $Registrar, $McpSmoke, $Discovery, $BrowserAgent,
@@ -416,7 +439,7 @@ try {
 
     if ($BrowserMode -eq "interactive") {
         Write-Host ""
-        Write-Host "Browser Agent 设置" -ForegroundColor Cyan
+        Write-Host "browser-mcp-server 设置" -ForegroundColor Cyan
         Write-Host "  1. 使用现有浏览器和登录态"
         Write-Host "  2. 使用独立浏览器 Profile（不共享原 Chrome/Edge 登录态）"
         $DefaultModeChoice = if ($CurrentMode -eq "extension") { "1" } else { "2" }
@@ -507,7 +530,7 @@ try {
     Invoke-Python @(
         $Configurator,
         "assert-user-paths",
-        "--local-app-data", ([IO.Path]::GetFullPath($env:LOCALAPPDATA)),
+        "--user-profile", ([IO.Path]::GetFullPath($env:USERPROFILE)),
         "--path", $AgentRoot,
         "--path", $ConfigRoot,
         "--path", $DedicatedProfile,
@@ -529,6 +552,9 @@ try {
         "--manifest", $InstalledManifest,
         "--manifest-out", $StageManifest,
         "--render-out", $StageRendered,
+        "--agent-root", $AgentRoot,
+        "--config-root", $ConfigRoot,
+        "--dedicated-user-data-dir", $DedicatedProfile,
         "--browser-mode", $BrowserMode,
         "--headless", $(if ($DisplayMode -eq "headless") { "true" } else { "false" }),
         "--extension-authorization", $ExtensionAuthorization,
@@ -539,7 +565,7 @@ try {
     Copy-Item -LiteralPath $StageManifest `
         -Destination (Join-Path $StageDeploy "deployment.windows-pilot.json")
     foreach ($Name in @(
-        "playwright.config.json", "interaction.config.json", ".mcp.json", "deployment.lock.json",
+        "playwright.config.json", "interaction.config.json", "settings.json", ".mcp.json", "deployment.lock.json",
         "CLAUDE.browser.md", "DEPLOYMENT.txt"
     )) {
         Copy-Item -LiteralPath (Join-Path $StageRendered $Name) `
@@ -597,10 +623,11 @@ try {
         $RegistrarArguments += @("--claude-prefix", [string]$PrefixArgument)
     }
     $RegistrarArguments += @(
-        "--server-name", "intranet-browser-agent",
+        "--server-name", "browser-mcp",
         "--node-executable", $NodeExe,
         "--playwright-cli", $PlaywrightCli,
         "--playwright-config", (Join-Path $ConfigRoot "playwright.config.json"),
+        "--browser-settings", (Join-Path $ConfigRoot "settings.json"),
         "--browser-channel", $BrowserChannel,
         "--browser-executable", $BrowserExecutable,
         "--user-config", $ClaudeUserConfigPath,
@@ -608,7 +635,7 @@ try {
     )
     if ($ExtensionToken) {
         $TokenInputEnvironmentName = `
-            "INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"
+            "BROWSER_MCP_EXTENSION_TOKEN_INPUT"
         $PreviousTokenInput = [Environment]::GetEnvironmentVariable(
             $TokenInputEnvironmentName,
             [EnvironmentVariableTarget]::Process

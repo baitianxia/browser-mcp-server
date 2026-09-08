@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and render a fail-closed intranet Browser Agent deployment."""
+"""Validate and render a fail-closed browser-mcp-server deployment."""
 
 from __future__ import annotations
 
@@ -757,6 +757,36 @@ def _render_interaction(manifest: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _render_settings(manifest: dict[str, Any]) -> dict[str, Any]:
+    browser = manifest["browser"]
+    return {
+        "schemaVersion": 1,
+        "product": "browser-mcp-server",
+        "displayName": "浏览器助手",
+        "mcpServerName": "browser-mcp",
+        "browserMode": manifest["mode"],
+        "browserChannel": browser["channel"],
+        "browserExecutablePath": browser.get("executablePath", ""),
+        "headless": bool(browser.get("headless", False)),
+        "extensionAuthorization": (
+            "session"
+            if browser.get("manualConnectionApproval") is True
+            else "user"
+            if manifest["mode"] == "extension"
+            else "session"
+        ),
+        "snapshotStrategy": manifest["interaction"]["snapshotStrategy"],
+        "compatibilityMode": manifest["interaction"]["compatibilityMode"],
+        "defaultSnapshotDepth": manifest["interaction"]["defaultSnapshotDepth"],
+        "settleMs": manifest["timeouts"]["settleMs"],
+        "installRoot": manifest["installRoot"],
+        "configRoot": manifest["configRoot"],
+        "outputDirectory": manifest["output"]["directory"],
+        "userDataDir": browser.get("userDataDir"),
+        "lastUpdatedUtc": None,
+    }
+
+
 def _join_target_path(manifest: dict[str, Any], root: str, *parts: str) -> str:
     path_type = PureWindowsPath if manifest["target"]["os"] == "windows" else PurePosixPath
     return str(path_type(root).joinpath(*parts))
@@ -796,22 +826,21 @@ def _render_mcp(manifest: dict[str, Any]) -> dict[str, Any]:
             manifest, manifest["installRoot"], "bin", "chrome-devtools-mcp"
         )
         devtools_arguments = []
-    playwright_server: dict[str, Any] = {
+    settings_server: dict[str, Any] = {
         "type": "stdio",
         "command": playwright_command,
         "args": playwright_arguments
         + (
-            [f"--browser={manifest['browser']['channel']}"]
-            + (
-                [f"--executable-path={manifest['browser']['executablePath']}"]
-                if windows
-                else []
-            )
-            if manifest["mode"] in {"extension", "persistent"}
-            and manifest["browser"].get("executablePath")
+            [
+                f"--browser={manifest['browser']['channel']}",
+                f"--executable-path={manifest['browser']['executablePath']}",
+            ]
+            if windows and manifest["mode"] in {"extension", "persistent"}
             else []
         )
         + [
+            "--settings",
+            _join_target_path(manifest, manifest["configRoot"], "settings.json"),
             "--config",
             _join_target_path(
                 manifest, manifest["configRoot"], "playwright.config.json"
@@ -819,10 +848,8 @@ def _render_mcp(manifest: dict[str, Any]) -> dict[str, Any]:
         ],
     }
     if windows:
-        playwright_server["env"] = _load_windows_mcp_environment()
-    servers: dict[str, Any] = {
-        "intranet-browser-agent": playwright_server
-    }
+        settings_server["env"] = _load_windows_mcp_environment()
+    servers: dict[str, Any] = {"browser-mcp": settings_server}
     if manifest["controls"]["devtools"]:
         servers["chrome-devtools"] = {
             "type": "stdio",
@@ -852,6 +879,7 @@ def render(manifest_path: Path, output_dir: Path, force: bool) -> list[Path]:
     generated_names = {
         "playwright.config.json",
         "interaction.config.json",
+        "settings.json",
         ".mcp.json",
         "deployment.lock.json",
         "CLAUDE.browser.md",
@@ -912,6 +940,7 @@ No extension token or login secret belongs in these generated files.
     payloads = {
         "playwright.config.json": _json_bytes(_render_playwright(manifest)),
         "interaction.config.json": _json_bytes(_render_interaction(manifest)),
+        "settings.json": _json_bytes(_render_settings(manifest)),
         ".mcp.json": _json_bytes(_render_mcp(manifest)),
         "deployment.lock.json": _json_bytes(lock),
         "CLAUDE.browser.md": template_path.read_bytes(),
@@ -1085,7 +1114,7 @@ def preflight(
             }
         )
         if target_system == "windows":
-            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            user_profile = os.environ.get("USERPROFILE", "")
             scoped_paths = {
                 "runtime-root": str(runtime_root),
                 "manifest.installRoot": manifest["installRoot"],
@@ -1100,46 +1129,46 @@ def preflight(
             outside = [
                 name
                 for name, value in scoped_paths.items()
-                if not _windows_path_is_within(value, local_app_data)
+                if not _windows_path_is_within(value, user_profile)
             ]
             resolved_outside = [
                 name
                 for name, value in scoped_paths.items()
-                if not _resolved_path_is_within(value, local_app_data)
+                if not _resolved_path_is_within(value, user_profile)
             ]
             linked_paths = [
                 name
                 for name, value in scoped_paths.items()
-                if not _path_has_no_link_below_root(value, local_app_data)
+                if not _path_has_no_link_below_root(value, user_profile)
             ]
             checks.append(
                 {
                     "name": "user-scope-paths",
                     "status": (
                         "pass"
-                        if local_app_data
+                        if user_profile
                         and not outside
                         and not resolved_outside
                         and not linked_paths
                         else "fail"
                     ),
                     "detail": (
-                        f"runtime, config, output, and Profile are under {local_app_data}"
-                        if local_app_data
+                            f"runtime, config, output, and Profile are under {user_profile}"
+                        if user_profile
                         and not outside
                         and not resolved_outside
                         and not linked_paths
                         else (
-                            "LOCALAPPDATA is unavailable"
-                            if not local_app_data
+                            "USERPROFILE is unavailable"
+                            if not user_profile
                             else (
-                                "outside LOCALAPPDATA: " + ", ".join(outside)
+                                "outside USERPROFILE: " + ", ".join(outside)
                                 if outside
                                 else (
-                                    "link/junction resolves outside LOCALAPPDATA: "
+                                    "link/junction resolves outside USERPROFILE: "
                                     + ", ".join(resolved_outside)
                                     if resolved_outside
-                                    else "link/junction below LOCALAPPDATA: "
+                                    else "link/junction below USERPROFILE: "
                                     + ", ".join(linked_paths)
                                 )
                             )
@@ -1282,18 +1311,18 @@ def preflight(
             }
         )
         if target_system == "windows" and manifest.get("mcpScope", "project") == "user":
-            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            user_profile = os.environ.get("USERPROFILE", "")
             inside_user_root = _windows_path_is_within(
-                str(deployed_config), local_app_data
+                str(deployed_config), user_profile
             )
             checks.append(
                 {
                     "name": "playwright-config-user-scope",
                     "status": "pass" if inside_user_root else "fail",
                     "detail": (
-                        f"under current user's LOCALAPPDATA: {deployed_config}"
+                        f"under current user's USERPROFILE: {deployed_config}"
                         if inside_user_root
-                        else f"not under current user's LOCALAPPDATA: {deployed_config}"
+                        else f"not under current user's USERPROFILE: {deployed_config}"
                     ),
                 }
             )
@@ -1335,6 +1364,40 @@ def preflight(
     except (OSError, json.JSONDecodeError) as exc:
         checks.append(
             {"name": "interaction-config", "status": "fail", "detail": str(exc)}
+        )
+
+    settings_config = config_root / "settings.json"
+    try:
+        actual_settings = json.loads(settings_config.read_text(encoding="utf-8"))
+        expected_settings = _render_settings(manifest)
+        settings_matches = actual_settings == expected_settings
+        checks.append(
+            {
+                "name": "browser-settings",
+                "status": "pass" if settings_matches else "fail",
+                "detail": (
+                    "matches deployment manifest"
+                    if settings_matches
+                    else "does not match deployment manifest"
+                ),
+            }
+        )
+        if target_system == "windows" and manifest.get("mcpScope", "project") == "user":
+            settings_under_user = _windows_path_is_within(str(settings_config), os.environ.get("USERPROFILE", ""))
+            checks.append(
+                {
+                    "name": "browser-settings-user-scope",
+                    "status": "pass" if settings_under_user else "fail",
+                    "detail": (
+                        f"under current user's USERPROFILE: {settings_config}"
+                        if settings_under_user
+                        else f"not under current user's USERPROFILE: {settings_config}"
+                    ),
+                }
+            )
+    except (OSError, json.JSONDecodeError) as exc:
+        checks.append(
+            {"name": "browser-settings", "status": "fail", "detail": str(exc)}
         )
 
     deployed_mcp = config_root / ".mcp.json"

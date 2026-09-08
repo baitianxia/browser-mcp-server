@@ -52,7 +52,7 @@ Playwright MCP 官方明确说明 origin allow/block 规则不构成安全边界
 |---|---|---|
 | 内网 VDI/开发机生产基线 | `persistent` | 无 Chrome Store 前置；独立身份边界；可由人完成企业认证 |
 | Windows 通用内网 pilot 初始值 | `extension` | 离线包携带固定官方扩展；逐次批准现有 Tab；可复用目标机当前登录态 |
-| Windows pilot 身份隔离/后台运行 | `persistent` | 安装后设置为独立 `%LOCALAPPDATA%` Profile；不共享原浏览器登录态；可选有头/无头 |
+| Windows pilot 身份隔离/后台运行 | `persistent` | 安装后设置为 `%USERPROFILE%\browser-mcp-server\browser-profile\pilot` 下的独立 Profile；不共享原浏览器登录态；可选有头/无头。Chrome/Edge 的 `%LOCALAPPDATA%` 只用于发现既有 Profile 和扩展状态 |
 | 已有 Chrome Enterprise 扩展治理 | `extension` | 可选择允许的 Tab，并复用企业浏览器插件和现有会话 |
 | 兼容性排障 | `cdp` | 无扩展依赖，但权限面更广，只允许本机连接 |
 | 页面内部诊断 | 可选 DevTools | 获取 Network/Console/Runtime；默认不安装/不启用 |

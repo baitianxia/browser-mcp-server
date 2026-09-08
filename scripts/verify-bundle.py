@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify an extracted Browser Agent runtime or its .tar.gz archive."""
+"""Verify an extracted browser-mcp-server bundle or archive."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import posixpath
 import re
 import stat
 import tarfile
+import zipfile
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
@@ -117,10 +118,26 @@ def load_link_manifest(text: str) -> dict[str, str]:
 
 
 def verify_directory(root: Path) -> list[str]:
+    if is_link_or_reparse(root) or not root.is_dir():
+        return [f"bundle root is not a regular directory: {root}"]
     errors: list[str] = []
     try:
-        expected = parse_sums((root / "SHA256SUMS").read_text(encoding="utf-8"))
-        links = load_link_manifest((root / "SYMLINKS.json").read_text(encoding="utf-8"))
+        sums_candidates = ("SHA256SUMS.txt", "SHA256SUMS")
+        sums_name = next(
+            (
+                name
+                for name in sums_candidates
+                if (root / name).is_file() and not is_link_or_reparse(root / name)
+            ),
+            None,
+        )
+        if sums_name is None:
+            raise ValueError("missing regular SHA256SUMS.txt or SHA256SUMS")
+        expected = parse_sums((root / sums_name).read_text(encoding="utf-8"))
+        links_path = root / "SYMLINKS.json"
+        if links_path.exists() and is_link_or_reparse(links_path):
+            raise ValueError("SYMLINKS.json must be a regular file")
+        links = load_link_manifest(links_path.read_text(encoding="utf-8")) if links_path.exists() else {}
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return [str(exc)]
 
@@ -150,12 +167,18 @@ def verify_directory(root: Path) -> list[str]:
                 seen_links[relative] = target
                 if not link_stays_inside(relative, target):
                     errors.append(f"unsafe symlink: {relative} -> {target}")
-            elif path.is_file() and relative != "SHA256SUMS":
+            elif path.is_file() and relative != sums_name:
                 seen_files.add(relative)
                 if relative not in expected:
                     errors.append(f"unlisted file: {relative}")
                 elif digest_path(path) != expected[relative]:
                     errors.append(f"hash mismatch: {relative}")
+            elif path.is_dir():
+                # Directories are structural entries and are covered by the
+                # integrity manifest through their regular-file descendants.
+                continue
+            elif relative not in {sums_name}:
+                errors.append(f"unsupported filesystem entry type: {relative}")
 
     for missing in sorted(expected.keys() - seen_files):
         errors.append(f"missing file: {missing}")
@@ -171,8 +194,10 @@ def verify_directory(root: Path) -> list[str]:
 
 
 def verify_sidecar(archive: Path) -> list[str]:
+    if archive.is_symlink() or not archive.is_file():
+        return [f"archive is not a regular file: {archive}"]
     sidecar = Path(f"{archive}.sha256")
-    if not sidecar.exists():
+    if sidecar.is_symlink() or not sidecar.is_file():
         return [f"missing archive checksum sidecar: {sidecar}"]
     try:
         raw = sidecar.read_bytes()
@@ -184,6 +209,8 @@ def verify_sidecar(archive: Path) -> list[str]:
 
 
 def verify_archive(archive: Path) -> list[str]:
+    if archive.suffix.lower() == ".zip":
+        return verify_zip_archive(archive)
     errors = verify_sidecar(archive)
     if errors:
         return errors
@@ -278,15 +305,136 @@ def verify_archive(archive: Path) -> list[str]:
     return sorted(set(errors))
 
 
+def _zip_member_is_symlink(member: zipfile.ZipInfo) -> bool:
+    mode = (member.external_attr >> 16) & 0o170000
+    return mode == stat.S_IFLNK
+
+
+def _zip_member_is_special(member: zipfile.ZipInfo) -> bool:
+    """Return true for device, FIFO, or other non-regular POSIX members."""
+    mode = (member.external_attr >> 16) & 0o170000
+    return mode not in {0, stat.S_IFREG, stat.S_IFDIR, stat.S_IFLNK}
+
+
+def verify_zip_archive(archive: Path) -> list[str]:
+    """Verify a single-top-level-directory ZIP with an in-archive checksum list.
+
+    The in-archive manifest is sufficient for an extracted package.  When an
+    adjacent ``.sha256`` exists, it is checked as the canonical UTF-8/LF
+    sidecar; the public release gate requires that sidecar to be present.
+    """
+    errors: list[str] = []
+    if archive.is_symlink() or not archive.is_file():
+        return [f"archive is not a regular file: {archive}"]
+    sidecar = Path(f"{archive}.sha256")
+    if sidecar.is_symlink() or sidecar.exists():
+        errors.extend(verify_sidecar(archive))
+        if errors:
+            return sorted(set(errors))
+    try:
+        with zipfile.ZipFile(archive, "r") as bundle:
+            infos = bundle.infolist()
+            if not infos:
+                return ["archive is empty"]
+            top_levels = {
+                PurePosixPath(info.filename).parts[0]
+                for info in infos
+                if info.filename
+            }
+            if len(top_levels) != 1:
+                return ["archive must contain exactly one top-level directory"]
+            top_level = next(iter(top_levels))
+            if not safe_relative(top_level):
+                return [f"unsafe archive top-level directory: {top_level}"]
+            prefix = top_level + "/"
+            by_relative: dict[str, zipfile.ZipInfo] = {}
+            by_portable_name: dict[str, str] = {}
+            for info in infos:
+                # ZIP member names are always POSIX paths.  Silently converting
+                # backslashes would make a package verify on Unix but resolve to
+                # a different path after extraction on Windows.
+                if "\\" in info.filename or "\x00" in info.filename:
+                    errors.append(f"unsafe archive member: {info.filename}")
+                    continue
+                name = info.filename
+                if name == top_level or name == prefix:
+                    if not info.is_dir():
+                        errors.append("archive top-level entry must be a directory")
+                    continue
+                if not name.startswith(prefix):
+                    errors.append(f"member escapes bundle root: {info.filename}")
+                    continue
+                relative = name[len(prefix):]
+                if info.is_dir() and relative.endswith("/"):
+                    relative = relative.rstrip("/")
+                if not safe_relative(relative):
+                    errors.append(f"unsafe archive member: {info.filename}")
+                    continue
+                if _zip_member_is_symlink(info):
+                    errors.append(f"unsupported archive member type: {info.filename}")
+                    continue
+                if _zip_member_is_special(info):
+                    errors.append(f"unsupported archive member type: {info.filename}")
+                    continue
+                if relative in by_relative:
+                    errors.append(f"duplicate archive member: {relative}")
+                portable_name = relative.casefold()
+                previous_name = by_portable_name.get(portable_name)
+                if previous_name is not None and previous_name != relative:
+                    errors.append(
+                        f"case-colliding archive members: {previous_name} / {relative}"
+                    )
+                by_portable_name[portable_name] = relative
+                by_relative[relative] = info
+
+            sums_member = by_relative.get("SHA256SUMS.txt") or by_relative.get("SHA256SUMS")
+            if sums_member is None:
+                return errors + ["archive is missing SHA256SUMS.txt"]
+            if sums_member.is_dir() or _zip_member_is_symlink(sums_member):
+                return errors + ["archive checksum manifest must be a regular file"]
+            expected = parse_sums(bundle.read(sums_member).decode("utf-8"))
+            links_member = by_relative.get("SYMLINKS.json")
+            links = {}
+            if links_member is not None:
+                if links_member.is_dir() or _zip_member_is_symlink(links_member):
+                    errors.append("archive symlink manifest must be a regular file")
+                else:
+                    links = load_link_manifest(bundle.read(links_member).decode("utf-8"))
+
+            seen_files: set[str] = set()
+            for relative, info in by_relative.items():
+                if info.is_dir() or relative in {"SHA256SUMS.txt", "SHA256SUMS"}:
+                    continue
+                if _zip_member_is_symlink(info):
+                    continue
+                if info.is_dir():
+                    errors.append(f"unsupported archive member type: {relative}")
+                    continue
+                seen_files.add(relative)
+                if relative not in expected:
+                    errors.append(f"unlisted file: {relative}")
+                    continue
+                if hashlib.sha256(bundle.read(info)).hexdigest() != expected[relative]:
+                    errors.append(f"hash mismatch: {relative}")
+
+            for missing in sorted(expected.keys() - seen_files):
+                errors.append(f"missing file: {missing}")
+            if links:
+                errors.append("archive contains unsupported symlink manifest")
+    except (OSError, RuntimeError, zipfile.BadZipFile, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        errors.append(str(exc))
+    return sorted(set(errors))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundle", type=Path)
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args()
     if args.bundle.is_dir():
-        errors = verify_directory(args.bundle.resolve())
+        errors = verify_directory(args.bundle)
     elif args.bundle.is_file():
-        errors = verify_archive(args.bundle.resolve())
+        errors = verify_archive(args.bundle)
     else:
         errors = [f"not found: {args.bundle}"]
     if args.as_json:

@@ -2,6 +2,8 @@
 
 状态：已接受（2026-08-31）
 
+> 2026-09-07 统一 Windows 交付更新：当前 breaking release 的公共制品和入口以 `docs/architecture.md`、`docs/acceptance.md` 和 `docs/operations.md` 为准，即 `browser-mcp-server-<版本>-windows-x64.zip` 与顶层 `INSTALL.cmd`。本文关于发布门禁与目标机单次安装的职责边界继续有效；旧包名或旧入口只描述历史版本。
+
 ## 背景
 
 ADR 0006 曾要求 Windows 安装器在接触真实用户配置前运行假 Claude CLI 注册自检，并要求顶层 launcher 在安装前运行完整发布门禁。该设计把发布者应承担的单元测试、PowerShell AST 扫描和故障矩阵带到了离线目标机。1.0.11 在一台可正常使用 Claude Code 的目标机上因此失败：完整测试中的注册器子进程测试受 30 秒测试超时约束，超过时限后安装在任何功能验证前停止。GitHub Runner 上通过同一测试不能证明任意内网终端都能在该时限内完成开发测试。

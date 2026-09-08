@@ -62,7 +62,7 @@ $InstallSnapshotStrategy = "compact"
 $InstallCompatibilityMode = "robust"
 $ExistingBrowserChannel = ""
 $ExistingExtensionToken = ""
-$TokenInputEnvironmentName = "INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"
+$TokenInputEnvironmentName = "BROWSER_MCP_EXTENSION_TOKEN_INPUT"
 $PreviousTokenInput = $null
 
 function Write-InstallLog {
@@ -177,9 +177,7 @@ function Get-ExistingExtensionToken {
         if ($null -eq $ServersProperty -or $null -eq $ServersProperty.Value) {
             return ""
         }
-        $EntryProperty = $ServersProperty.Value.PSObject.Properties[
-            "intranet-browser-agent"
-        ]
+        $EntryProperty = $ServersProperty.Value.PSObject.Properties["browser-mcp"]
         if ($null -eq $EntryProperty -or $null -eq $EntryProperty.Value) {
             return ""
         }
@@ -387,10 +385,10 @@ function Install-BrowserAgentSettingsTool {
         "templates\CLAUDE.browser.md",
         "tools\browser_agent.py"
     )
-    $LauncherSource = Join-Path $ToolkitRoot `
-        "scripts\BROWSER-AGENT-SETTINGS.cmd"
+    $CanonicalLauncherSource = Join-Path $ToolkitRoot `
+        "scripts\CONFIGURE.cmd"
     foreach ($RelativePath in @($Files) + @(
-        "scripts\BROWSER-AGENT-SETTINGS.cmd"
+        "scripts\CONFIGURE.cmd"
     )) {
         $SourcePath = Join-Path $ToolkitRoot $RelativePath
         if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
@@ -483,8 +481,8 @@ function Install-BrowserAgentSettingsTool {
     }
 
     $LauncherDestination = Join-Path $AgentRoot `
-        "BROWSER-AGENT-SETTINGS.cmd"
-    Publish-FileAtomically -Source $LauncherSource -Destination $LauncherDestination
+        "CONFIGURE.cmd"
+    Publish-FileAtomically -Source $CanonicalLauncherSource -Destination $LauncherDestination
     $VersionMarkerSource = Join-Path $StagingRoot (
         "current-version-" + [guid]::NewGuid().ToString("N") + ".txt"
     )
@@ -729,7 +727,7 @@ try {
     }
 
     if (-not $LogPath) {
-        $LogPath = Join-Path $env:TEMP "IntranetBrowserAgent\INSTALL-WINDOWS-PILOT.log"
+        $LogPath = Join-Path $env:TEMP "browser-mcp-server\INSTALL.log"
         $script:LogPath = $LogPath
     }
     try {
@@ -774,6 +772,14 @@ try {
     Write-InstallLog ("CLAUDE: kind={0}; command={1}" -f `
         $ClaudeInvocation.Kind, $ClaudeInvocation.CommandPath)
 
+    # Public Windows delivery has a single top-level directory.  The installer
+    # runs from its payload subdirectory, while the checksum and public release
+    # manifest live one level above it.
+    $PackageRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+    if ([IO.Path]::GetFileName($PSScriptRoot).ToLowerInvariant() -ne "payload") {
+        throw "安装器必须从公共 ZIP 的 payload 目录运行。"
+    }
+    $ReleaseManifestPath = Join-Path $PackageRoot "release-manifest.json"
     $ToolkitRoot = Join-Path $PSScriptRoot "toolkit"
     $Verifier = Join-Path $ToolkitRoot "scripts\verify-bundle.py"
     $ReleaseMetadataVerifier = Join-Path $ToolkitRoot `
@@ -787,8 +793,8 @@ try {
     $McpRegistrar = Join-Path $ToolkitRoot "scripts\register_claude_user_mcp.py"
     $McpSmoke = Join-Path $ToolkitRoot "scripts\smoke_playwright_mcp.py"
     $BrowserAgent = Join-Path $ToolkitRoot "tools\browser_agent.py"
-    $SettingsLauncher = Join-Path $ToolkitRoot `
-        "scripts\BROWSER-AGENT-SETTINGS.cmd"
+    $CanonicalSettingsLauncher = Join-Path $ToolkitRoot `
+        "scripts\CONFIGURE.cmd"
     $SettingsScript = Join-Path $ToolkitRoot `
         "scripts\BROWSER-AGENT-SETTINGS.ps1"
     $KitMetadataPath = Join-Path $PSScriptRoot "KIT-METADATA.json"
@@ -804,23 +810,34 @@ try {
         $McpRegistrar,
         $McpSmoke,
         $BrowserAgent,
-        $SettingsLauncher,
+        $CanonicalSettingsLauncher,
         $SettingsScript,
-        $KitMetadataPath
+        $KitMetadataPath,
+        $ReleaseManifestPath
     )) {
         if (-not (Test-Path -LiteralPath $RequiredPath -PathType Leaf)) {
             throw "迁移包不完整，缺少：$RequiredPath"
         }
     }
-    Invoke-Python @($Verifier, $PSScriptRoot)
+    Invoke-Python @($Verifier, $PackageRoot)
+    Invoke-Python @($ReleaseMetadataVerifier, $ReleaseManifestPath)
     Invoke-Python @($ReleaseMetadataVerifier, $KitMetadataPath)
 
+    $ReleaseManifest = Get-Content -LiteralPath $ReleaseManifestPath -Raw | ConvertFrom-Json
     $KitMetadata = Get-Content -LiteralPath $KitMetadataPath -Raw | ConvertFrom-Json
     $RuntimeMetadata = $KitMetadata.runtime
     $BuildMetadata = $RuntimeMetadata.buildMetadata
     $ToolkitVersion = [string]$KitMetadata.toolkitVersion
     if ($ToolkitVersion -ne [string]$BuildMetadata.runtimeVersion) {
         throw "迁移包设置工具版本与运行时版本不一致。"
+    }
+    if ([string]$ReleaseManifest.version -ne $ToolkitVersion -or
+        [string]$ReleaseManifest.package.name -ne (
+            "browser-mcp-server-{0}-windows-x64" -f $ToolkitVersion
+        ) -or
+        [string]$ReleaseManifest.traceability.runtimeArchive -ne [string]$RuntimeMetadata.archive -or
+        [string]$ReleaseManifest.traceability.runtimeSha256 -ne [string]$RuntimeMetadata.sha256) {
+        throw "公共发布清单与包内运行时元数据不一致。"
     }
     $BrowserExtensionProperty = $KitMetadata.PSObject.Properties["browserExtension"]
     if ($null -eq $BrowserExtensionProperty -or
@@ -883,26 +900,30 @@ try {
     $RequestedBrowserChannel = $BrowserChannel
     $ProfileOwner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $LocalAppDataRoot = [IO.Path]::GetFullPath($env:LOCALAPPDATA).TrimEnd("\")
-    $AgentRoot = [IO.Path]::GetFullPath((Join-Path $LocalAppDataRoot "IntranetBrowserAgent"))
+    $UserProfileRoot = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd("\")
+    $AgentRoot = [IO.Path]::GetFullPath((Join-Path $UserProfileRoot "browser-mcp-server"))
     if (-not $AgentRoot.StartsWith(
-        $LocalAppDataRoot + "\",
+        $UserProfileRoot + "\",
         [StringComparison]::OrdinalIgnoreCase
     )) {
-        throw "用户安装目录必须位于 LOCALAPPDATA 下。"
+        throw "用户安装目录必须位于 USERPROFILE 下。"
     }
     $ReleaseRoot = Join-Path $AgentRoot "releases"
     $RuntimeName = $RuntimeArchiveName -replace '\.tar\.gz$', ''
     $RuntimeRoot = Join-Path $ReleaseRoot $RuntimeName
-    $ConfigRoot = Join-Path $AgentRoot "config\pilot"
-    $OutputDirectory = Join-Path $AgentRoot "output\pilot"
+    $ConfigRoot = Join-Path $AgentRoot "config"
+    $OutputDirectory = Join-Path $AgentRoot "output"
     $DedicatedProfile = Join-Path $AgentRoot "browser-profile\pilot"
+    $UpgradeSourceAgentRoot = $AgentRoot
+    $UpgradeSourceConfigRoot = $ConfigRoot
+    $UpgradeSourceDedicatedProfile = $DedicatedProfile
     $ExtensionInstallRoot = Join-Path $AgentRoot "browser-extension\$ExtensionVersion"
     $InstalledExtensionCrx = Join-Path $ExtensionInstallRoot ([IO.Path]::GetFileName($ExtensionSourcePath))
     $InstalledExtensionUnpacked = Join-Path $ExtensionInstallRoot "unpacked"
     Invoke-Python @(
         $Configurator,
         "assert-user-paths",
-        "--local-app-data", $LocalAppDataRoot,
+        "--user-profile", $UserProfileRoot,
         "--path", $AgentRoot,
         "--path", $ReleaseRoot,
         "--path", $RuntimeRoot,
@@ -914,7 +935,7 @@ try {
         "--path", (Join-Path $AgentRoot "staging"),
         "--path", (Join-Path $AgentRoot "backups"),
         "--path", (Join-Path $AgentRoot "maintenance"),
-        "--path", (Join-Path $AgentRoot "BROWSER-AGENT-SETTINGS.cmd"),
+        "--path", (Join-Path $AgentRoot "CONFIGURE.cmd"),
         "--path", (Join-Path $AgentRoot ".install.lock")
     )
 
@@ -928,7 +949,7 @@ try {
             [IO.FileShare]::None
         )
     } catch {
-        throw "另一个安装或升级进程正在使用当前用户的 Browser Agent 目录。"
+        throw "另一个安装或升级进程正在使用当前用户的 browser-mcp-server 目录。"
     }
     New-Item -ItemType Directory -Path $ReleaseRoot -Force | Out-Null
     $StagingRoot = Join-Path $AgentRoot "staging"
@@ -937,11 +958,11 @@ try {
         ("pilot-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 
-    $InstalledManifestBeforeUpgrade = Join-Path $ConfigRoot `
+    $InstalledManifestBeforeUpgrade = Join-Path $UpgradeSourceConfigRoot `
         "deployment.windows-pilot.json"
-    if (Test-Path -LiteralPath $ConfigRoot) {
-        if (-not (Test-Path -LiteralPath $ConfigRoot -PathType Container)) {
-            throw "已有配置路径不是目录；未修改原安装：$ConfigRoot"
+    if (Test-Path -LiteralPath $UpgradeSourceConfigRoot) {
+        if (-not (Test-Path -LiteralPath $UpgradeSourceConfigRoot -PathType Container)) {
+            throw "已有配置路径不是目录；未修改原安装：$UpgradeSourceConfigRoot"
         }
         if (-not (Test-Path -LiteralPath $InstalledManifestBeforeUpgrade `
                 -PathType Leaf)) {
@@ -953,9 +974,9 @@ try {
             $Configurator,
             "inspect-upgrade",
             "--manifest", $InstalledManifestBeforeUpgrade,
-            "--agent-root", $AgentRoot,
-            "--config-root", $ConfigRoot,
-            "--dedicated-user-data-dir", $DedicatedProfile,
+            "--agent-root", $UpgradeSourceAgentRoot,
+            "--config-root", $UpgradeSourceConfigRoot,
+            "--dedicated-user-data-dir", $UpgradeSourceDedicatedProfile,
             "--preferences-out", $UpgradePreferencesPath
         )
         $UpgradePreferences = Get-Content -LiteralPath $UpgradePreferencesPath `
@@ -982,10 +1003,6 @@ try {
         Write-InstallLog "UPGRADE SETTINGS PRESERVED: $PreservedSettings"
         Write-Host "检测到已有安装，将保留用户设置：$PreservedSettings" `
             -ForegroundColor Green
-        if ($UpgradePreferences.legacyInteractionDefaultsApplied -eq $true) {
-            Write-Host "旧版本没有交互选项；仅为新增选项采用精简快照和动态兼容默认值。"
-            Write-InstallLog "UPGRADE LEGACY INTERACTION DEFAULTS APPLIED"
-        }
     }
 
     if ($RequestedBrowserChannel -eq "auto") {
@@ -1472,6 +1489,7 @@ try {
     foreach ($Name in @(
         "playwright.config.json",
         "interaction.config.json",
+        "settings.json",
         ".mcp.json",
         "deployment.lock.json",
         "CLAUDE.browser.md",
@@ -1545,7 +1563,7 @@ try {
         $ClaudeUserConfigBackup = Join-Path $BackupRoot "claude-user-config.absent"
     }
 
-    $McpServerName = "intranet-browser-agent"
+    $McpServerName = "browser-mcp"
     $RegistrarArguments = @(
         $McpRegistrar,
         "register",
@@ -1561,6 +1579,7 @@ try {
         "--node-executable", $NodeExe,
         "--playwright-cli", $PlaywrightCliPath,
         "--playwright-config", $PlaywrightConfigPath,
+        "--browser-settings", (Join-Path $ConfigRoot "settings.json"),
         "--browser-channel", $BrowserChannel,
         "--browser-executable", $BrowserExecutable,
         "--user-config", $ClaudeUserConfigPath,
@@ -1619,7 +1638,7 @@ try {
         )
         $NextSummary = (
             "Next: restart Claude Code in any project, run /mcp to confirm " +
-            "intranet-browser-agent, connect an existing browser tab, and " +
+            "browser-mcp, connect an existing browser tab, and " +
             "perform a read-only page-title test first."
         )
     } else {
@@ -1630,7 +1649,7 @@ try {
         )
         $NextSummary = (
             "Next: restart Claude Code in any project, run /mcp to confirm " +
-            "intranet-browser-agent, and perform a read-only page-title test first."
+            "browser-mcp, and perform a read-only page-title test first."
         )
     }
     $InteractionSummary = (
@@ -1638,7 +1657,7 @@ try {
             $InstallSnapshotStrategy, $InstallCompatibilityMode
     )
     $Summary = @"
-Windows Browser Agent pilot is installed.
+browser-mcp-server（浏览器助手）Windows pilot is installed.
 
 Install type: $InstallTypeSummary
 Runtime: $RuntimeRoot
@@ -1648,7 +1667,7 @@ Browser mode: $BrowserModeSummary
 Interaction: $InteractionSummary
 Extension install method: $ExtensionInstallMethod
 Backup: $BackupRoot
-Settings: $(Join-Path $AgentRoot "BROWSER-AGENT-SETTINGS.cmd")
+Settings: $(Join-Path $AgentRoot "CONFIGURE.cmd")
 
 $NextSummary
 "@
@@ -1662,7 +1681,7 @@ $NextSummary
     }
     Write-InstallLog "SUCCESS: installation and preflight completed"
     Write-Host "安装和 preflight 已完成。" -ForegroundColor Green
-    Write-Host "下一步：重启 Claude Code，在任意项目中输入 /mcp 查看 intranet-browser-agent。"
+    Write-Host "下一步：重启 Claude Code，在任意项目中输入 /mcp 查看 browser-mcp（浏览器助手）。"
     if ($InstallBrowserMode -eq "extension") {
         if ($InstallExtensionAuthorization -eq "user") {
             Write-Host "扩展已设置为记住当前 Windows 用户；选择要控制的现有浏览器标签页即可。"
@@ -1674,7 +1693,7 @@ $NextSummary
     } else {
         Write-Host "当前使用独立有头 Profile；需要登录时请在弹出的专用浏览器窗口完成登录。"
     }
-    Write-Host "后续切换授权、无头、独立 Profile、快照或页面兼容方式：$AgentRoot\BROWSER-AGENT-SETTINGS.cmd"
+    Write-Host "后续切换授权、无头、独立 Profile、快照或页面兼容方式：$AgentRoot\CONFIGURE.cmd"
     if ($SummaryWritten) {
         Write-Host "安装摘要：$SummaryPath"
     }

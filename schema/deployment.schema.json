@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/intranet-browser-agent/deployment.schema.json",
-  "title": "Intranet Browser Agent deployment manifest",
+  "$id": "https://example.invalid/browser-mcp-server/deployment.schema.json",
+  "title": "browser-mcp-server deployment manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [

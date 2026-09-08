@@ -2,6 +2,8 @@
 
 状态：已接受；2026-09-01 由 ADR-0009 扩展安装后浏览器设置，以下 Extension 约束描述一键安装初始值。
 
+> 2026-09-07 统一 Windows 交付更新：当前 breaking release 的用户契约由 `docs/architecture.md`、`docs/acceptance.md` 和 `docs/operations.md` 取代本文中旧的工程/MCP 名称、`%LOCALAPPDATA%` 安装根目录、旧设置入口和迁移描述。当前身份是 `browser-mcp-server` / `browser-mcp`，根目录是 `%USERPROFILE%\browser-mcp-server`，入口是 `INSTALL.cmd`；本文仅保留历史决策依据。
+
 ## 背景
 
 Windows 通用内网试点要让当前用户在任意 Claude Code 项目中使用同一个本地 Playwright MCP。项目目录不是 MCP 服务的运行前提；只有 project scope 才需要在项目根写 `.mcp.json`。此前向导固定创建 `C:\BrowserAgent\Workspace`，把机器级工具错误绑定到单个项目。

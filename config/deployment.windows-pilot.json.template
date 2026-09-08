@@ -1,7 +1,7 @@
 {
   "$schema": "../schema/deployment.schema.json",
   "schemaVersion": 1,
-  "deploymentId": "corp-browser-agent-windows-pilot",
+  "deploymentId": "browser-mcp-server-windows-pilot",
   "environment": "pilot",
   "target": {
     "os": "windows",
@@ -9,12 +9,12 @@
   },
   "mode": "extension",
   "mcpScope": "user",
-  "installRoot": "C:\\Users\\REPLACE-ME\\AppData\\Local\\IntranetBrowserAgent\\releases\\current",
-  "nodeExecutable": "C:\\Users\\REPLACE-ME\\AppData\\Local\\IntranetBrowserAgent\\releases\\current\\node\\node.exe",
-  "configRoot": "C:\\Users\\REPLACE-ME\\AppData\\Local\\IntranetBrowserAgent\\config\\pilot",
+  "installRoot": "C:\\Users\\REPLACE-ME\\browser-mcp-server\\releases\\current",
+  "nodeExecutable": "C:\\Users\\REPLACE-ME\\browser-mcp-server\\releases\\current\\node\\node.exe",
+  "configRoot": "C:\\Users\\REPLACE-ME\\browser-mcp-server\\config",
   "workspaceRoots": [],
   "output": {
-    "directory": "C:\\Users\\REPLACE-ME\\AppData\\Local\\IntranetBrowserAgent\\output\\pilot",
+    "directory": "C:\\Users\\REPLACE-ME\\browser-mcp-server\\output",
     "maxBytes": 52428800,
     "retainSession": false,
     "retentionDays": 0

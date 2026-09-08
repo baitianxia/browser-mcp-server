@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write deterministic build metadata for an offline runtime."""
+"""Write deterministic build metadata for the browser-mcp-server runtime."""
 
 from __future__ import annotations
 

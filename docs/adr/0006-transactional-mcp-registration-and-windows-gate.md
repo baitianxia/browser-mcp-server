@@ -2,7 +2,9 @@
 
 状态：已接受，2026-08-30。
 
-注：ADR 0008 已取代本文中“目标安装器运行注册器 `self-test`”和“目标 launcher 运行完整发布门禁”的决定；事务化注册与回滚要求继续有效。
+注：ADR 0008 已取代本文中“目标安装器运行注册器 `self-test`”和“目标 launcher 运行完整发布门禁”的决定；事务化注册与回滚要求继续有效。当前发布门禁由发布方在精确公共 ZIP 上单独运行，目标机 `INSTALL.cmd` 只执行目标安装与必要的无副作用安装前检查。
+
+> 2026-09-07 统一 Windows 交付更新：如本文与当前用户交付冲突，以 `docs/architecture.md`、`docs/acceptance.md` 和 `docs/operations.md` 为准。当前用户包身份为 `browser-mcp-server` / `browser-mcp`，公共入口为 `INSTALL.cmd`，安装根目录为 `%USERPROFILE%\browser-mcp-server`；本文的旧身份和旧入口只用于历史证据。
 
 ## 背景
 

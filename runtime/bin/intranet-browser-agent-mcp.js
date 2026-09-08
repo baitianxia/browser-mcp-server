@@ -67,9 +67,77 @@ const ACTION_TOOLS_WITH_SNAPSHOT = new Set([
 const ACTIONABILITY_FAILURE = /(?:timed?\s*out|timeout|not\s+(?:visible|stable|enabled|actionable)|outside\s+(?:of\s+)?the\s+viewport|intercepts?\s+pointer|(?:does\s+not|is\s+not)\s+receiv(?:e|ing)\s+pointer|obscured|covered\s+by\s+another|detached|not\s+attached|element\s+is\s+not\s+visible|waiting\s+for\s+element\s+to\s+be\s+visible)/i;
 const AMBIGUOUS_TARGET_FAILURE = /(?:strict\s+mode\s+violation|resolved\s+to\s+\d+\s+elements?|matched\s+\d+\s+elements?|multiple\s+elements?)/i;
 const INFRASTRUCTURE_FAILURE = /(?:browser\b[^\n]{0,40}\b(?:disconnected|closed)|target\s+(?:page|context|browser)\s+[^\n]{0,40}\bclosed|connection\s+(?:closed|reset|lost)|protocol\s+error|transport\s+error)/i;
+const SETTINGS_REQUIRED_KEYS = new Set([
+  "schemaVersion",
+  "product",
+  "displayName",
+  "mcpServerName",
+  "browserMode",
+  "browserChannel",
+  "browserExecutablePath",
+  "headless",
+  "extensionAuthorization",
+  "snapshotStrategy",
+  "compatibilityMode",
+  "defaultSnapshotDepth",
+  "settleMs",
+  "installRoot",
+  "configRoot",
+  "outputDirectory",
+]);
+const SETTINGS_SECRET_KEYS = new Set([
+  "extensionToken",
+  "playwrightToken",
+  "secret",
+  "token",
+]);
+const SETTINGS_MUTABLE_KEYS = new Set([
+  "browserMode",
+  "browserChannel",
+  "browserExecutablePath",
+  "headless",
+  "extensionAuthorization",
+  "snapshotStrategy",
+  "compatibilityMode",
+  "defaultSnapshotDepth",
+  "settleMs",
+  "installRoot",
+  "configRoot",
+  "outputDirectory",
+  "userDataDir",
+]);
+// Only these values are safe to change while this compatibility process is
+// alive.  Browser executable, profile, output, and authorization settings are
+// launch-bound and must be changed through the transactional Windows
+// CONFIGURE.cmd workflow, then applied after Claude Code restarts.
+const SETTINGS_LIVE_KEYS = new Set([
+  "snapshotStrategy",
+  "compatibilityMode",
+  "defaultSnapshotDepth",
+  "settleMs",
+]);
+const SETTINGS_LAUNCH_KEYS = new Set(
+  [...SETTINGS_MUTABLE_KEYS].filter(key => !SETTINGS_LIVE_KEYS.has(key)),
+);
+const SETTINGS_PERSISTED_KEYS = [
+  "schemaVersion",
+  "product",
+  "displayName",
+  "mcpServerName",
+  ...SETTINGS_MUTABLE_KEYS,
+  "lastUpdatedUtc",
+];
+const SETTINGS_ALLOWED_KEYS = new Set([
+  ...SETTINGS_REQUIRED_KEYS,
+  "userDataDir",
+  "lastUpdatedUtc",
+  // These fields are process-local bookkeeping and are never persisted.
+  "settingsPath",
+  "configPath",
+]);
 
 function failStartup(message) {
-  process.stderr.write(`Intranet Browser Agent MCP: ${message}\n`);
+  process.stderr.write(`browser-mcp-server: ${message}\n`);
   process.exitCode = 2;
 }
 
@@ -83,6 +151,30 @@ function configPathFromArgs(args) {
   if (typeof process.env.PLAYWRIGHT_MCP_CONFIG === "string" && process.env.PLAYWRIGHT_MCP_CONFIG.trim())
     return path.resolve(process.env.PLAYWRIGHT_MCP_CONFIG);
   return undefined;
+}
+
+function settingsPathFromArgs(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--settings" && index + 1 < args.length)
+      return path.resolve(expandSettingPath(args[index + 1]));
+    if (args[index].startsWith("--settings="))
+      return path.resolve(expandSettingPath(args[index].slice("--settings=".length)));
+  }
+  if (typeof process.env.BROWSER_MCP_SETTINGS === "string" && process.env.BROWSER_MCP_SETTINGS.trim())
+    return path.resolve(expandSettingPath(process.env.BROWSER_MCP_SETTINGS));
+  const configPath = configPathFromArgs(args);
+  if (configPath)
+    return path.join(path.dirname(configPath), "settings.json");
+  return undefined;
+}
+
+function expandSettingPath(value) {
+  if (typeof value !== "string" || process.platform !== "win32")
+    return value;
+  return value.replace(/%([^%]+)%/g, (whole, name) => {
+    const replacement = process.env[name];
+    return replacement === undefined ? whole : replacement;
+  });
 }
 
 function outputDirectoryFromArgs(args) {
@@ -173,24 +265,272 @@ function loadPlaywrightSettings(args) {
   }
 }
 
-function normalizeUpstreamArgs(args, settings) {
-  const normalized = [...args];
-  for (let index = 0; index < normalized.length; index += 1) {
-    if (normalized[index] === "--outputDir") {
-      normalized[index] = "--output-dir";
-    } else if (normalized[index].startsWith("--outputDir=")) {
-      normalized[index] = `--output-dir=${normalized[index].slice("--outputDir=".length)}`;
-    }
-    if (!settings || !settings.configPath)
-      continue;
-    if (normalized[index] === "--config" && index + 1 < normalized.length) {
-      normalized[index + 1] = settings.configPath;
-      index += 1;
-    } else if (normalized[index].startsWith("--config=")) {
-      normalized[index] = `--config=${settings.configPath}`;
+function loadBrowserSettings(args) {
+  const settingsPath = settingsPathFromArgs(args);
+  const defaults = {
+    schemaVersion: 1,
+    product: "browser-mcp-server",
+    displayName: "浏览器助手",
+    mcpServerName: "browser-mcp",
+    browserMode: "extension",
+    browserChannel: "chrome",
+    browserExecutablePath: "",
+    headless: false,
+    extensionAuthorization: "session",
+    snapshotStrategy: "compact",
+    compatibilityMode: "robust",
+    defaultSnapshotDepth: 6,
+    settleMs: 1500,
+    installRoot: "",
+    configRoot: "",
+    outputDirectory: "",
+    userDataDir: null,
+    lastUpdatedUtc: null,
+    settingsPath,
+  };
+  if (!settingsPath || !fs.existsSync(settingsPath))
+    return defaults;
+  let value;
+  try {
+    const raw = fs.readFileSync(settingsPath, "utf8");
+    value = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
+  } catch (error) {
+    throw new Error(`cannot parse ${settingsPath}: ${error.message}`);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`invalid browser settings shape: ${settingsPath}`);
+  const missing = [...SETTINGS_REQUIRED_KEYS].filter(
+    key => !Object.prototype.hasOwnProperty.call(value, key),
+  );
+  if (missing.length)
+    throw new Error(`browser settings are missing required fields (${missing.sort().join(", ")}): ${settingsPath}`);
+  const normalized = { ...defaults, ...value, settingsPath };
+  for (const key of ["browserExecutablePath", "installRoot", "configRoot", "outputDirectory", "userDataDir"]) {
+    if (typeof normalized[key] === "string")
+      normalized[key] = expandSettingPath(normalized[key]);
+  }
+  validateBrowserSettings(normalized, settingsPath);
+  return normalized;
+}
+
+function validateBrowserSettings(value, settingsPath) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`invalid browser settings shape: ${settingsPath}`);
+  for (const key of Object.keys(value)) {
+    if (!SETTINGS_ALLOWED_KEYS.has(key)) {
+      if (SETTINGS_SECRET_KEYS.has(key))
+        throw new Error(`${key} is not allowed in browser settings: ${settingsPath}`);
+      throw new Error(`unsupported browser settings field ${key}: ${settingsPath}`);
     }
   }
+  if (value.schemaVersion !== 1)
+    throw new Error(`unsupported browser settings schema: ${settingsPath}`);
+  if (value.product !== "browser-mcp-server")
+    throw new Error(`unexpected browser settings product: ${settingsPath}`);
+  if (value.displayName !== "浏览器助手")
+    throw new Error(`unexpected displayName in ${settingsPath}`);
+  if (value.mcpServerName !== "browser-mcp")
+    throw new Error(`unexpected mcpServerName in ${settingsPath}`);
+  if (value.browserMode !== "extension" && value.browserMode !== "persistent")
+    throw new Error(`invalid browserMode in ${settingsPath}`);
+  if (!["chrome", "msedge"].includes(value.browserChannel))
+    throw new Error(`invalid browserChannel in ${settingsPath}`);
+  if (typeof value.browserExecutablePath !== "string")
+    throw new Error(`invalid browserExecutablePath in ${settingsPath}`);
+  if (typeof value.headless !== "boolean")
+    throw new Error(`invalid headless in ${settingsPath}`);
+  if (!["session", "user"].includes(value.extensionAuthorization))
+    throw new Error(`invalid extensionAuthorization in ${settingsPath}`);
+  if (!["compact", "full"].includes(value.snapshotStrategy))
+    throw new Error(`invalid snapshotStrategy in ${settingsPath}`);
+  if (!["robust", "standard"].includes(value.compatibilityMode))
+    throw new Error(`invalid compatibilityMode in ${settingsPath}`);
+  if (!Number.isInteger(value.defaultSnapshotDepth) || value.defaultSnapshotDepth < 1 || value.defaultSnapshotDepth > 20)
+    throw new Error(`invalid defaultSnapshotDepth in ${settingsPath}`);
+  if (!Number.isInteger(value.settleMs) || value.settleMs < 100 || value.settleMs > 10000)
+    throw new Error(`invalid settleMs in ${settingsPath}`);
+  for (const key of ["installRoot", "configRoot", "outputDirectory"]) {
+    if (typeof value[key] !== "string")
+      throw new Error(`invalid ${key} in ${settingsPath}`);
+  }
+  if (value.userDataDir !== null && typeof value.userDataDir !== "string")
+    throw new Error(`invalid userDataDir in ${settingsPath}`);
+  if (value.browserMode === "persistent") {
+    if (!value.userDataDir || !value.userDataDir.trim())
+      throw new Error(`userDataDir is required for persistent browser mode in ${settingsPath}`);
+    if (value.extensionAuthorization !== "session")
+      throw new Error(`persistent browser mode cannot use extensionAuthorization=user in ${settingsPath}`);
+  } else {
+    if (value.headless === true)
+      throw new Error(`extension browser mode must remain headed in ${settingsPath}`);
+    if (value.userDataDir !== null && value.userDataDir !== undefined)
+      throw new Error(`extension browser mode cannot set userDataDir in ${settingsPath}`);
+  }
+  if (value.lastUpdatedUtc !== null && typeof value.lastUpdatedUtc !== "string")
+    throw new Error(`invalid lastUpdatedUtc in ${settingsPath}`);
+  return value;
+}
+
+function browserSettingsSummary(settings, extras = {}) {
+  const missing = [];
+  for (const key of SETTINGS_REQUIRED_KEYS) {
+    if (settings[key] === undefined || settings[key] === null || settings[key] === "")
+      missing.push(key);
+  }
+  if (settings.browserMode === "persistent" && (!settings.userDataDir || !String(settings.userDataDir).trim()))
+    missing.push("userDataDir");
+  return {
+    settingsPath: settings.settingsPath || "",
+    schemaVersion: settings.schemaVersion || 1,
+    product: settings.product || "browser-mcp-server",
+    displayName: settings.displayName || "浏览器助手",
+    mcpServerName: settings.mcpServerName || "browser-mcp",
+    browserMode: settings.browserMode || "extension",
+    browserChannel: settings.browserChannel || "chrome",
+    browserExecutablePath: settings.browserExecutablePath || "",
+    headless: Boolean(settings.headless),
+    extensionAuthorization: settings.extensionAuthorization || "session",
+    snapshotStrategy: settings.snapshotStrategy || "compact",
+    compatibilityMode: settings.compatibilityMode || "robust",
+    defaultSnapshotDepth: settings.defaultSnapshotDepth || 6,
+    settleMs: settings.settleMs || 1500,
+    installRoot: settings.installRoot || "",
+    configRoot: settings.configRoot || "",
+    outputDirectory: settings.outputDirectory || "",
+    userDataDir: settings.userDataDir || null,
+    lastUpdatedUtc: settings.lastUpdatedUtc || null,
+    missingFields: [...new Set(missing)],
+    nextCommand: missing.length ? "browser_configure" : "browser_config_reload",
+    ...extras,
+  };
+}
+
+function redactSettingsValue(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return value;
+  const clone = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (SETTINGS_SECRET_KEYS.has(key) && typeof entry === "string" && entry)
+      clone[key] = "<redacted>";
+    else if (entry && typeof entry === "object" && !Array.isArray(entry))
+      clone[key] = redactSettingsValue(entry);
+    else
+      clone[key] = entry;
+  }
+  return clone;
+}
+
+function atomicWriteJson(filePath, payload) {
+  const text = `${JSON.stringify(payload, null, 2)}\n`;
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}`);
+  try {
+    const handle = fs.openSync(temporary, "w");
+    try {
+      fs.writeFileSync(handle, text, "utf8");
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
+    fs.renameSync(temporary, filePath);
+  } finally {
+    try { fs.unlinkSync(temporary); } catch (error) {
+      if (!error || !["ENOENT"].includes(error.code)) throw error;
+    }
+  }
+}
+
+function applyBrowserSettingsOverrides(config, settings) {
+  // A settings path is derived beside --config for backwards compatibility,
+  // but an absent file must not silently replace the interaction config. This
+  // keeps the legacy Playwright configuration usable until the installer has
+  // written the canonical browser-mcp settings file.
+  if (!settings || !settings.settingsPath || !fs.existsSync(settings.settingsPath))
+    return config;
+  const next = { ...config };
+  if (settings.snapshotStrategy === "compact" || settings.snapshotStrategy === "full")
+    next.snapshotStrategy = settings.snapshotStrategy;
+  if (settings.compatibilityMode === "robust" || settings.compatibilityMode === "standard")
+    next.compatibilityMode = settings.compatibilityMode;
+  if (Number.isInteger(settings.defaultSnapshotDepth) && settings.defaultSnapshotDepth > 0)
+    next.defaultSnapshotDepth = settings.defaultSnapshotDepth;
+  if (Number.isInteger(settings.settleMs) && settings.settleMs > 0)
+    next.settleMs = settings.settleMs;
+  return next;
+}
+
+function normalizeUpstreamArgs(args, settings) {
+  const normalized = [];
+  for (let index = 0; index < args.length; index += 1) {
+    // --settings belongs to this compatibility layer. The pinned upstream
+    // Playwright CLI does not know that option, so consume it before spawning
+    // the child process while retaining the path in the wrapper state.
+    if (args[index] === "--settings") {
+      index += 1;
+      continue;
+    }
+    if (args[index].startsWith("--settings="))
+      continue;
+    let argument = args[index];
+    if (settings && settings.outputDirectory &&
+        (argument === "--output-dir" || argument === "--outputDir")) {
+      // The managed settings file owns the artifact boundary.  Remove a
+      // caller-supplied value (including its separate next argument) so the
+      // pinned upstream process cannot write outside that directory.
+      index += 1;
+      continue;
+    }
+    if (settings && settings.outputDirectory &&
+        (argument.startsWith("--output-dir=") || argument.startsWith("--outputDir=")))
+      continue;
+    if (argument === "--outputDir") {
+      argument = "--output-dir";
+    } else if (argument.startsWith("--outputDir=")) {
+      argument = `--output-dir=${argument.slice("--outputDir=".length)}`;
+    }
+    if (settings && settings.configPath) {
+      if (argument === "--config" && index + 1 < args.length) {
+        normalized.push(argument, settings.configPath);
+        index += 1;
+        continue;
+      }
+      if (argument.startsWith("--config=")) {
+        argument = `--config=${settings.configPath}`;
+      }
+    }
+    normalized.push(argument);
+  }
+  if (settings && typeof settings.outputDirectory === "string" && settings.outputDirectory.trim())
+    normalized.push(`--output-dir=${settings.outputDirectory}`);
+  if (settings && (settings.browserMode === "extension" || settings.browserMode === "persistent")) {
+    const setEqualsOption = (name, value) => {
+      if (typeof value !== "string" || !value.trim())
+        return;
+      const prefix = `${name}=`;
+      const index = normalized.findIndex(item => item === name || item.startsWith(prefix));
+      const rendered = `${prefix}${value}`;
+      if (index >= 0)
+        normalized[index] = rendered;
+      else
+        normalized.push(rendered);
+    };
+    setEqualsOption("--browser", settings.browserChannel);
+    setEqualsOption("--executable-path", settings.browserExecutablePath);
+  }
   return normalized;
+}
+
+function upstreamEnvironment(settings, outputDirectory) {
+  const environment = { ...process.env };
+  // These process-level overrides can change the pinned CLI's config or load
+  // arbitrary Node code.  Registration supplies the approved extension token
+  // separately; preserve that one optional value while clearing the generic
+  // override channels.
+  environment.NODE_OPTIONS = "";
+  environment.NODE_PATH = "";
+  environment.PLAYWRIGHT_MCP_CONFIG = "";
+  environment.PLAYWRIGHT_MCP_OUTPUT_DIR = outputDirectory || "";
+  return environment;
 }
 
 function isWithinDirectory(root, candidate) {
@@ -409,7 +749,7 @@ function changedOutputArtifacts(before, root, toolName) {
 function timerShimCode(originalCode) {
   if (typeof originalCode !== "string" || !originalCode.trim())
     return originalCode;
-  if (originalCode.includes("intranet-browser-agent-timer-shim"))
+  if (originalCode.includes("browser-mcp-server-timer-shim"))
     return originalCode;
   let source = originalCode.trim();
   // The upstream VM evaluates a function expression. Strip only wrappers
@@ -425,7 +765,7 @@ function timerShimCode(originalCode) {
   // browser_run_code_unsafe receives a function expression. Wrap it in another
   // function so the shim lives in the upstream VM, without exposing Node APIs.
   return `(async (page) => {
-  /* intranet-browser-agent-timer-shim */
+  /* browser-mcp-server-timer-shim */
   const __intranetSleep = (ms) => {
     const delay = Math.max(0, Number(ms) || 0);
     if (page && typeof page.waitForTimeout === "function") return page.waitForTimeout(delay);
@@ -697,7 +1037,51 @@ function customTools() {
     waitForUrl: { type: "string", minLength: 1, description: "Wait until the current URL contains this value" },
     timeoutMs: timeout,
   };
+  const settingsFields = {
+    snapshotStrategy: { enum: ["compact", "full"] },
+    compatibilityMode: { enum: ["robust", "standard"] },
+    defaultSnapshotDepth: { type: "integer", minimum: 1, maximum: 20 },
+    settleMs: { type: "integer", minimum: 100, maximum: 10000 },
+  };
   return [
+    {
+      name: "browser_config_status",
+      title: "Inspect browser settings",
+      description: "Report the active browser settings file path, schema version, missing fields, and the next command to run. Secrets are redacted.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: "browser_configure",
+      title: "Update browser settings",
+      description: "Update live, non-secret interaction settings atomically. Browser executable, profile, authorization, and output changes must use the installed CONFIGURE.cmd workflow.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          snapshotStrategy: settingsFields.snapshotStrategy,
+          compatibilityMode: settingsFields.compatibilityMode,
+          defaultSnapshotDepth: settingsFields.defaultSnapshotDepth,
+          settleMs: settingsFields.settleMs,
+        },
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    {
+      name: "browser_config_reload",
+      title: "Reload browser settings",
+      description: "Re-read the managed browser settings file from disk and apply it to this process.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
     {
       name: "browser_select_custom_option",
       title: "Select custom dropdown option",
@@ -892,12 +1276,20 @@ function enhanceToolList(result, config) {
 }
 
 function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
-  const outputDirectory = settings.outputDirectory;
+  settings = { ...settings };
+  config = applyBrowserSettingsOverrides(config, settings);
+  let outputDirectory = settings.outputDirectory || defaultOutputDirectory(false);
+  try {
+    fs.mkdirSync(outputDirectory, { recursive: true });
+  } catch (error) {
+    failStartup(`cannot create browser output directory: ${error.message}`);
+    return;
+  }
   const effectiveUpstreamArgs = normalizeUpstreamArgs(upstreamArgs, settings);
   const child = spawn(process.execPath, [upstreamCli, ...effectiveUpstreamArgs], {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
-    env: process.env,
+    env: upstreamEnvironment(settings, outputDirectory),
   });
   let internalSequence = 0;
   let childClosed = false;
@@ -1203,7 +1595,7 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
     try {
       message = JSON.parse(line);
     } catch {
-      process.stderr.write(`Intranet Browser Agent MCP: invalid upstream JSON-RPC output: ${line.slice(0, 500)}\n`);
+      process.stderr.write(`browser-mcp-server: invalid upstream JSON-RPC output: ${line.slice(0, 500)}\n`);
       child.kill();
       return;
     }
@@ -1699,6 +2091,150 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
     return result;
   }
 
+  function configToolResult(summary, message, extra = {}) {
+    const safeSummary = redactSettingsValue(summary);
+    return {
+      content: [{ type: "text", text: `${message}\n${JSON.stringify(safeSummary, null, 2)}` }],
+      structuredContent: { ...safeSummary, ...extra },
+    };
+  }
+
+  function activeSettingsPath() {
+    return typeof settings.settingsPath === "string" && settings.settingsPath
+      ? settings.settingsPath
+      : undefined;
+  }
+
+  function settingDifferences(before, after, keys) {
+    return [...keys].filter(key => JSON.stringify(before && before[key]) !== JSON.stringify(after && after[key])).sort();
+  }
+
+  function activateBrowserSettings(next, { liveOnly = false } = {}) {
+    const preserved = {
+      configPath: settings.configPath,
+      settingsPath: next.settingsPath || settings.settingsPath,
+    };
+    const active = { ...next };
+    if (liveOnly) {
+      for (const key of SETTINGS_LAUNCH_KEYS)
+        active[key] = settings[key];
+    }
+    settings = { ...active, ...preserved };
+    config = applyBrowserSettingsOverrides(config, settings);
+    if (!liveOnly && settings.outputDirectory) {
+      outputDirectory = path.resolve(settings.outputDirectory);
+      fs.mkdirSync(outputDirectory, { recursive: true });
+    }
+    return settings;
+  }
+
+  function browserConfigStatus() {
+    const settingsPath = activeSettingsPath();
+    let diskSettings = settings;
+    if (settingsPath && fs.existsSync(settingsPath))
+      diskSettings = loadBrowserSettings(["--settings", settingsPath]);
+    const restartFields = settingDifferences(settings, diskSettings, SETTINGS_LAUNCH_KEYS);
+    const summary = browserSettingsSummary(diskSettings, {
+      fileExists: Boolean(settingsPath && fs.existsSync(settingsPath)),
+      restartRequired: restartFields.length > 0,
+      restartFields,
+      configureCommand: "CONFIGURE.cmd",
+    });
+    const safeSettings = redactSettingsValue({ ...diskSettings });
+    return configToolResult(summary, "browser-mcp-server settings status:", {
+      settings: safeSettings,
+      activeSettings: redactSettingsValue({ ...settings }),
+      activeConfig: {
+        snapshotStrategy: config.snapshotStrategy,
+        compatibilityMode: config.compatibilityMode,
+        defaultSnapshotDepth: config.defaultSnapshotDepth,
+        settleMs: config.settleMs,
+      },
+    });
+  }
+
+  function browserConfigReload(args) {
+    assertOnlyKeys(args, new Set());
+    const settingsPath = activeSettingsPath();
+    if (!settingsPath)
+      return textResult("browser settings path is not configured; start browser-mcp with --settings <path>.", true);
+    const loaded = loadBrowserSettings(["--settings", settingsPath]);
+    loaded.configPath = settings.configPath;
+    if (!loaded.outputDirectory)
+      loaded.outputDirectory = settings.outputDirectory;
+    validateBrowserSettings(loaded, settingsPath);
+    const restartFields = settingDifferences(settings, loaded, SETTINGS_LAUNCH_KEYS);
+    const active = activateBrowserSettings(loaded, { liveOnly: true });
+    const summary = browserSettingsSummary(loaded, {
+      fileExists: true,
+      restartRequired: restartFields.length > 0,
+      restartFields,
+      configureCommand: "CONFIGURE.cmd",
+    });
+    return configToolResult(summary, "browser-mcp-server settings reloaded:", {
+      settings: redactSettingsValue({ ...loaded }),
+      activeSettings: redactSettingsValue({ ...active }),
+      activeConfig: {
+        snapshotStrategy: config.snapshotStrategy,
+        compatibilityMode: config.compatibilityMode,
+        defaultSnapshotDepth: config.defaultSnapshotDepth,
+        settleMs: config.settleMs,
+      },
+    });
+  }
+
+  function browserConfigConfigure(args) {
+    assertOnlyKeys(args, SETTINGS_LIVE_KEYS);
+    const settingsPath = activeSettingsPath();
+    if (!settingsPath)
+      return textResult("browser settings path is not configured; start browser-mcp with --settings <path>.", true);
+    for (const key of Object.keys(args))
+      if (SETTINGS_SECRET_KEYS.has(key))
+        throw new Error(`${key} is not accepted in browser settings; secrets must remain in Claude Code user configuration`);
+    const current = loadBrowserSettings(["--settings", settingsPath]);
+    const candidate = {
+      ...current,
+      ...args,
+      schemaVersion: 1,
+      product: "browser-mcp-server",
+      displayName: "浏览器助手",
+      mcpServerName: "browser-mcp",
+      lastUpdatedUtc: new Date().toISOString(),
+    };
+    validateBrowserSettings(candidate, settingsPath);
+    const persisted = {};
+    for (const key of SETTINGS_PERSISTED_KEYS)
+      persisted[key] = candidate[key];
+    atomicWriteJson(settingsPath, persisted);
+    try {
+      fs.chmodSync(settingsPath, 0o600);
+    } catch {
+      // Windows ignores POSIX mode bits; ACLs remain the host policy.
+    }
+    const active = activateBrowserSettings({
+      ...candidate,
+      settingsPath,
+      configPath: settings.configPath,
+    }, { liveOnly: true });
+    const summary = browserSettingsSummary(candidate, {
+      fileExists: true,
+      restartRequired: false,
+      restartFields: [],
+      configureCommand: "CONFIGURE.cmd",
+    });
+    return configToolResult(summary, "browser-mcp-server settings saved atomically:", {
+      settings: redactSettingsValue({ ...candidate }),
+      activeSettings: redactSettingsValue({ ...active }),
+      changedFields: Object.keys(args).sort(),
+      activeConfig: {
+        snapshotStrategy: config.snapshotStrategy,
+        compatibilityMode: config.compatibilityMode,
+        defaultSnapshotDepth: config.defaultSnapshotDepth,
+        settleMs: config.settleMs,
+      },
+    });
+  }
+
   async function handleToolCall(params, requestBeforeFiles, requestBeforeSequence = 0) {
     if (!params || typeof params !== "object" || typeof params.name !== "string")
       return textResult("tools/call requires a tool name", true);
@@ -1706,6 +2242,12 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
     const rawArgs = params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments)
       ? params.arguments : {};
     try {
+      if (name === "browser_config_status")
+        return browserConfigStatus();
+      if (name === "browser_configure")
+        return browserConfigConfigure(rawArgs);
+      if (name === "browser_config_reload")
+        return browserConfigReload(rawArgs);
       const args = normalizeArtifactFilename(name, rawArgs, outputDirectory);
       if (name === "browser_snapshot") {
         const snapshotArgs = { ...args };
@@ -1913,6 +2455,36 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
   }
 
   async function handleRequest(message) {
+    if (message.method === "initialize") {
+      const response = await requestUpstream(message.method, message.params || {});
+      if (response.error)
+        return { error: response.error };
+      const upstream = response.result && typeof response.result === "object"
+        ? response.result
+        : {};
+      const serverInfo = upstream.serverInfo && typeof upstream.serverInfo === "object"
+        ? upstream.serverInfo
+        : {};
+      const summary = browserSettingsSummary(settings);
+      const instructions = [
+        `browser-mcp-server（${settings.displayName || "浏览器助手"}） manages the configured browser session over local stdio.`,
+        `Settings file: ${summary.settingsPath || "not configured"}.`,
+        "Use browser_config_status to inspect settings, browser_configure to update live interaction fields, and browser_config_reload to apply a file edited by an administrator. Use the installed CONFIGURE.cmd for browser executable, profile, authorization, or output changes, then restart Claude Code when status reports restartRequired.",
+        "Browser security boundaries, user approval, and Claude Code confirmation requirements remain in force.",
+        typeof upstream.instructions === "string" && upstream.instructions.trim() ? upstream.instructions.trim() : "",
+      ].filter(Boolean).join("\n");
+      return {
+        result: {
+          ...upstream,
+          serverInfo: {
+            ...serverInfo,
+            name: "browser-mcp",
+            title: settings.displayName || "浏览器助手",
+          },
+          instructions,
+        },
+      };
+    }
     if (message.method === "tools/list") {
       const result = await upstreamResult(message.method, message.params || {});
       return { result: enhanceToolList(result, config) };
@@ -2053,7 +2625,7 @@ function main() {
     return;
   }
   if (args.includes("--help") || args.includes("-h") || args.includes("--version")) {
-    const child = spawn(process.execPath, [upstreamCli, ...args], { stdio: "inherit", windowsHide: true, env: process.env });
+    const child = spawn(process.execPath, [upstreamCli, ...normalizeUpstreamArgs(args, null)], { stdio: "inherit", windowsHide: true, env: upstreamEnvironment(null, "") });
     child.on("error", error => failStartup(`cannot start pinned Playwright MCP: ${error.message}`));
     child.on("exit", (code, signal) => {
       process.exitCode = code === 0 ? 0 : (code || (signal ? 2 : 0));
@@ -2063,8 +2635,17 @@ function main() {
   let config;
   let settings;
   try {
-    config = loadInteractionConfig(args);
-    settings = loadPlaywrightSettings(args);
+    const browserSettings = loadBrowserSettings(args);
+    const playwrightSettings = loadPlaywrightSettings(args);
+    settings = {
+      ...browserSettings,
+      ...playwrightSettings,
+      outputDirectory: browserSettings.outputDirectory || playwrightSettings.outputDirectory,
+      settingsPath: browserSettings.settingsPath,
+    };
+    if (settings.outputDirectory)
+      settings.outputDirectory = path.resolve(settings.outputDirectory);
+    config = applyBrowserSettingsOverrides(loadInteractionConfig(args), settings);
   } catch (error) {
     failStartup(error instanceof Error ? error.message : String(error));
     return;

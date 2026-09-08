@@ -12,41 +12,37 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Publisher-side gate for the exact public Windows ZIP.  It accepts either the
+# ZIP itself or its extracted single top-level directory and never runs package
+# code before the outer checksum and release metadata have passed.
+$SourceRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ToolDiscovery = Join-Path $PSScriptRoot "windows-tool-discovery.ps1"
 if (-not (Test-Path -LiteralPath $ToolDiscovery -PathType Leaf)) {
     throw "Windows tool discovery helper is missing: $ToolDiscovery"
 }
 . $ToolDiscovery
 
-function Invoke-ReleaseGate {
-if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
-    throw "Windows release gate must run on Windows."
-}
-if ($PSVersionTable.PSEdition -ne "Desktop" -or
-    $PSVersionTable.PSVersion -lt [version]"5.1") {
-    throw "Windows PowerShell 5.1 Desktop is required for the release gate."
-}
+$script:PythonExecutable = ""
+$script:PythonPrefix = @()
 
-$ProjectRoot = Split-Path -Parent $PSScriptRoot
-$PythonPrefix = @()
-if (-not $PythonExecutable) {
-    $Py = Get-Command "py.exe" -ErrorAction SilentlyContinue
-    if ($Py) {
-        $PythonExecutable = $Py.Source
-        $PythonPrefix = @("-3")
-    } else {
-        $Python = Get-Command "python.exe" -ErrorAction SilentlyContinue
-        if (-not $Python) {
-            throw "Python 3.10+ is required."
+# A caller-supplied interpreter is part of the release environment contract.
+# Resolve it once and use it verbatim; silently falling back to ``py.exe`` or a
+# different PATH entry would make the recorded gate non-reproducible.
+if ($PythonExecutable) {
+    $PythonCommand = Get-Command $PythonExecutable -CommandType Application `
+        -ErrorAction SilentlyContinue
+    if ($PythonCommand) {
+        $script:PythonExecutable = if ($PythonCommand.Source) {
+            $PythonCommand.Source
+        } else {
+            $PythonCommand.Path
         }
-        $PythonExecutable = $Python.Source
+    } elseif (Test-Path -LiteralPath $PythonExecutable -PathType Leaf) {
+        $script:PythonExecutable = (Resolve-Path -LiteralPath $PythonExecutable `
+            -ErrorAction Stop).Path
+    } else {
+        throw "The requested Python executable was not found: $PythonExecutable"
     }
-}
-
-$ClaudeInvocation = Resolve-ClaudeCodeInvocation `
-    -ExplicitPath $ClaudeExecutable
-if ($null -eq $ClaudeInvocation) {
-    throw "An existing usable Claude Code command is required. Supported forms are native claude.exe and an npm-generated claude.cmd; the release gate does not install or repair Claude Code."
 }
 
 function Invoke-PythonChecked {
@@ -56,10 +52,11 @@ function Invoke-PythonChecked {
     $PreviousDontWriteBytecode = $env:PYTHONDONTWRITEBYTECODE
     $Output = @()
     $ExitCode = 1
+    $Prefix = $script:PythonPrefix
     try {
         $ErrorActionPreference = "Continue"
         $env:PYTHONDONTWRITEBYTECODE = "1"
-        $Output = & $PythonExecutable @PythonPrefix @Arguments 2>&1
+        $Output = & $script:PythonExecutable @Prefix @Arguments 2>&1
         $ExitCode = $LASTEXITCODE
     } finally {
         if ($HadDontWriteBytecode) {
@@ -70,9 +67,7 @@ function Invoke-PythonChecked {
         $ErrorActionPreference = $PreviousPreference
     }
     foreach ($Line in @($Output)) {
-        if ($null -ne $Line) {
-            Write-Host $Line
-        }
+        if ($null -ne $Line) { Write-Host $Line }
     }
     if ($ExitCode -ne 0) {
         throw "Python release check failed with exit code $ExitCode"
@@ -92,13 +87,9 @@ function Invoke-NativeChecked {
         $ErrorActionPreference = $PreviousPreference
     }
     foreach ($Line in @($Output)) {
-        if ($null -ne $Line) {
-            Write-Host $Line
-        }
+        if ($null -ne $Line) { Write-Host $Line }
     }
-    if ($ExitCode -ne 0) {
-        throw "$Executable failed with exit code $ExitCode"
-    }
+    if ($ExitCode -ne 0) { throw "$Executable failed with exit code $ExitCode" }
 }
 
 function Get-NativeOutput {
@@ -114,193 +105,235 @@ function Get-NativeOutput {
         $ErrorActionPreference = $PreviousPreference
     }
     $Text = ((@($Output) | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
-    if ($ExitCode -ne 0) {
-        throw "$Executable failed with exit code ${ExitCode}: $Text"
-    }
+    if ($ExitCode -ne 0) { throw "$Executable failed with exit code ${ExitCode}: $Text" }
     return $Text
 }
 
-$PowerShellScripts = @(
-    Get-ChildItem -LiteralPath $PSScriptRoot | Where-Object {
-        -not $_.PSIsContainer -and $_.Extension -ieq ".ps1"
+function Parse-PowerShellScripts {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw "PowerShell source root is missing: $Root"
     }
-)
-foreach ($PowerShellScript in $PowerShellScripts) {
-    $Tokens = $null
-    $ParseErrors = $null
-    [Management.Automation.Language.Parser]::ParseFile(
-        $PowerShellScript.FullName,
-        [ref]$Tokens,
-        [ref]$ParseErrors
-    ) | Out-Null
-    if (@($ParseErrors).Count -ne 0) {
-        $ParseDetails = (@($ParseErrors) | ForEach-Object { $_.Message }) -join "; "
-        throw "$($PowerShellScript.Name) has PowerShell parse errors: $ParseDetails"
+    $Failures = @()
+    foreach ($Script in @(Get-ChildItem -LiteralPath $Root -Filter "*.ps1" -File -Recurse)) {
+        $Tokens = $null
+        $ParseErrors = $null
+        [Management.Automation.Language.Parser]::ParseFile(
+            $Script.FullName, [ref]$Tokens, [ref]$ParseErrors
+        ) | Out-Null
+        foreach ($ParseError in @($ParseErrors)) {
+            $Failures += "$($Script.FullName): $($ParseError.Message)"
+        }
     }
+    if ($Failures.Count -ne 0) { throw ($Failures -join [Environment]::NewLine) }
 }
 
-Push-Location $ProjectRoot
-try {
-    $ResolvedTransferPath = (Resolve-Path -LiteralPath $TransferPath).Path
-    if (-not (Test-Path -LiteralPath $ResolvedTransferPath -PathType Container)) {
-        throw "TransferPath must be the extracted transfer directory, not an archive."
+function Resolve-PublicPackageRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputPath,
+        [Parameter(Mandatory = $true)][string]$Verifier,
+        [Parameter(Mandatory = $true)][string]$TemporaryRoot
+    )
+    $Resolved = (Resolve-Path -LiteralPath $InputPath -ErrorAction Stop).Path
+    if (Test-Path -LiteralPath $Resolved -PathType Leaf) {
+        if ([IO.Path]::GetExtension($Resolved) -ine ".zip") {
+            throw "TransferPath must be the public Windows ZIP or its extracted root: $Resolved"
+        }
+        $Sidecar = "$Resolved.sha256"
+        if (-not (Test-Path -LiteralPath $Sidecar -PathType Leaf)) {
+            throw "Public Windows ZIP is missing its adjacent checksum sidecar: $Sidecar"
+        }
+        $SidecarItem = Get-Item -LiteralPath $Sidecar -Force -ErrorAction Stop
+        if (($SidecarItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Public Windows ZIP checksum sidecar must be a regular file: $Sidecar"
+        }
+        Invoke-PythonChecked @($Verifier, $Resolved)
+        $ExtractRoot = Join-Path $TemporaryRoot "public-package"
+        New-Item -ItemType Directory -Path $ExtractRoot -Force | Out-Null
+        Expand-Archive -LiteralPath $Resolved -DestinationPath $ExtractRoot -Force
+        $Roots = @(Get-ChildItem -LiteralPath $ExtractRoot -Directory)
+        if ($Roots.Count -ne 1) {
+            throw "Public ZIP must extract to exactly one top-level directory."
+        }
+        $Resolved = $Roots[0].FullName
     }
-    $PackagedProjectRoot = (Resolve-Path -LiteralPath (
-        Join-Path $ResolvedTransferPath "toolkit"
-    )).Path
-    if (-not [string]::Equals(
-        [IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\"),
-        [IO.Path]::GetFullPath($PackagedProjectRoot).TrimEnd("\"),
-        [StringComparison]::OrdinalIgnoreCase
-    )) {
-        throw "Release gate must run from the same extracted transfer directory it verifies."
+    if (-not (Test-Path -LiteralPath $Resolved -PathType Container)) {
+        throw "TransferPath must be the public Windows ZIP or its extracted root."
     }
-    Invoke-PythonChecked @("-c", "import sys; raise SystemExit(sys.version_info < (3, 10))")
-    # Verify before executing the packaged test suite, then verify again after it.
-    # The second pass proves that the gate itself did not mutate the transfer kit.
-    Invoke-PythonChecked @(
-        (Join-Path $PSScriptRoot "verify-bundle.py"),
-        $ResolvedTransferPath
-    )
-    Invoke-PythonChecked @(
-        (Join-Path $PSScriptRoot "validate_windows_release_metadata.py"),
-        (Join-Path $ResolvedTransferPath "KIT-METADATA.json")
-    )
+    Invoke-PythonChecked @($Verifier, $Resolved)
+    return $Resolved
+}
 
-    Invoke-PythonChecked @("-m", "unittest", "discover", "-s", "tests", "-v")
-    Invoke-PythonChecked @(
-        (Join-Path $PSScriptRoot "register_claude_user_mcp.py"),
-        "self-test"
-    )
-    $ClaudeVersionArguments = @($ClaudeInvocation.Prefix) + @("--version")
-    $ClaudeVersion = Get-NativeOutput `
-        ([string]$ClaudeInvocation.Executable) $ClaudeVersionArguments
-    Write-Host ("CLAUDE CODE: {0} ({1})" -f `
-        $ClaudeVersion, $ClaudeInvocation.Kind)
-
-    $KitMetadataPath = Join-Path $ResolvedTransferPath "KIT-METADATA.json"
-    $KitMetadata = Get-Content -LiteralPath $KitMetadataPath -Raw | ConvertFrom-Json
-    $RuntimeArchiveName = [string]$KitMetadata.runtime.archive
-    if ($RuntimeArchiveName -notmatch '^browser-agent-runtime-[a-zA-Z0-9._-]+\.tar\.gz$') {
-        throw "Runtime archive name is invalid: $RuntimeArchiveName"
+function Invoke-ReleaseGate {
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        throw "Windows release gate must run on Windows."
     }
-    $RuntimeArchive = Join-Path (Join-Path $ResolvedTransferPath "runtime") `
-        $RuntimeArchiveName
-    Invoke-PythonChecked @(
-        (Join-Path $PSScriptRoot "verify-bundle.py"),
-        $RuntimeArchive
-    )
-
-    $ProbeRoot = Join-Path ([IO.Path]::GetTempPath()) `
-        ("intranet-browser-agent-release-probe-" + [guid]::NewGuid().ToString("N"))
-    $ProbeClaudeConfig = Join-Path $ProbeRoot "claude-config"
-    $ProbeRuntimeExtraction = Join-Path $ProbeRoot "runtime"
-    $ProbePlaywrightConfig = Join-Path $ProbeRoot "playwright.config.json"
-    $ProbeInteractionConfig = Join-Path $ProbeRoot "interaction.config.json"
-    $ProbeUserConfig = Join-Path $ProbeClaudeConfig ".claude.json"
-    $ProbeBackup = Join-Path $ProbeRoot "claude-user-config.bak"
-    $HadClaudeConfigDir = Test-Path Env:CLAUDE_CONFIG_DIR
-    $PreviousClaudeConfigDir = $env:CLAUDE_CONFIG_DIR
-    try {
-        New-Item -ItemType Directory -Path $ProbeClaudeConfig -Force | Out-Null
-        New-Item -ItemType Directory -Path $ProbeRuntimeExtraction -Force | Out-Null
-        $TarCommand = Get-Command "tar.exe" -ErrorAction SilentlyContinue
-        if (-not $TarCommand) {
-            throw "Windows tar.exe is required for the release probe."
-        }
-        Invoke-NativeChecked $TarCommand.Source @(
-            "-xzf", $RuntimeArchive, "-C", $ProbeRuntimeExtraction
-        )
-        $ProbeRuntimeName = $RuntimeArchiveName -replace '\.tar\.gz$', ''
-        $ProbeRuntimeRoot = Join-Path $ProbeRuntimeExtraction $ProbeRuntimeName
-        Invoke-PythonChecked @(
-            (Join-Path $PSScriptRoot "verify-bundle.py"),
-            $ProbeRuntimeRoot
-        )
-        $ExpectedNodeVersion = [string]$KitMetadata.runtime.buildMetadata.tools.node
-        $ProbeNodeRoot = Join-Path $ProbeRuntimeRoot "node"
-        $ProbeNode = Join-Path $ProbeNodeRoot "node.exe"
-        $ProbePlaywrightCli = Join-Path $ProbeRuntimeRoot `
-            "bin\intranet-browser-agent-mcp.js"
-        Invoke-PythonChecked @(
-            (Join-Path $PSScriptRoot "validate_node_distribution.py"),
-            $ProbeNodeRoot,
-            "--expected-version", $ExpectedNodeVersion,
-            "--approval-file", (Join-Path $ProjectRoot "config\windows-node-sources.json")
-        )
-        $ActualNodeVersion = Get-NativeOutput $ProbeNode @("--version")
-        if ($ActualNodeVersion -ne $ExpectedNodeVersion) {
-            throw "Packaged Node.js reports $ActualNodeVersion; expected $ExpectedNodeVersion"
-        }
-        [IO.File]::WriteAllText($ProbePlaywrightConfig, "{}`n")
-        [IO.File]::WriteAllText(
-            $ProbeInteractionConfig,
-            '{"compatibilityMode":"robust","defaultSnapshotDepth":6,"schemaVersion":1,"settleMs":1500,"snapshotStrategy":"compact"}' + "`n"
-        )
-        Invoke-PythonChecked @(
-            (Join-Path $PSScriptRoot "smoke_playwright_mcp.py"),
-            "--node-executable", $ProbeNode,
-            "--playwright-cli", $ProbePlaywrightCli,
-            "--playwright-config", $ProbePlaywrightConfig
-        )
-        $env:CLAUDE_CONFIG_DIR = $ProbeClaudeConfig
-        $RegistrationArguments = @(
-            (Join-Path $PSScriptRoot "register_claude_user_mcp.py"),
-            "register",
-            "--claude-executable", [string]$ClaudeInvocation.Executable
-        )
-        foreach ($ClaudePrefixArgument in @($ClaudeInvocation.Prefix)) {
-            $RegistrationArguments += @(
-                "--claude-prefix", [string]$ClaudePrefixArgument
-            )
-        }
-        $RegistrationArguments += @(
-            "--server-name", "intranet-browser-agent-release-probe",
-            "--node-executable", $ProbeNode,
-            "--playwright-cli", $ProbePlaywrightCli,
-            "--playwright-config", $ProbePlaywrightConfig,
-            "--user-config", $ProbeUserConfig,
-            "--backup", $ProbeBackup
-        )
-        Invoke-PythonChecked $RegistrationArguments
-        if (-not (Test-Path -LiteralPath $ProbeUserConfig -PathType Leaf)) {
-            throw "Claude CLI probe did not create isolated user configuration."
-        }
-    } finally {
-        if ($HadClaudeConfigDir) {
-            $env:CLAUDE_CONFIG_DIR = $PreviousClaudeConfigDir
+    if ($PSVersionTable.PSEdition -ne "Desktop" -or
+        $PSVersionTable.PSVersion -lt [version]"5.1") {
+        throw "Windows PowerShell 5.1 Desktop is required for the release gate."
+    }
+    if (-not $script:PythonExecutable) {
+        $Py = Get-Command "py.exe" -ErrorAction SilentlyContinue
+        if ($Py) {
+            $script:PythonExecutable = $Py.Source
+            $script:PythonPrefix = @("-3")
         } else {
-            Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
-        }
-        if (Test-Path -LiteralPath $ProbeRoot) {
-            Remove-Item -LiteralPath $ProbeRoot -Recurse -Force -ErrorAction SilentlyContinue
+            $Python = Get-Command "python.exe" -ErrorAction SilentlyContinue
+            if (-not $Python) { throw "Python 3.10+ is required." }
+            $script:PythonExecutable = $Python.Source
         }
     }
+    $ClaudeInvocation = Resolve-ClaudeCodeInvocation -ExplicitPath $ClaudeExecutable
+    if ($null -eq $ClaudeInvocation) {
+        throw "An existing usable Claude Code command is required; the release gate never installs or repairs Claude Code."
+    }
 
-    Invoke-PythonChecked @(
-        (Join-Path $PSScriptRoot "verify-bundle.py"),
-        $ResolvedTransferPath
+    $TemporaryRoot = Join-Path ([IO.Path]::GetTempPath()) (
+        "browser-mcp-server-release-gate-" + [guid]::NewGuid().ToString("N")
     )
-} finally {
-    Pop-Location
-}
+    New-Item -ItemType Directory -Path $TemporaryRoot -Force | Out-Null
+    try {
+        $Verifier = Join-Path $SourceRoot "scripts\verify-bundle.py"
+        $MetadataVerifier = Join-Path $SourceRoot "scripts\validate_windows_release_metadata.py"
+        $ResolvedPackageRoot = Resolve-PublicPackageRoot `
+            -InputPath $TransferPath `
+            -Verifier $Verifier `
+            -TemporaryRoot $TemporaryRoot
+        $PayloadRoot = Join-Path $ResolvedPackageRoot "payload"
+        $ToolkitRoot = Join-Path $PayloadRoot "toolkit"
+        $KitMetadataPath = Join-Path $PayloadRoot "KIT-METADATA.json"
+        $ReleaseManifestPath = Join-Path $ResolvedPackageRoot "release-manifest.json"
+        foreach ($Required in @($PayloadRoot, $ToolkitRoot)) {
+            if (-not (Test-Path -LiteralPath $Required -PathType Container)) {
+                throw "Public package is missing required directory: $Required"
+            }
+        }
+        foreach ($Required in @($KitMetadataPath, $ReleaseManifestPath)) {
+            if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) {
+                throw "Public package is missing required file: $Required"
+            }
+        }
+        Invoke-PythonChecked @($MetadataVerifier, $ReleaseManifestPath)
+        Invoke-PythonChecked @($MetadataVerifier, $KitMetadataPath)
+        $ReleaseManifest = Get-Content -LiteralPath $ReleaseManifestPath -Raw | ConvertFrom-Json
+        $KitMetadata = Get-Content -LiteralPath $KitMetadataPath -Raw | ConvertFrom-Json
+        if ([string]$ReleaseManifest.product -ne "browser-mcp-server" -or
+            [string]$ReleaseManifest.mcpServerName -ne "browser-mcp" -or
+            [string]$KitMetadata.product -ne "browser-mcp-server" -or
+            [string]$KitMetadata.mcpServerName -ne "browser-mcp") {
+            throw "Public and payload metadata do not use the canonical browser-mcp-server identity."
+        }
 
-Write-Host "WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED" -ForegroundColor Green
+        # Parse both reviewed source and packaged maintenance scripts before
+        # starting any runtime or browser process.
+        Parse-PowerShellScripts (Join-Path $SourceRoot "scripts")
+        Parse-PowerShellScripts $PayloadRoot
+        Push-Location $SourceRoot
+        try {
+            Invoke-PythonChecked @("-c", "import sys; raise SystemExit(sys.version_info < (3, 10))")
+            Invoke-PythonChecked @("-m", "unittest", "discover", "-s", "tests", "-v")
+            Invoke-PythonChecked @(
+                (Join-Path $SourceRoot "scripts\register_claude_user_mcp.py"),
+                "self-test"
+            )
+        } finally {
+            Pop-Location
+        }
+
+        $RuntimeArchiveName = [string]$KitMetadata.runtime.archive
+        $RuntimeArchive = Join-Path (Join-Path $PayloadRoot "runtime") $RuntimeArchiveName
+        Invoke-PythonChecked @($Verifier, $RuntimeArchive)
+        $RuntimeExtraction = Join-Path $TemporaryRoot "runtime"
+        New-Item -ItemType Directory -Path $RuntimeExtraction -Force | Out-Null
+        $Tar = Get-Command "tar.exe" -ErrorAction SilentlyContinue
+        if (-not $Tar) { throw "Windows tar.exe is required for runtime verification." }
+        Invoke-NativeChecked $Tar.Source @("-xzf", $RuntimeArchive, "-C", $RuntimeExtraction)
+        $RuntimeName = $RuntimeArchiveName -replace '\.tar\.gz$', ''
+        $RuntimeRoot = Join-Path $RuntimeExtraction $RuntimeName
+        Invoke-PythonChecked @($Verifier, $RuntimeRoot)
+        $BuildMetadata = $KitMetadata.runtime.buildMetadata
+        $NodeRoot = Join-Path $RuntimeRoot "node"
+        $NodeExe = Join-Path $NodeRoot "node.exe"
+        $NodeApprovals = Join-Path $SourceRoot "config\windows-node-sources.json"
+        Invoke-PythonChecked @(
+            (Join-Path $SourceRoot "scripts\validate_node_distribution.py"),
+            $NodeRoot,
+            "--expected-version", [string]$BuildMetadata.tools.node,
+            "--approval-file", $NodeApprovals
+        )
+        $ActualNode = Get-NativeOutput $NodeExe @("--version")
+        if ($ActualNode -ne [string]$BuildMetadata.tools.node) {
+            throw "Packaged Node.js reports $ActualNode; expected $($BuildMetadata.tools.node)"
+        }
+        $Wrapper = Join-Path $RuntimeRoot "bin\intranet-browser-agent-mcp.js"
+        $ProbeConfig = Join-Path $TemporaryRoot "playwright.config.json"
+        [IO.File]::WriteAllText(
+            $ProbeConfig, "{}`n", (New-Object System.Text.UTF8Encoding($false))
+        )
+        Invoke-PythonChecked @(
+            (Join-Path $SourceRoot "scripts\smoke_playwright_mcp.py"),
+            "--node-executable", $NodeExe,
+            "--playwright-cli", $Wrapper,
+            "--playwright-config", $ProbeConfig,
+            "--expected-server-name", "browser-mcp"
+        )
+
+        # Use an isolated Claude user config for a real remove/add/get probe.
+        $ProbeClaudeConfig = Join-Path $TemporaryRoot "claude-config"
+        New-Item -ItemType Directory -Path $ProbeClaudeConfig -Force | Out-Null
+        $ProbeUserConfig = Join-Path $ProbeClaudeConfig ".claude.json"
+        $ProbeBackup = Join-Path $TemporaryRoot "claude-user-config.bak"
+        $HadClaudeConfigDir = Test-Path Env:CLAUDE_CONFIG_DIR
+        $PreviousClaudeConfigDir = $env:CLAUDE_CONFIG_DIR
+        try {
+            $env:CLAUDE_CONFIG_DIR = $ProbeClaudeConfig
+            $Registrar = Join-Path $SourceRoot "scripts\register_claude_user_mcp.py"
+            $Registration = @(
+                $Registrar, "register",
+                "--claude-executable", [string]$ClaudeInvocation.Executable
+            )
+            foreach ($Prefix in @($ClaudeInvocation.Prefix)) {
+                $Registration += @("--claude-prefix", [string]$Prefix)
+            }
+            $Registration += @(
+                "--server-name", "browser-mcp",
+                "--node-executable", $NodeExe,
+                "--playwright-cli", $Wrapper,
+                "--playwright-config", $ProbeConfig,
+                "--user-config", $ProbeUserConfig,
+                "--backup", $ProbeBackup
+            )
+            Invoke-PythonChecked $Registration
+            if (-not (Test-Path -LiteralPath $ProbeUserConfig -PathType Leaf)) {
+                throw "Claude Code did not create the isolated user configuration."
+            }
+        } finally {
+            if ($HadClaudeConfigDir) {
+                $env:CLAUDE_CONFIG_DIR = $PreviousClaudeConfigDir
+            } else {
+                Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
+            }
+        }
+
+        # A final pass proves the gate and its tests did not mutate the package.
+        Invoke-PythonChecked @($Verifier, $ResolvedPackageRoot)
+    } finally {
+        if (Test-Path -LiteralPath $TemporaryRoot) {
+            Remove-Item -LiteralPath $TemporaryRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    Write-Host "WINDOWS POWERSHELL 5.1 RELEASE GATE PASSED" -ForegroundColor Green
 }
 
 $TranscriptStarted = $false
 try {
     if ($LogPath) {
-        $LogDirectory = Split-Path -Parent $LogPath
-        if ($LogDirectory) {
-            New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
-        }
+        $Directory = Split-Path -Parent $LogPath
+        if ($Directory) { New-Item -ItemType Directory -Path $Directory -Force | Out-Null }
         Start-Transcript -LiteralPath $LogPath -Force | Out-Null
         $TranscriptStarted = $true
     }
     Invoke-ReleaseGate
 } finally {
-    if ($TranscriptStarted) {
-        Stop-Transcript | Out-Null
-    }
+    if ($TranscriptStarted) { Stop-Transcript | Out-Null }
 }

@@ -1,27 +1,27 @@
 {
   "$schema": "../schema/deployment.schema.json",
   "schemaVersion": 1,
-  "deploymentId": "corp-browser-agent-pilot",
+  "deploymentId": "browser-mcp-server-pilot",
   "environment": "pilot",
   "target": {
     "os": "linux",
     "arch": "x64"
   },
   "mode": "persistent",
-  "installRoot": "/opt/intranet-browser-agent/current",
-  "configRoot": "/etc/intranet-browser-agent/pilot",
+  "installRoot": "/opt/browser-mcp-server/current",
+  "configRoot": "/etc/browser-mcp-server/pilot",
   "workspaceRoots": [
-    "/srv/browser-agent/pilot-workspace"
+    "/srv/browser-mcp-server/pilot-workspace"
   ],
   "output": {
-    "directory": "/var/lib/intranet-browser-agent/pilot-output",
+    "directory": "/var/lib/browser-mcp-server/pilot-output",
     "maxBytes": 52428800,
     "retainSession": false,
     "retentionDays": 0
   },
   "browser": {
     "channel": "chrome",
-    "userDataDir": "/var/lib/intranet-browser-agent/profiles/pilot",
+    "userDataDir": "/var/lib/browser-mcp-server/profiles/pilot",
     "profileOwner": "REPLACE-ME-PILOT-OS-ACCOUNT",
     "maxConcurrentAgents": 1
   },

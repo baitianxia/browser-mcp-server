@@ -28,12 +28,17 @@ class WindowsReleaseMetadataTests(unittest.TestCase):
         return {
             "schemaVersion": 1,
             "toolkitVersion": RUNTIME_VERSION,
+            "product": "browser-mcp-server",
+            "displayName": "浏览器助手",
+            "mcpServerName": "browser-mcp",
             "sourcePolicy": "reviewed-allowlist",
             "sourceFileCount": 69,
             "runtime": {
                 "archive": (
                     f"browser-agent-runtime-{RUNTIME_VERSION}-core-windows-x64.tar.gz"
                 ),
+                "sha256": "0" * 64,
+                "sizeBytes": 1,
                 "buildMetadata": {
                     "schemaVersion": 1,
                     "runtimeVersion": RUNTIME_VERSION,

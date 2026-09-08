@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transactionally register the Windows pilot MCP in Claude Code user scope."""
+"""Transactionally register browser-mcp-server in Claude Code user scope."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ MCP_ENVIRONMENT_PATH = (
 )
 ENVIRONMENT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 EXTENSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
-EXTENSION_TOKEN_INPUT_ENV = "INTRANET_BROWSER_AGENT_EXTENSION_TOKEN_INPUT"
+EXTENSION_TOKEN_INPUT_ENV = "BROWSER_MCP_EXTENSION_TOKEN_INPUT"
 
 
 def _configure_standard_streams() -> None:
@@ -150,6 +150,7 @@ def _playwright_command_arguments(
     playwright_config: Path,
     browser_channel: str | None,
     browser_executable: Path | None = None,
+    browser_settings: Path | None = None,
 ) -> list[str]:
     if browser_channel not in {None, "chrome", "msedge"}:
         raise RegistrationError(f"unsupported browser channel: {browser_channel}")
@@ -163,6 +164,12 @@ def _playwright_command_arguments(
         arguments.append(f"--executable-path={browser_executable}")
     elif browser_executable is not None:
         raise RegistrationError("browser executable requires an extension browser channel")
+    if browser_settings is not None:
+        if not browser_settings.is_file():
+            raise RegistrationError(
+                f"browser settings is not a regular file: {browser_settings}"
+            )
+        arguments.extend(("--settings", str(browser_settings)))
     arguments.extend(("--config", str(playwright_config)))
     return arguments
 
@@ -285,6 +292,7 @@ def _verify_user_registration(
     playwright_config: Path,
     browser_channel: str | None,
     browser_executable: Path | None,
+    browser_settings: Path | None,
     mcp_environment: Mapping[str, str],
 ) -> None:
     try:
@@ -315,6 +323,7 @@ def _verify_user_registration(
         playwright_config,
         browser_channel,
         browser_executable,
+        browser_settings,
     )
     if entry.get("command") != expected_command or entry.get("args") != expected_arguments:
         raise RegistrationError(
@@ -337,6 +346,7 @@ def register_user_mcp(
     playwright_config: Path,
     browser_channel: str | None = None,
     browser_executable: Path | None = None,
+    browser_settings: Path | None = None,
     user_config: Path,
     backup: Path,
     reporter: Reporter = print,
@@ -374,6 +384,8 @@ def register_user_mcp(
             raise RegistrationError("browser executable must end in .exe")
     elif browser_executable is not None:
         raise RegistrationError("browser executable requires an extension browser channel")
+    if browser_settings is not None and not browser_settings.is_file():
+        raise RegistrationError(f"browser settings is not a regular file: {browser_settings}")
     registered_environment = (
         load_mcp_environment()
         if mcp_environment is None
@@ -408,7 +420,7 @@ def register_user_mcp(
         if remove_result.returncode == 0:
             reporter("已清理旧的用户级 MCP 条目，正在注册新版本。")
         elif _remove_result_is_missing(remove_result):
-            reporter("未发现可清理的旧 MCP 条目（首次安装时正常），继续注册。")
+            reporter("未发现可清理的当前 MCP 条目（首次安装时正常），继续注册。")
         else:
             raise RegistrationError(
                 _failure(
@@ -437,6 +449,7 @@ def register_user_mcp(
                     playwright_config,
                     browser_channel,
                     browser_executable,
+                    browser_settings,
                 ),
             ),
             environment=environment,
@@ -458,6 +471,7 @@ def register_user_mcp(
             playwright_config=playwright_config,
             browser_channel=browser_channel,
             browser_executable=browser_executable,
+            browser_settings=browser_settings,
             mcp_environment=registered_environment,
         )
 
@@ -611,7 +625,7 @@ def self_test() -> None:
         register_user_mcp(
             claude_executable=sys.executable,
             claude_prefix=(str(fake_cli),),
-            server_name="intranet-browser-agent",
+            server_name="browser-mcp",
             node_executable=node_executable,
             playwright_cli=playwright_cli,
             playwright_config=playwright_config,
@@ -626,7 +640,7 @@ def self_test() -> None:
         if first_backup.read_bytes() != original or payload["unrelated"] != {"keep": True}:
             raise RegistrationError("first-install backup or unrelated config was not preserved")
         expected_events = [
-            ["mcp", "remove", "intranet-browser-agent", "--scope", "user"],
+            ["mcp", "remove", "browser-mcp", "--scope", "user"],
             [
                 "mcp",
                 "add",
@@ -634,7 +648,7 @@ def self_test() -> None:
                 "stdio",
                 "--scope",
                 "user",
-                "intranet-browser-agent",
+                "browser-mcp",
                 *_mcp_environment_arguments(mcp_environment),
                 "--",
                 str(node_executable),
@@ -644,13 +658,13 @@ def self_test() -> None:
                 "--config",
                 str(playwright_config),
             ],
-            ["mcp", "get", "intranet-browser-agent"],
+            ["mcp", "get", "browser-mcp"],
         ]
         actual_events = [json.loads(line) for line in events.read_text().splitlines()]
         if actual_events != expected_events:
             raise RegistrationError(f"unexpected Claude CLI sequence: {actual_events!r}")
 
-        upgrade_original = b'{"mcpServers":{"intranet-browser-agent":{"command":"old"}}}\n'
+        upgrade_original = b'{"mcpServers":{"browser-mcp":{"command":"old"}}}\n'
         user_config.write_bytes(upgrade_original)
         add_failure_environment = dict(base_environment)
         add_failure_environment["FAKE_CLAUDE_FAIL_ADD"] = "1"
@@ -658,7 +672,7 @@ def self_test() -> None:
             register_user_mcp(
                 claude_executable=sys.executable,
                 claude_prefix=(str(fake_cli),),
-                server_name="intranet-browser-agent",
+                server_name="browser-mcp",
                 node_executable=node_executable,
                 playwright_cli=playwright_cli,
                 playwright_config=playwright_config,
@@ -682,7 +696,7 @@ def self_test() -> None:
             register_user_mcp(
                 claude_executable=sys.executable,
                 claude_prefix=(str(fake_cli),),
-                server_name="intranet-browser-agent",
+                server_name="browser-mcp",
                 node_executable=node_executable,
                 playwright_cli=playwright_cli,
                 playwright_config=playwright_config,
@@ -705,7 +719,7 @@ def self_test() -> None:
             register_user_mcp(
                 claude_executable=sys.executable,
                 claude_prefix=(str(fake_cli),),
-                server_name="intranet-browser-agent",
+                server_name="browser-mcp",
                 node_executable=node_executable,
                 playwright_cli=playwright_cli,
                 playwright_config=playwright_config,
@@ -732,6 +746,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_parser.add_argument("--node-executable", required=True, type=Path)
     register_parser.add_argument("--playwright-cli", required=True, type=Path)
     register_parser.add_argument("--playwright-config", required=True, type=Path)
+    register_parser.add_argument("--browser-settings", type=Path)
     register_parser.add_argument(
         "--browser-channel", choices=("chrome", "msedge")
     )
@@ -771,6 +786,7 @@ def main() -> int:
                 playwright_config=args.playwright_config,
                 browser_channel=args.browser_channel,
                 browser_executable=args.browser_executable,
+                browser_settings=args.browser_settings,
                 user_config=args.user_config,
                 backup=args.backup,
                 extension_token=extension_token,

@@ -16,14 +16,14 @@
 |---|---|---|
 | 页面 prompt injection 引导访问其他网站或泄露数据 | 页面内容视为不可信、上传/发送确认；production 使用企业出站强制层和显式 origins | 通用内网 pilot 不设网址白名单，可访问目标机网络可达的全部站点，只应用于测试账号和非生产数据 |
 | Agent 误删、付款、发布或代表用户发送 | 风险动作确认、一次只做一步、结果复核、最小业务权限 | 确认后仍可能出现业务语义误解 |
-| 日常浏览身份被过度暴露 | production 使用专用 OS 用户/Profile；Windows pilot 仅用于测试账号/非生产数据，初始保留每次扩展连接批准和 Tab 选择，并可切换到 `%LOCALAPPDATA%` 下不读取日常登录态的独立 Profile | Extension 中被允许的浏览器会话能力会暴露给 Agent；用户误选敏感 Tab 或主动保存持久令牌仍会扩大范围；独立 Profile 首次需单独登录 |
+| 日常浏览身份被过度暴露 | production 使用专用 OS 用户/Profile；Windows pilot 仅用于测试账号/非生产数据，初始保留每次扩展连接批准和 Tab 选择，并可切换到 `%USERPROFILE%\browser-mcp-server\browser-profile\pilot` 下不读取日常登录态的独立 Profile；Chrome/Edge 的 `%LOCALAPPDATA%` 只用于发现既有 Profile 和扩展状态 | Extension 中被允许的浏览器会话能力会暴露给 Agent；用户误选敏感 Tab 或主动保存持久令牌仍会扩大范围；独立 Profile 首次需单独登录 |
 | MCP/依赖/扩展供应链污染 | 固定版本、锁文件、忽略安装脚本、白名单迁移包、分层 SHA-256、CycloneDX、企业扫描/签名；官方 CRX 固定来源/哈希/manifest ID/权限，已解压副本与 CRX payload 逐文件核对 | 上游固定版本本身可能含漏洞；人工加载的 unpacked 模式会显示开发者扩展提示 |
 | 便携 Node 被替换或夹带包管理器 | 官方 ZIP 与 `SHASUMS256.txt` 校验、只提取四个白名单文件、逐文件哈希、AMD64 PE 检查、分层制品完整性 | 官方发布或构建区本身仍可能失陷；企业扫描/签名仍是放行条件 |
 | 用户遗留环境覆盖已校验的 Playwright 配置或向 Node 注入启动选项 | Windows `.mcp.json`、门禁握手和 user-scope 注册共用固定环境映射，清除固定依赖支持的 `PLAYWRIGHT_MCP_*` 配置覆盖及 `NODE_OPTIONS`/`NODE_PATH`；最终条目逐项核对 | 同一用户权限下的恶意进程仍可在安装后改写配置或运行文件 |
 | 跨平台误标、路径 link/junction 或 Windows reparse point 逸出 | 清单显式目标、构建主机/目标元数据、Windows link-free 归档、写入前真实路径检查、目标 preflight | 交叉构建候选包仍未证明目标 `node.exe + 兼容层 + 上游 CLI`、Claude CLI 与企业 Windows 镜像兼容 |
 | Defender/EDR/索引器短暂占用运行时、扩展或配置目录，或 PowerShell provider 在移动失败后留下半成品 | 所有受管目录切换共用 Win32 原子目录移动和源/目标状态检查，在同一安装进程有界退避；无效扩展与失败配置移动到唯一备份路径而非递归删除；Windows CI 真实拒绝目录移动权限并验证恢复 | 持续占用超过恢复窗口或外部并发创建目标目录时仍必须失败关闭并保留现场 |
-| 安装/设置向导污染项目、把 MCP 注册到错误账号或在发布中留下半配置 | pilot 使用当前用户 `%LOCALAPPDATA%` 和 Claude Code user scope，不提权、不接收项目路径、不写项目文件；安装器和设置工具共用锁、路径检查、暂存 preflight/MCP 握手及原子配置切换；真实事务先备份，`remove/add/get`、条目核对或握手失败时恢复 | 当前用户权限内的恶意进程仍可篡改其 MCP 配置或运行文件；发布门禁不能替代企业镜像上的最终兼容性验收 |
-| 浏览器拒绝离线 CRX、策略注册表被企业 ACL 锁定，或自动辅助失败后安装状态不完整/遗留策略 | 以实际 Profile 检测为准；更新清单、策略访问或浏览器启动失败直接降级人工路径；已实际写入的临时策略必须先恢复，无法安全恢复才停止；打开扩展页和剪贴板复制均为非致命便利，屏幕始终显示地址与精确 `%LOCALAPPDATA%` 目录；原安装进程等待检测成功后才写 Claude 配置；Windows CI 对精确策略键真实拒绝 `SetValue` 并要求单进程完成 | 现有企业 `ExtensionSettings` 仍可能阻止人工加载；用户关闭等待窗口会中止安装 |
+| 安装/设置向导污染项目、把 MCP 注册到错误账号或在发布中留下半配置 | pilot 使用当前用户 `%USERPROFILE%\browser-mcp-server` 和 Claude Code user scope，不提权、不接收项目路径、不写项目文件；Chrome/Edge 的 `%LOCALAPPDATA%` 只用于浏览器发现；安装器和设置工具共用锁、路径检查、暂存 preflight/MCP 握手及原子配置切换；真实事务先备份，`remove/add/get`、条目核对或握手失败时恢复 | 当前用户权限内的恶意进程仍可篡改其 MCP 配置或运行文件；发布门禁不能替代企业镜像上的最终兼容性验收 |
+| 浏览器拒绝离线 CRX、策略注册表被企业 ACL 锁定，或自动辅助失败后安装状态不完整/遗留策略 | 以实际 Profile 检测为准；更新清单、策略访问或浏览器启动失败直接降级人工路径；已实际写入的临时策略必须先恢复，无法安全恢复才停止；打开扩展页和剪贴板复制均为非致命便利，屏幕始终显示地址和 `%USERPROFILE%\browser-mcp-server\browser-extension\<版本>\unpacked` 的精确目录；原安装进程等待检测成功后才写 Claude 配置；Windows CI 对精确策略键真实拒绝 `SetValue` 并要求单进程完成 | 现有企业 `ExtensionSettings` 仍可能阻止人工加载；用户关闭等待窗口会中止安装 |
 | 扩展存在于错误 Profile 或固定 MCP 版本未识别手工加载记录 | 安装器只接受浏览器 last-used Profile；清单、握手和 user-scope 注册同时固定 channel 与实际 browser `.exe`；Windows CI 必须在 Chrome 重启后做真实扩展工具调用 | 用户随后主动切换浏览器 Profile 时仍需在目标 Profile 重新安装/批准扩展 |
 | 调试端口被远程接管 | stdio、本机 channel/loopback、禁止远程 endpoint、主机防火墙 | 同机恶意进程仍可能访问 loopback |
 | 模型侧数据外泄 | 数据分类和模型路由必须先批准；减少截图、网络和控制台信息 | 已批准模型仍会接收完成任务所需内容 |

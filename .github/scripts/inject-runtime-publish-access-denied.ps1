@@ -108,7 +108,7 @@ try {
     $RetryDeadline = $FaultArmedAtUtc.AddSeconds($RetryWaitSeconds)
     while ([DateTime]::UtcNow -lt $RetryDeadline) {
         $InstallLogs = @(Get-ChildItem -LiteralPath $InstallLogRoot `
-            -Filter "INSTALL-WINDOWS-PILOT-*.log" -File `
+            -Filter "INSTALL-*.log" -File `
             -ErrorAction SilentlyContinue | Where-Object {
                 $_.LastWriteTimeUtc -ge $FaultArmedAtUtc
             })

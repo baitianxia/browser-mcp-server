@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "product": "browser-mcp-server",
+  "displayName": "浏览器助手",
+  "mcpServerName": "browser-mcp",
+  "browserMode": "extension",
+  "browserChannel": "chrome",
+  "browserExecutablePath": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "headless": false,
+  "extensionAuthorization": "session",
+  "snapshotStrategy": "compact",
+  "compatibilityMode": "robust",
+  "defaultSnapshotDepth": 6,
+  "settleMs": 1500,
+  "installRoot": "%USERPROFILE%\\browser-mcp-server\\releases\\current",
+  "configRoot": "%USERPROFILE%\\browser-mcp-server\\config",
+  "outputDirectory": "%USERPROFILE%\\browser-mcp-server\\output",
+  "userDataDir": null,
+  "lastUpdatedUtc": null
+}

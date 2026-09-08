@@ -49,7 +49,7 @@ FAKE_SERVER = textwrap.dedent(
                 "result": {
                     "protocolVersion": "2025-03-26",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "Playwright", "version": "fixture"},
+                    "serverInfo": {"name": "browser-mcp", "version": "fixture"},
                 },
             }), flush=True)
         elif message.get("id") == 2:
@@ -127,6 +127,20 @@ class PlaywrightMcpSmokeTests(unittest.TestCase):
                     browser_channel="chrome",
                     browser_executable=browser,
                 )
+            self.assertEqual("fixture", version)
+            self.assertEqual(5, tool_count)
+
+    def test_expected_server_name_can_be_overridden_for_raw_upstream(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            server, config = self.fixture(Path(temporary))
+            # The fixture emits the canonical wrapper identity by default; an
+            # explicit expectation still exercises the public parameter.
+            version, tool_count = smoke_module.smoke(
+                Path(sys.executable),
+                server,
+                config,
+                expected_server_name="browser-mcp",
+            )
             self.assertEqual("fixture", version)
             self.assertEqual(5, tool_count)
 

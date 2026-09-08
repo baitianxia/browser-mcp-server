@@ -9,6 +9,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -71,6 +72,17 @@ class ArtifactIntegrityTests(unittest.TestCase):
         self.assertFalse(verify_bundle.link_stays_inside("bin/tool", r"C:\Windows"))
         self.assertFalse(verify_bundle.link_stays_inside("bin/tool", r"..\outside"))
         self.assertTrue(verify_bundle.link_stays_inside("bin/tool", "../lib/tool.js"))
+
+    @unittest.skipIf(os.name == "nt", "creating symlinks may require Windows privileges")
+    def test_directory_root_must_be_regular_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "target"
+            target.mkdir()
+            os.symlink(target, Path(temporary) / "bundle-link")
+            self.assertEqual(
+                [f"bundle root is not a regular directory: {Path(temporary) / 'bundle-link'}"],
+                verify_bundle.verify_directory(Path(temporary) / "bundle-link"),
+            )
 
     def test_archive_paths_reject_windows_unsafe_names(self) -> None:
         for path in (
@@ -172,6 +184,18 @@ class ArtifactIntegrityTests(unittest.TestCase):
             self.assertEqual(
                 ["invalid or non-canonical archive checksum sidecar"],
                 verify_bundle.verify_sidecar(archive),
+            )
+
+    @unittest.skipIf(os.name == "nt", "creating symlinks may require Windows privileges")
+    def test_zip_rejects_dangling_sidecar_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / "fixture.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("fixture/file.txt", b"fixture")
+            os.symlink("missing.sha256", Path(f"{archive}.sha256"))
+            self.assertEqual(
+                [f"missing archive checksum sidecar: {archive}.sha256"],
+                verify_bundle.verify_zip_archive(archive),
             )
 
     def test_archive_rejects_symlinked_integrity_manifest(self) -> None:

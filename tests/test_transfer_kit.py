@@ -142,42 +142,38 @@ class TransferKitTests(unittest.TestCase):
                 extension,
                 extension_approval=extension_approval,
             )
-            archive = output / (
-                f"intranet-browser-agent-transfer-{RUNTIME_VERSION}-core-windows-x64.tar.gz"
-            )
+            archive = output / f"browser-mcp-server-{RUNTIME_VERSION}-windows-x64.zip"
             self.assertTrue(archive.is_file())
             self.assertTrue(Path(f"{archive}.sha256").is_file())
             self.assertEqual([], verify_bundle.verify_archive(archive))
 
-            prefix = (
-                f"intranet-browser-agent-transfer-{RUNTIME_VERSION}-core-windows-x64"
-            )
-            with tarfile.open(archive, "r:gz") as bundle:
-                names = {member.name for member in bundle.getmembers()}
-                start_handle = bundle.extractfile(f"{prefix}/START-HERE.md")
-                self.assertIsNotNone(start_handle)
-                start_here = start_handle.read().decode("utf-8")
-                metadata_handle = bundle.extractfile(f"{prefix}/KIT-METADATA.json")
-                self.assertIsNotNone(metadata_handle)
-                kit_metadata = json.loads(metadata_handle.read().decode("utf-8"))
-            self.assertIn("INSTALL-WINDOWS-PILOT.cmd", start_here)
-            self.assertIn("双击安装", start_here)
-            self.assertIn("首次安装明确没有旧 MCP 条目时会直接继续", start_here)
-            self.assertIn("双击本目录的 `INSTALL-WINDOWS-PILOT.cmd` 一次", start_here)
-            self.assertIn("最终 MCP stdio", start_here)
-            self.assertIn("启动器只启动一个安装事务", start_here)
-            self.assertIn("不运行单元测试或注册器自检", start_here)
-            self.assertIn(f"{prefix}/START-HERE.md", names)
-            self.assertIn(f"{prefix}/INSTALL-WINDOWS-PILOT.cmd", names)
-            self.assertIn(f"{prefix}/INSTALL-WINDOWS-PILOT.ps1", names)
+            prefix = f"browser-mcp-server-{RUNTIME_VERSION}-windows-x64"
+            with zipfile.ZipFile(archive, "r") as bundle:
+                names = set(bundle.namelist())
+                start_here = bundle.read(f"{prefix}/START-HERE.html").decode("utf-8")
+                kit_metadata = json.loads(bundle.read(f"{prefix}/payload/KIT-METADATA.json"))
+                release_manifest = json.loads(bundle.read(f"{prefix}/release-manifest.json"))
+            self.assertIn("INSTALL.cmd", start_here)
+            self.assertIn("双击下面", start_here)
+            self.assertIn("CONFIGURE.cmd", start_here)
+            self.assertIn(f"{prefix}/START-HERE.html", names)
+            self.assertIn(f"{prefix}/INSTALL.cmd", names)
+            self.assertIn(f"{prefix}/NOTICE.md", names)
+            self.assertIn(f"{prefix}/CONFIGURE.cmd", names)
+            self.assertIn(f"{prefix}/OPEN-CONFIG.cmd", names)
+            self.assertIn(f"{prefix}/UNINSTALL.cmd", names)
+            self.assertIn(f"{prefix}/release-manifest.json", names)
+            self.assertIn(f"{prefix}/SHA256SUMS.txt", names)
+            self.assertIn(f"{prefix}/payload/INSTALL-WINDOWS-PILOT.cmd", names)
+            self.assertIn(f"{prefix}/payload/INSTALL-WINDOWS-PILOT.ps1", names)
             self.assertIn(
-                f"{prefix}/browser-extension/{extension.name}", names
+                f"{prefix}/payload/browser-extension/{extension.name}", names
             )
             self.assertIn(
-                f"{prefix}/browser-extension/unpacked/manifest.json", names
+                f"{prefix}/payload/browser-extension/unpacked/manifest.json", names
             )
             self.assertIn(
-                f"{prefix}/browser-extension/unpacked/_metadata/verified_contents.json",
+                f"{prefix}/payload/browser-extension/unpacked/_metadata/verified_contents.json",
                 names,
             )
             self.assertEqual(
@@ -188,59 +184,47 @@ class TransferKitTests(unittest.TestCase):
                 "offline-user-policy-with-manual-unpacked-fallback",
                 kit_metadata["browserExtension"]["installation"],
             )
-            self.assertIn(f"{prefix}/toolkit/config/deployment.pilot.json.template", names)
-            self.assertIn(f"{prefix}/toolkit/config/windows-mcp-environment.json", names)
-            self.assertIn(f"{prefix}/toolkit/config/windows-node-sources.json", names)
-            self.assertIn(f"{prefix}/toolkit/docs/windows-quickstart.md", names)
+            self.assertIn(f"{prefix}/payload/toolkit/config/windows-mcp-environment.json", names)
+            self.assertIn(f"{prefix}/payload/toolkit/config/windows-node-sources.json", names)
+            self.assertIn(f"{prefix}/payload/toolkit/docs/windows-quickstart.md", names)
             self.assertIn(
-                f"{prefix}/toolkit/scripts/configure_windows_pilot.py", names
+                f"{prefix}/payload/toolkit/scripts/configure_windows_pilot.py", names
             )
             self.assertIn(
-                f"{prefix}/toolkit/scripts/BROWSER-AGENT-SETTINGS.cmd", names
+                f"{prefix}/payload/toolkit/scripts/CONFIGURE.cmd", names
             )
             self.assertIn(
-                f"{prefix}/toolkit/scripts/BROWSER-AGENT-SETTINGS.ps1", names
+                f"{prefix}/payload/toolkit/scripts/BROWSER-AGENT-SETTINGS.ps1", names
             )
             self.assertIn(
-                f"{prefix}/toolkit/scripts/check_playwright_extension.py", names
+                f"{prefix}/payload/toolkit/scripts/check_playwright_extension.py", names
             )
             self.assertIn(
-                f"{prefix}/toolkit/scripts/validate_playwright_extension.py", names
+                f"{prefix}/payload/toolkit/scripts/validate_playwright_extension.py", names
             )
             self.assertIn(
-                f"{prefix}/toolkit/scripts/register_claude_user_mcp.py", names
+                f"{prefix}/payload/toolkit/scripts/register_claude_user_mcp.py", names
             )
             self.assertIn(
-                f"{prefix}/toolkit/scripts/smoke_playwright_mcp.py", names
+                f"{prefix}/payload/toolkit/scripts/smoke_playwright_mcp.py", names
             )
             self.assertIn(
-                f"{prefix}/toolkit/scripts/verify-windows-release.ps1", names
+                f"{prefix}/payload/toolkit/scripts/windows-tool-discovery.ps1", names
+            )
+            self.assertIn(f"{prefix}/payload/toolkit/scripts/verify-bundle.py", names)
+            self.assertIn(
+                f"{prefix}/payload/toolkit/scripts/validate_node_distribution.py", names
             )
             self.assertIn(
-                f"{prefix}/toolkit/docs/adr/0008-publisher-gate-and-single-pass-target-install.md",
+                f"{prefix}/payload/toolkit/scripts/validate_windows_release_metadata.py",
                 names,
             )
-            self.assertIn(
-                f"{prefix}/toolkit/scripts/windows-tool-discovery.ps1", names
-            )
-            self.assertIn(
-                f"{prefix}/toolkit/tests/test_claude_mcp_registration.py", names
-            )
-            self.assertIn(f"{prefix}/toolkit/scripts/verify-bundle.py", names)
-            self.assertIn(
-                f"{prefix}/toolkit/scripts/validate_node_distribution.py", names
-            )
-            self.assertIn(
-                f"{prefix}/toolkit/scripts/validate_windows_release_metadata.py",
-                names,
-            )
-            self.assertIn(
-                f"{prefix}/toolkit/tests/test_windows_release_metadata.py", names
-            )
-            self.assertIn(f"{prefix}/runtime/{runtime.name}", names)
+            self.assertIn(f"{prefix}/payload/runtime/{runtime.name}", names)
+            self.assertEqual("browser-mcp-server", release_manifest["product"])
+            self.assertEqual("browser-mcp", release_manifest["mcpServerName"])
             self.assertFalse(any("/.git/" in name for name in names))
             self.assertFalse(any("/__pycache__/" in name for name in names))
-            self.assertNotIn(f"{prefix}/toolkit/config/deployment.production.json", names)
+            self.assertNotIn(f"{prefix}/payload/toolkit/config/deployment.production.json", names)
 
     def test_cross_built_windows_start_here_refuses_target_install(self) -> None:
         start_here = build_transfer.start_here(
@@ -322,6 +306,27 @@ class TransferKitTests(unittest.TestCase):
             )
             self.assertEqual(2, result.returncode)
             self.assertIn("bundledNode=true", result.stderr)
+
+    def test_rejects_cross_built_windows_public_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = self.make_runtime(
+                root,
+                target_system="windows",
+                target_machine="x64",
+                cross_built=True,
+            )
+            extension, extension_approval = self.make_extension(root)
+            with self.assertRaises(build_transfer.TransferKitError) as raised:
+                build_transfer.build_transfer_kit(
+                    ROOT,
+                    runtime,
+                    root / "output",
+                    False,
+                    extension,
+                    extension_approval=extension_approval,
+                )
+            self.assertIn("crossBuilt=false", str(raised.exception))
 
 
 if __name__ == "__main__":
