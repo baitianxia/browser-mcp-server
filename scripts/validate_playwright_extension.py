@@ -7,6 +7,7 @@ import argparse
 import base64
 import hashlib
 import json
+import re
 import shutil
 import stat
 import struct
@@ -25,6 +26,8 @@ APPROVAL_KEYS = {
     "schemaVersion",
     "extensionId",
     "version",
+    "compatibleVersions",
+    "compatibleVersions",
     "filename",
     "sizeBytes",
     "sha256",
@@ -87,6 +90,35 @@ def load_approval(path: Path = DEFAULT_APPROVAL) -> dict[str, Any]:
     ):
         if not isinstance(approval.get(name), str) or not approval[name]:
             raise ExtensionValidationError(f"invalid extension approval field: {name}")
+    compatible_versions = approval.get("compatibleVersions")
+    if (
+        not isinstance(compatible_versions, list)
+        or not compatible_versions
+        or any(
+            not isinstance(version, str)
+            or not re.fullmatch(r"\d+\.\d+\.\d+", version)
+            for version in compatible_versions
+        )
+        or len(set(compatible_versions)) != len(compatible_versions)
+        or approval["version"] not in compatible_versions
+    ):
+        raise ExtensionValidationError("invalid compatible extension versions")
+    compatible_versions = approval.get("compatibleVersions")
+    if (
+        not isinstance(compatible_versions, list)
+        or not compatible_versions
+        or any(
+            not isinstance(version, str)
+            or not re.fullmatch(r"\d+\.\d+\.\d+", version)
+            for version in compatible_versions
+        )
+    ):
+        raise ExtensionValidationError("invalid compatible extension versions")
+    if (
+        len(set(compatible_versions)) != len(compatible_versions)
+        or approval["version"] not in compatible_versions
+    ):
+        raise ExtensionValidationError("invalid compatible extension versions")
     if not isinstance(approval.get("sizeBytes"), int) or approval["sizeBytes"] <= 0:
         raise ExtensionValidationError("invalid approved extension size")
     if len(approval["sha256"]) != 64 or any(
@@ -173,6 +205,8 @@ def validate_crx(path: Path, approval: dict[str, Any]) -> dict[str, Any]:
     return {
         "extensionId": actual_id,
         "version": manifest["version"],
+        "compatibleVersions": list(approval["compatibleVersions"]),
+        "compatibleVersions": list(approval["compatibleVersions"]),
         "sha256": actual_sha256,
         "sizeBytes": actual_size,
         "filename": path.name,

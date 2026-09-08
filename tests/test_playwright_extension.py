@@ -10,6 +10,7 @@ import tempfile
 import threading
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,12 +74,33 @@ class PlaywrightExtensionValidationTests(unittest.TestCase):
             validator.extension_id_from_manifest_key(approval["manifestKey"]),
         )
 
+    def test_rejects_invalid_compatible_version_allowlist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "approval.json"
+            for compatible_versions in (
+                ["0.3.0"],
+                ["0.4.0", "0.4.0"],
+                ["0.4.0", {"version": "0.3.0"}],
+            ):
+                approval = self.approval()
+                approval["compatibleVersions"] = compatible_versions
+                path.write_text(json.dumps(approval), encoding="utf-8")
+                with self.subTest(compatible_versions=compatible_versions):
+                    with self.assertRaisesRegex(
+                        validator.ExtensionValidationError,
+                        "invalid compatible extension versions",
+                    ):
+                        validator.load_approval(path)
+
     def test_validates_crx3_payload_and_exact_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path, approval = self.make_crx(Path(temporary))
             result = validator.validate_crx(path, approval)
             self.assertEqual(approval["extensionId"], result["extensionId"])
             self.assertEqual(approval["version"], result["version"])
+            self.assertEqual(
+                approval["compatibleVersions"], result["compatibleVersions"]
+            )
 
             changed = copy.deepcopy(approval)
             changed["sha256"] = "0" * 64
@@ -330,6 +352,238 @@ class PlaywrightExtensionDetectionTests(unittest.TestCase):
                     )
                 )
 
+    def test_secure_preferences_cannot_be_overridden_by_preferences(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / "Default"
+            profile.mkdir()
+            relative_extension = Path("Extensions") / "playwright" / self.VERSION
+            self.write_manifest(profile / relative_extension, self.VERSION)
+            record = self.record(str(relative_extension), state=0)
+            payload = {"extensions": {"settings": {checker.PLAYWRIGHT_EXTENSION_ID: record}}}
+            (profile / "Secure Preferences").write_text(json.dumps(payload), encoding="utf-8")
+            enabled = self.record(str(relative_extension))
+            (profile / "Preferences").write_text(
+                json.dumps({"extensions": {"settings": {checker.PLAYWRIGHT_EXTENSION_ID: enabled}}}),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                checker.STATUS_VERSION_MISMATCH,
+                checker.extension_status_in_profile(
+                    profile, self.VERSION, root / "approved-unpacked"
+                )[0],
+            )
+
+    def test_reports_installed_extension_when_version_mismatches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Path(temporary)
+            user_data = checker.browser_user_data_dir(local, "chrome")
+            profile = user_data / "Default"
+            profile.mkdir(parents=True)
+            relative_extension = Path("Extensions") / "playwright" / "0.2.0"
+            self.write_manifest(profile / relative_extension, "0.2.0")
+            (profile / "Preferences").write_text(
+                json.dumps(
+                    {
+                        "extensions": {
+                            "settings": {
+                                checker.PLAYWRIGHT_EXTENSION_ID: self.record(
+                                    str(relative_extension)
+                                )
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            status, found_profile, version = checker.find_extension_status(
+                user_data,
+                self.VERSION,
+                local / "approved-unpacked",
+            )
+            self.assertEqual(checker.STATUS_VERSION_MISMATCH, status)
+            self.assertEqual("Default", found_profile)
+            self.assertEqual("0.2.0", version)
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = checker.check(
+                    SimpleNamespace(
+                        local_app_data=local,
+                        browser_channel="chrome",
+                        expected_version=self.VERSION,
+                        approved_unpacked_path=local / "approved-unpacked",
+                        quiet=False,
+                    )
+                )
+            self.assertEqual(checker.EXIT_VERSION_MISMATCH, result)
+            self.assertIn("INCOMPATIBLE", output.getvalue())
+            self.assertIn("0.2.0", output.getvalue())
+            self.assertNotIn("NOT INSTALLED", output.getvalue())
+            status_output = io.StringIO()
+            with redirect_stdout(status_output):
+                self.assertEqual(
+                    0,
+                    checker.report_status(
+                        SimpleNamespace(
+                            local_app_data=local,
+                            browser_channel="chrome",
+                            expected_version=self.VERSION,
+                            approved_unpacked_path=local / "approved-unpacked",
+                            quiet=False,
+                        )
+                    ),
+                )
+            self.assertEqual("INCOMPATIBLE|0.2.0\n", status_output.getvalue())
+
+    def test_reuses_compatible_extension_but_reports_upgrade_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Path(temporary)
+            user_data = checker.browser_user_data_dir(local, "chrome")
+            profile = user_data / "Default"
+            profile.mkdir(parents=True)
+            installed_version = "0.2.0"
+            relative_extension = Path("Extensions") / "playwright" / installed_version
+            self.write_manifest(profile / relative_extension, installed_version)
+            (profile / "Preferences").write_text(
+                json.dumps(
+                    {
+                        "extensions": {
+                            "settings": {
+                                checker.PLAYWRIGHT_EXTENSION_ID: self.record(
+                                    str(relative_extension)
+                                )
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            compatible_versions = [self.VERSION, installed_version]
+            status, found_profile, version = checker.find_extension_status(
+                user_data,
+                self.VERSION,
+                local / "approved-unpacked",
+                compatible_versions,
+            )
+            self.assertEqual(checker.STATUS_COMPATIBLE, status)
+            self.assertEqual("Default", found_profile)
+            self.assertEqual(installed_version, version)
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = checker.check(
+                    SimpleNamespace(
+                        local_app_data=local,
+                        browser_channel="chrome",
+                        expected_version=self.VERSION,
+                        compatible_versions=compatible_versions,
+                        approved_unpacked_path=local / "approved-unpacked",
+                        quiet=False,
+                    )
+                )
+            self.assertEqual(0, result)
+            self.assertIn("COMPATIBLE", output.getvalue())
+            self.assertIn(installed_version, output.getvalue())
+            status_output = io.StringIO()
+            with redirect_stdout(status_output):
+                self.assertEqual(
+                    0,
+                    checker.report_status(
+                        SimpleNamespace(
+                            local_app_data=local,
+                            browser_channel="chrome",
+                            expected_version=self.VERSION,
+                            compatible_versions=compatible_versions,
+                            approved_unpacked_path=local / "approved-unpacked",
+                            quiet=False,
+                        )
+                    ),
+                )
+            self.assertEqual("COMPATIBLE|0.2.0\n", status_output.getvalue())
+
+    def test_recognizes_compatible_version_in_previous_approved_unpack_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Path(temporary)
+            user_data = checker.browser_user_data_dir(local, "chrome")
+            profile = user_data / "Default"
+            profile.mkdir(parents=True)
+            extension_root = local / "browser-mcp-server" / "browser-extension"
+            current_path = extension_root / self.VERSION / "unpacked"
+            installed_version = "0.2.0"
+            previous_path = extension_root / installed_version / "unpacked"
+            self.write_manifest(previous_path, installed_version)
+            (profile / "Preferences").write_text(
+                json.dumps(
+                    {
+                        "extensions": {
+                            "settings": {
+                                checker.PLAYWRIGHT_EXTENSION_ID: self.record(
+                                    str(previous_path)
+                                )
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            status, found_profile, version = checker.find_extension_status(
+                user_data,
+                self.VERSION,
+                current_path,
+                [self.VERSION, installed_version],
+            )
+            self.assertEqual(checker.STATUS_COMPATIBLE, status)
+            self.assertEqual("Default", found_profile)
+            self.assertEqual(installed_version, version)
+
+    def test_recognizes_incompatible_version_in_previous_approved_unpack_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Path(temporary)
+            user_data = checker.browser_user_data_dir(local, "chrome")
+            profile = user_data / "Default"
+            profile.mkdir(parents=True)
+            extension_root = local / "IntranetBrowserAgent" / "browser-extension"
+            current_path = extension_root / self.VERSION / "unpacked"
+            installed_version = "0.1.0"
+            previous_path = extension_root / installed_version / "unpacked"
+            self.write_manifest(previous_path, installed_version)
+            (profile / "Preferences").write_text(
+                json.dumps(
+                    {
+                        "extensions": {
+                            "settings": {
+                                checker.PLAYWRIGHT_EXTENSION_ID: self.record(
+                                    str(previous_path)
+                                )
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            status, found_profile, version = checker.find_extension_status(
+                user_data,
+                self.VERSION,
+                current_path,
+                [self.VERSION, "0.2.0"],
+            )
+            self.assertEqual(checker.STATUS_VERSION_MISMATCH, status)
+            self.assertEqual("Default", found_profile)
+            self.assertEqual(installed_version, version)
+
+    def test_current_version_remains_valid_when_allowlist_only_adds_old_version(self) -> None:
+        self.assertTrue(
+            checker._is_compatible_version(
+                self.VERSION,
+                self.VERSION,
+                ["0.2.0"],
+            )
+        )
+
     def test_rejects_unapproved_absolute_unpacked_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -354,11 +608,20 @@ class PlaywrightExtensionDetectionTests(unittest.TestCase):
                 checker.find_extension_profile(root, self.VERSION, approved)
             )
 
+            status, found_profile, version = checker.find_extension_status(
+                root,
+                self.VERSION,
+                approved,
+            )
+            self.assertEqual(checker.STATUS_VERSION_MISMATCH, status)
+            self.assertEqual("Default", found_profile)
+            self.assertIsNone(version)
+
     def test_wait_continues_when_manual_load_appears(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             local = Path(temporary)
             profile = checker.browser_user_data_dir(local, "chrome") / "Default"
-            approved = local / "IntranetBrowserAgent" / "extension" / "unpacked"
+            approved = local / "browser-mcp-server" / "browser-extension" / "unpacked"
             self.write_manifest(approved)
 
             def simulate_manual_load() -> None:

@@ -184,6 +184,14 @@ class TransferKitTests(unittest.TestCase):
                 "offline-user-policy-with-manual-unpacked-fallback",
                 kit_metadata["browserExtension"]["installation"],
             )
+            self.assertEqual(
+                extension_approval["compatibleVersions"],
+                kit_metadata["browserExtension"]["compatibleVersions"],
+            )
+            self.assertEqual(
+                extension_approval["compatibleVersions"],
+                release_manifest["browserExtension"]["compatibleVersions"],
+            )
             self.assertIn(f"{prefix}/payload/toolkit/config/windows-mcp-environment.json", names)
             self.assertIn(f"{prefix}/payload/toolkit/config/windows-node-sources.json", names)
             self.assertIn(f"{prefix}/payload/toolkit/docs/windows-quickstart.md", names)

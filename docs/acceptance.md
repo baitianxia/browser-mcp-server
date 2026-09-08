@@ -19,6 +19,7 @@
 - 安装器必须在真实写入前验证现有 Claude Code；原生 `claude.exe` 和可验证的 npm `claude.cmd` 均支持，缺少入口时停止且不安装 Claude。注册失败必须逐字节恢复 Claude 用户配置和旧部署配置。
 - 安装、升级、设置和卸载只影响当前工程。升级从当前受管清单提取浏览器模式、channel、授权、无头和交互设置，不复制旧运行路径、未知字段或历史身份；新版本验证完成后才原子切换。`UNINSTALL.cmd` 只移除 `browser-mcp` 和本工程活动目录，默认保留配置备份。
 - 扩展必须是批准 CRX 与逐文件一致的 `payload/browser-extension/unpacked`。自动策略不可用时必须显示三步人工加载指引并在同一进程等待，检测到精确 ID/版本/路径后续跑；不得下载扩展或接受任意目录。
+- 扩展批准文件、`KIT-METADATA.json` 和 `release-manifest.json` 的版本及 `compatibleVersions` 必须一致。检测覆盖当前/兼容/不可用/未安装、最近使用的 Profile、安全配置优先、精确受管目录和非法版本输入。保留兼容版本必须重新确认可用，选择更新必须等到包内当前版本；新增批准版本须补真实 MCP 连接证据，单元测试夹具不构成兼容批准。
 - 初始配置必须是 `extension + headed + session approval + compact + robust`，Extension 不得有 `headless/userDataDir`；persistent 只能使用本工程独立 Profile，并显式记录 headed/headless。配置工具可分别切换 `compact|full`、`robust|standard`，启动方式变化要求重启 MCP。
 - 所有日志和 MCP 响应不得包含扩展令牌、Cookie、密码或完整个人路径；令牌只通过短期进程环境进入注册事务，并持久化在 Claude user-scope 条目。
 

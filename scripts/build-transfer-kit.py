@@ -437,6 +437,7 @@ def public_windows_manifest(
         manifest["browserExtension"] = {
             "extensionId": browser_extension.get("extensionId"),
             "version": browser_extension.get("version"),
+            "compatibleVersions": browser_extension.get("compatibleVersions"),
             "path": f"payload/browser-extension/{browser_extension.get('filename')}",
             "unpackedPath": "payload/browser-extension/unpacked",
         }

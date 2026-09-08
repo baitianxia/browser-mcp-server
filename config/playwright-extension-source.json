@@ -2,6 +2,9 @@
   "schemaVersion": 1,
   "extensionId": "mmlmfjhmonkocbjadbfplnigmagldckm",
   "version": "0.4.0",
+  "compatibleVersions": [
+    "0.4.0"
+  ],
   "filename": "playwright-extension-0.4.0.crx",
   "sizeBytes": 132795,
   "sha256": "e012b45f6170f627d275588ca1a37dffe5919c2635bbac512f11b74930e63835",

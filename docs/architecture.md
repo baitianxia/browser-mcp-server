@@ -34,6 +34,8 @@ Claude Code ── user-scope stdio ── node.exe + 固定兼容层
 
 用户可以在安装后明确选择记住扩展令牌。令牌只写入 Claude Code 当前用户 `browser-mcp` 条目的环境，不写入本工程 `settings.json`、清单、日志或响应；切回逐次批准或 persistent 时必须删除该环境值。
 
+扩展复用以 `config/playwright-extension-source.json` 的 `compatibleVersions` 为唯一批准来源，构建时原样写入两级发布元数据，安装前必须核对三者一致。列表必须非空、无重复且包含包内版本；新增其他版本前必须记录它与固定 MCP 的真实连接验证证据，不能只凭版本号放行。当前批准列表仅包含 `0.4.0`。已启用的当前版本直接复用，其他批准版本可由用户选择保留或离线更新；未批准、禁用、权限不足或路径不可信的记录进入修复安装。选择更新后必须检测到包内当前版本才继续。检测优先使用最近使用的浏览器 Profile，`Secure Preferences` 中已有记录时不得被普通 `Preferences` 覆盖；已解压旧版只允许本工程 `browser-extension/<批准版本>/unpacked` 的精确目录，不迁移历史工程路径。
+
 ### persistent
 
 persistent 模式始终使用 `%USERPROFILE%\browser-mcp-server\browser-profile\pilot`，由本工程独占。首次需要 SSO/MFA 时用有头模式完成登录，再按需切换无头。不得把日常 Chrome/Edge 默认 Profile 配置为该路径。

@@ -95,6 +95,24 @@ class WindowsReleaseMetadataTests(unittest.TestCase):
                 with self.assertRaises(validator.MetadataValidationError):
                     validator.validate_metadata(payload)
 
+    def test_rejects_invalid_extension_compatibility_allowlist(self) -> None:
+        payload = self.valid_metadata()
+        payload["browserExtension"] = {
+            "extensionId": "a" * 32,
+            "version": "0.4.0",
+            "compatibleVersions": ["0.3.0"],
+            "filename": "playwright-extension-0.4.0.crx",
+            "sizeBytes": 1,
+            "sha256": "0" * 64,
+            "path": "browser-extension/playwright-extension-0.4.0.crx",
+            "unpackedPath": "browser-extension/unpacked",
+            "installation": "offline-user-policy-with-manual-unpacked-fallback",
+        }
+        with self.assertRaisesRegex(
+            validator.MetadataValidationError, "compatibleVersions"
+        ):
+            validator.validate_metadata(payload)
+
     def test_cli_accepts_release_and_rejects_cross_build(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             metadata_path = Path(temporary) / "KIT-METADATA.json"

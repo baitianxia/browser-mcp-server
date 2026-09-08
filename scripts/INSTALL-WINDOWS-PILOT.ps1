@@ -567,7 +567,26 @@ function Test-PlaywrightExtension {
         [string]$LocalAppData,
         [ValidateSet("chrome", "msedge")][string]$Channel,
         [string]$ExpectedVersion,
-        [string]$ApprovedUnpackedPath
+        [string]$ApprovedUnpackedPath,
+        [string[]]$CompatibleVersions = @()
+    )
+    $Status = Get-PlaywrightExtensionStatus `
+        $Checker $LocalAppData $Channel $ExpectedVersion `
+        $ApprovedUnpackedPath $CompatibleVersions
+    # This helper is used only after an install/update attempt. A compatible
+    # older version is valid for reuse, but it does not prove that the chosen
+    # update reached the package's current version.
+    return $Status.Status -eq "current"
+}
+
+function Get-PlaywrightExtensionStatus {
+    param(
+        [string]$Checker,
+        [string]$LocalAppData,
+        [ValidateSet("chrome", "msedge")][string]$Channel,
+        [string]$ExpectedVersion,
+        [string]$ApprovedUnpackedPath,
+        [string[]]$CompatibleVersions = @()
     )
     $Prefix = $script:PythonPrefix
     $Output = @()
@@ -578,12 +597,17 @@ function Test-PlaywrightExtension {
     try {
         $ErrorActionPreference = "Continue"
         $env:PYTHONDONTWRITEBYTECODE = "1"
-        $Output = & $script:PythonExe @Prefix $Checker "check" `
-            "--local-app-data" $LocalAppData `
-            "--browser-channel" $Channel `
-            "--expected-version" $ExpectedVersion `
-            "--approved-unpacked-path" $ApprovedUnpackedPath `
-            "--quiet" 2>&1
+        $CheckerArguments = @(
+            "status",
+            "--local-app-data", $LocalAppData,
+            "--browser-channel", $Channel,
+            "--expected-version", $ExpectedVersion,
+            "--approved-unpacked-path", $ApprovedUnpackedPath
+        )
+        foreach ($CompatibleVersion in @($CompatibleVersions)) {
+            $CheckerArguments += @("--compatible-version", $CompatibleVersion)
+        }
+        $Output = & $script:PythonExe @Prefix $Checker @CheckerArguments 2>&1
         $ExitCode = $LASTEXITCODE
     } finally {
         if ($HadDontWriteBytecode) {
@@ -593,19 +617,88 @@ function Test-PlaywrightExtension {
         }
         $ErrorActionPreference = $PreviousErrorActionPreference
     }
-    if ($ExitCode -eq 0) {
-        return $true
+    if ($ExitCode -ne 0) {
+        foreach ($Line in @($Output)) {
+            if ($null -ne $Line) {
+                Write-Host $Line
+                Write-InstallLog "EXTENSION CHECK: $Line"
+            }
+        }
+        throw "Playwright Extension 状态检测失败，退出码 $ExitCode。"
     }
-    if ($ExitCode -eq 3) {
-        return $false
+    $StatusLine = @($Output) | Select-Object -Last 1
+    if ($null -eq $StatusLine) {
+        throw "Playwright Extension 状态检测没有返回状态。"
     }
-    foreach ($Line in @($Output)) {
-        if ($null -ne $Line) {
-            Write-Host $Line
-            Write-InstallLog "EXTENSION CHECK: $Line"
+    $Status = ([string]$StatusLine).Trim()
+    $StatusParts = $Status -split '\|', 2
+    $ObservedVersion = if ($StatusParts.Count -eq 2) {
+        [string]$StatusParts[1]
+    } else {
+        ""
+    }
+    switch ($StatusParts[0]) {
+        "CURRENT" {
+            if (-not $ObservedVersion) {
+                throw "Playwright Extension 状态缺少当前版本：$Status"
+            }
+            return [pscustomobject]@{ Status = "current"; Version = $ObservedVersion }
+        }
+        "COMPATIBLE" {
+            if (-not $ObservedVersion) {
+                throw "Playwright Extension 状态缺少兼容版本：$Status"
+            }
+            return [pscustomobject]@{ Status = "compatible"; Version = $ObservedVersion }
+        }
+        "INCOMPATIBLE" {
+            if (-not $ObservedVersion) {
+                throw "Playwright Extension 状态缺少不兼容版本：$Status"
+            }
+            return [pscustomobject]@{ Status = "incompatible"; Version = $ObservedVersion }
+        }
+        "NOT_INSTALLED" {
+            return [pscustomobject]@{ Status = "not-installed"; Version = "" }
+        }
+        default {
+            foreach ($Line in @($Output)) {
+                if ($null -ne $Line) {
+                    Write-Host $Line
+                    Write-InstallLog "EXTENSION CHECK: $Line"
+                }
+            }
+            throw "Playwright Extension 状态检测返回未知状态：$Status"
         }
     }
-    throw "Playwright Extension 检测失败，退出码 $ExitCode。"
+}
+
+function Confirm-PlaywrightExtensionUpdate {
+    param(
+        [string]$InstalledVersion,
+        [string]$ExpectedVersion
+    )
+    Write-Host (
+        "当前浏览器已安装兼容的 Playwright Extension $InstalledVersion；" +
+        "迁移包提供 $ExpectedVersion。"
+    ) -ForegroundColor Yellow
+    try {
+        $Choices = [System.Management.Automation.Host.ChoiceDescription[]]@(
+            (New-Object -TypeName System.Management.Automation.Host.ChoiceDescription `
+                -ArgumentList "&是", "更新到迁移包中的兼容版本。"),
+            (New-Object -TypeName System.Management.Automation.Host.ChoiceDescription `
+                -ArgumentList "&否", "继续使用当前兼容版本。")
+        )
+        $Answer = $Host.UI.PromptForChoice(
+            "Playwright Extension 更新",
+            "是否更新到 $ExpectedVersion？",
+            $Choices,
+            1
+        )
+        return $Answer -eq 0
+    } catch {
+        Write-InstallLog "EXTENSION COMPATIBLE UPDATE PROMPT UNAVAILABLE: reusing installed version"
+        Write-Host "无法显示更新选择，将继续使用当前兼容版本。" -ForegroundColor Yellow
+        return $false
+    }
 }
 
 function Ensure-CurrentUserRegistryKey {
@@ -846,7 +939,7 @@ try {
     }
     $BrowserExtensionMetadata = $BrowserExtensionProperty.Value
     foreach ($MetadataField in @(
-        "extensionId", "version", "path", "unpackedPath", "installation"
+        "extensionId", "version", "compatibleVersions", "path", "unpackedPath", "installation"
     )) {
         if ($null -eq $BrowserExtensionMetadata.PSObject.Properties[$MetadataField]) {
             throw "迁移包的 Playwright Extension 元数据缺少字段：$MetadataField"
@@ -854,11 +947,29 @@ try {
     }
     $ExtensionId = [string]$BrowserExtensionMetadata.extensionId
     $ExtensionVersion = [string]$BrowserExtensionMetadata.version
+    $RawCompatibleVersions = $BrowserExtensionMetadata.compatibleVersions
+    $ExtensionCompatibleVersions = @()
+    if ($RawCompatibleVersions -is [System.Collections.IEnumerable] -and
+        $RawCompatibleVersions -isnot [string]) {
+        $ExtensionCompatibleVersions = @(
+            $RawCompatibleVersions |
+                ForEach-Object { [string]$_ }
+        )
+    }
     $ExtensionRelativePath = [string]$BrowserExtensionMetadata.path
     $ExtensionUnpackedRelativePath = [string]$BrowserExtensionMetadata.unpackedPath
     $ExtensionInstallation = [string]$BrowserExtensionMetadata.installation
+    $ExtensionCompatibleVersionUniqueCount = @(
+        $ExtensionCompatibleVersions | Select-Object -Unique
+    ).Count
     if ($ExtensionId -ne "mmlmfjhmonkocbjadbfplnigmagldckm" -or
         $ExtensionVersion -notmatch '^\d+\.\d+\.\d+$' -or
+        $ExtensionCompatibleVersions.Count -lt 1 -or
+        -not ($ExtensionCompatibleVersions -contains $ExtensionVersion) -or
+        $ExtensionCompatibleVersionUniqueCount -ne $ExtensionCompatibleVersions.Count -or
+        @($ExtensionCompatibleVersions | Where-Object {
+            $_ -notmatch '^\d+\.\d+\.\d+$'
+        }).Count -gt 0 -or
         $ExtensionRelativePath -notmatch '^browser-extension/playwright-extension-[0-9.]+\.crx$' -or
         $ExtensionUnpackedRelativePath -ne "browser-extension/unpacked" -or
         $ExtensionInstallation -ne "offline-user-policy-with-manual-unpacked-fallback") {
@@ -1038,11 +1149,29 @@ try {
     if (-not $BrowserExecutable) {
         throw "无法解析浏览器可执行文件：$BrowserChannel"
     }
-    $PlaywrightExtensionAlreadyInstalled = $false
+    $PlaywrightExtensionStatus = "not-installed"
+    $PlaywrightExtensionInstalledVersion = ""
+    $PlaywrightExtensionUseExisting = $false
+    $PlaywrightExtensionIncompatible = $false
     if ($InstallBrowserMode -eq "extension") {
-        $PlaywrightExtensionAlreadyInstalled = Test-PlaywrightExtension `
+        $PlaywrightExtensionProbe = Get-PlaywrightExtensionStatus `
             $ExtensionChecker $LocalAppDataRoot $BrowserChannel `
-            $ExtensionVersion $InstalledExtensionUnpacked
+            $ExtensionVersion $InstalledExtensionUnpacked `
+            $ExtensionCompatibleVersions
+        $PlaywrightExtensionStatus = [string]$PlaywrightExtensionProbe.Status
+        $PlaywrightExtensionInstalledVersion = [string]$PlaywrightExtensionProbe.Version
+        if ($PlaywrightExtensionStatus -eq "current") {
+            $PlaywrightExtensionUseExisting = $true
+        } elseif ($PlaywrightExtensionStatus -eq "compatible") {
+            $PlaywrightExtensionUseExisting = -not (Confirm-PlaywrightExtensionUpdate `
+                $PlaywrightExtensionInstalledVersion $ExtensionVersion)
+            Write-InstallLog (
+                "EXTENSION COMPATIBLE UPDATE PROMPT: choice={0}" -f `
+                    ($(if ($PlaywrightExtensionUseExisting) { "reuse" } else { "update" }))
+            )
+        } elseif ($PlaywrightExtensionStatus -eq "incompatible") {
+            $PlaywrightExtensionIncompatible = $true
+        }
     }
 
     $ClaudeUserConfigPath = Get-ClaudeUserConfigPath
@@ -1140,8 +1269,8 @@ try {
         Write-Host "已有设置使用独立 Profile；本次升级不要求安装或重新授权 Extension。" `
             -ForegroundColor Green
         Write-InstallLog "EXTENSION INSTALL SKIPPED: dedicated profile mode"
-    } elseif ($PlaywrightExtensionAlreadyInstalled) {
-        Invoke-Python @(
+    } elseif ($PlaywrightExtensionUseExisting) {
+        $ExtensionCheckArguments = @(
             $ExtensionChecker,
             "check",
             "--local-app-data", $LocalAppDataRoot,
@@ -1149,10 +1278,34 @@ try {
             "--expected-version", $ExtensionVersion,
             "--approved-unpacked-path", $InstalledExtensionUnpacked
         )
-        $ExtensionInstallMethod = "existing"
-        Write-Host "当前浏览器已安装批准的 Playwright Extension，直接复用。" -ForegroundColor Green
+        foreach ($CompatibleVersion in $ExtensionCompatibleVersions) {
+            $ExtensionCheckArguments += @("--compatible-version", $CompatibleVersion)
+        }
+        Invoke-Python $ExtensionCheckArguments
+        $ExtensionInstallMethod = if ($PlaywrightExtensionStatus -eq "compatible") {
+            "existing-compatible"
+        } else {
+            "existing"
+        }
+        if ($PlaywrightExtensionStatus -eq "compatible") {
+            Write-Host "保留当前兼容的 Playwright Extension，不执行更新。" -ForegroundColor Green
+        } else {
+            Write-Host "当前浏览器已安装批准的 Playwright Extension，直接复用。" -ForegroundColor Green
+        }
     } else {
-        Write-Host "当前浏览器未安装 Playwright Extension；开始从迁移包离线安装。" -ForegroundColor Cyan
+        if ($PlaywrightExtensionIncompatible) {
+            Write-Host (
+                "当前浏览器的 Playwright Extension 与当前 MCP 不兼容；" +
+                "将强制从迁移包离线更新。"
+            ) -ForegroundColor Yellow
+            Write-InstallLog (
+                "EXTENSION INCOMPATIBLE: forced update to expected {0}" -f `
+                    $ExtensionVersion
+            )
+        } else {
+            Write-Host "当前浏览器未安装 Playwright Extension；开始从迁移包离线安装。" `
+                -ForegroundColor Cyan
+        }
         $PreparedExtensionReusable = $false
         if (Test-Path -LiteralPath $ExtensionInstallRoot) {
             if (-not (Test-Path -LiteralPath $ExtensionInstallRoot -PathType Container)) {
@@ -1350,7 +1503,7 @@ try {
             $PolicyInstallDeadline = [DateTime]::UtcNow.AddSeconds(30)
             while (-not (Test-PlaywrightExtension `
                 $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
-                $InstalledExtensionUnpacked)) {
+                $InstalledExtensionUnpacked $ExtensionCompatibleVersions)) {
                 if ([DateTime]::UtcNow -ge $PolicyInstallDeadline) {
                     break
                 }
@@ -1359,7 +1512,7 @@ try {
         }
         if (-not (Test-PlaywrightExtension `
             $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
-            $InstalledExtensionUnpacked)) {
+            $InstalledExtensionUnpacked $ExtensionCompatibleVersions)) {
             if ($ExtensionPolicyChangeStarted -or
                 $ExtensionPolicyKeyCreated -or
                 $ExtensionPolicyCreatedPaths.Count -gt 0) {
@@ -1427,7 +1580,7 @@ try {
             $NextWaitingMessage = [DateTime]::UtcNow.AddSeconds(30)
             while (-not (Test-PlaywrightExtension `
                 $ExtensionChecker $LocalAppDataRoot $BrowserChannel $ExtensionVersion `
-                $InstalledExtensionUnpacked)) {
+                $InstalledExtensionUnpacked $ExtensionCompatibleVersions)) {
                 if ([DateTime]::UtcNow -ge $ManualExtensionDeadline) {
                     throw (
                         "未检测到手动加载的 Playwright Extension；等待目录为：" +
@@ -1445,7 +1598,7 @@ try {
         } else {
             $ExtensionInstallMethod = "offline-user-policy"
         }
-        Invoke-Python @(
+        $ExtensionCheckArguments = @(
             $ExtensionChecker,
             "check",
             "--local-app-data", $LocalAppDataRoot,
@@ -1453,6 +1606,7 @@ try {
             "--expected-version", $ExtensionVersion,
             "--approved-unpacked-path", $InstalledExtensionUnpacked
         )
+        Invoke-Python $ExtensionCheckArguments
         Write-Host "Playwright Extension 已从迁移包离线安装并验证。" -ForegroundColor Green
     }
     Write-InstallLog "EXTENSION INSTALL METHOD: $ExtensionInstallMethod"
@@ -1632,9 +1786,15 @@ try {
         } else {
             "approve each connection"
         }
+        $ReportedExtensionVersion = if ($PlaywrightExtensionUseExisting -and
+            $PlaywrightExtensionInstalledVersion) {
+            $PlaywrightExtensionInstalledVersion
+        } else {
+            $ExtensionVersion
+        }
         $BrowserModeSummary = (
             "existing {0} tabs through Playwright Extension {1}; {2}" -f `
-                $BrowserChannel, $ExtensionVersion, $AuthorizationSummary
+                $BrowserChannel, $ReportedExtensionVersion, $AuthorizationSummary
         )
         $NextSummary = (
             "Next: restart Claude Code in any project, run /mcp to confirm " +

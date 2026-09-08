@@ -102,13 +102,25 @@ def validate_metadata(payload: Any) -> None:
     extension = root.get("browserExtension")
     if extension is not None:
         extension = require_object(extension, "browserExtension")
-        for field in ("extensionId", "version", "filename", "sizeBytes", "sha256", "path", "unpackedPath", "installation"):
+        for field in ("extensionId", "version", "compatibleVersions", "filename", "sizeBytes", "sha256", "path", "unpackedPath", "installation"):
             if field not in extension:
                 raise MetadataValidationError(f"browserExtension.{field} is required")
         if not isinstance(extension.get("extensionId"), str) or not re.fullmatch(r"[a-z]{32}", extension["extensionId"]):
             raise MetadataValidationError("browserExtension.extensionId is invalid")
         if not isinstance(extension.get("version"), str) or not SEMVER_RE.fullmatch(extension["version"]):
             raise MetadataValidationError("browserExtension.version is invalid")
+        compatible_versions = extension.get("compatibleVersions")
+        if (
+            not isinstance(compatible_versions, list)
+            or not compatible_versions
+            or any(
+                not isinstance(version, str) or not SEMVER_RE.fullmatch(version)
+                for version in compatible_versions
+            )
+            or len(set(compatible_versions)) != len(compatible_versions)
+            or extension["version"] not in compatible_versions
+        ):
+            raise MetadataValidationError("browserExtension.compatibleVersions is invalid")
         if extension.get("path") != f"browser-extension/{extension.get('filename')}":
             raise MetadataValidationError("browserExtension.path must point inside browser-extension")
         if extension.get("unpackedPath") != "browser-extension/unpacked":
@@ -200,6 +212,18 @@ def validate_public_manifest(payload: Any) -> None:
             raise MetadataValidationError("browserExtension.extensionId is invalid")
         if not isinstance(extension.get("version"), str) or not SEMVER_RE.fullmatch(extension["version"]):
             raise MetadataValidationError("browserExtension.version is invalid")
+        compatible_versions = extension.get("compatibleVersions")
+        if (
+            not isinstance(compatible_versions, list)
+            or not compatible_versions
+            or any(
+                not isinstance(version, str) or not SEMVER_RE.fullmatch(version)
+                for version in compatible_versions
+            )
+            or len(set(compatible_versions)) != len(compatible_versions)
+            or extension["version"] not in compatible_versions
+        ):
+            raise MetadataValidationError("browserExtension.compatibleVersions is invalid")
         filename = extension.get("path")
         if not isinstance(filename, str) or not filename.startswith("payload/browser-extension/") or not filename.endswith(".crx"):
             raise MetadataValidationError("browserExtension.path must point to the payload CRX")
