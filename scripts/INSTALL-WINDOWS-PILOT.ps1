@@ -631,6 +631,9 @@ function Get-PlaywrightExtensionStatus {
         throw "Playwright Extension 状态检测没有返回状态。"
     }
     $Status = ([string]$StatusLine).Trim()
+    if ($Status -cnotmatch '^(CURRENT|COMPATIBLE|INCOMPATIBLE|NOT_INSTALLED)\|([0-9]+\.[0-9]+\.[0-9]+)?$') {
+        throw "Playwright Extension 状态格式不合法：$Status"
+    }
     $StatusParts = $Status -split '\|', 2
     $ObservedVersion = if ($StatusParts.Count -eq 2) {
         [string]$StatusParts[1]
@@ -639,24 +642,27 @@ function Get-PlaywrightExtensionStatus {
     }
     switch ($StatusParts[0]) {
         "CURRENT" {
-            if (-not $ObservedVersion) {
-                throw "Playwright Extension 状态缺少当前版本：$Status"
+            if ($ObservedVersion -cne $ExpectedVersion) {
+                throw "Playwright Extension 状态不是包内当前版本：$Status"
             }
             return [pscustomobject]@{ Status = "current"; Version = $ObservedVersion }
         }
         "COMPATIBLE" {
-            if (-not $ObservedVersion) {
-                throw "Playwright Extension 状态缺少兼容版本：$Status"
+            if ($ObservedVersion -ceq $ExpectedVersion -or
+                $CompatibleVersions -cnotcontains $ObservedVersion) {
+                throw "Playwright Extension 状态不是批准的其他兼容版本：$Status"
             }
             return [pscustomobject]@{ Status = "compatible"; Version = $ObservedVersion }
         }
         "INCOMPATIBLE" {
-            if (-not $ObservedVersion) {
-                throw "Playwright Extension 状态缺少不兼容版本：$Status"
-            }
+            # Untrusted paths and unreadable manifests have no reportable
+            # version. They still need the normal offline repair flow.
             return [pscustomobject]@{ Status = "incompatible"; Version = $ObservedVersion }
         }
         "NOT_INSTALLED" {
+            if ($ObservedVersion) {
+                throw "未安装的 Playwright Extension 不应报告版本：$Status"
+            }
             return [pscustomobject]@{ Status = "not-installed"; Version = "" }
         }
         default {
@@ -667,6 +673,22 @@ function Get-PlaywrightExtensionStatus {
                 }
             }
             throw "Playwright Extension 状态检测返回未知状态：$Status"
+        }
+    }
+}
+
+function Assert-PlaywrightExtensionMetadata {
+    param($KitExtension, $PublicExtension, $Approval)
+    foreach ($Metadata in @($KitExtension, $PublicExtension)) {
+        if ($null -eq $Metadata -or $null -eq $Approval) {
+            throw "Playwright Extension 缺少发布或批准元数据。"
+        }
+        foreach ($Field in @("extensionId", "version", "compatibleVersions")) {
+            $Actual = ConvertTo-Json -InputObject $Metadata.$Field -Compress
+            $Expected = ConvertTo-Json -InputObject $Approval.$Field -Compress
+            if ($Actual -cne $Expected) {
+                throw "Playwright Extension 发布元数据与批准文件不一致：$Field"
+            }
         }
     }
 }
@@ -990,6 +1012,10 @@ try {
         "--approval-file", $ExtensionApproval,
         "--unpacked-directory", $ExtensionUnpackedSourcePath
     )
+    $ApprovedExtensionMetadata = Get-Content -LiteralPath $ExtensionApproval -Raw |
+        ConvertFrom-Json
+    Assert-PlaywrightExtensionMetadata $BrowserExtensionMetadata `
+        $ReleaseManifest.browserExtension $ApprovedExtensionMetadata
     $RuntimeArchiveName = [string]$RuntimeMetadata.archive
     if ($RuntimeArchiveName -notmatch '^browser-agent-runtime-[a-zA-Z0-9._-]+\.tar\.gz$') {
         throw "运行包文件名不合法：$RuntimeArchiveName"

@@ -27,7 +27,6 @@ APPROVAL_KEYS = {
     "extensionId",
     "version",
     "compatibleVersions",
-    "compatibleVersions",
     "filename",
     "sizeBytes",
     "sha256",
@@ -100,22 +99,6 @@ def load_approval(path: Path = DEFAULT_APPROVAL) -> dict[str, Any]:
             for version in compatible_versions
         )
         or len(set(compatible_versions)) != len(compatible_versions)
-        or approval["version"] not in compatible_versions
-    ):
-        raise ExtensionValidationError("invalid compatible extension versions")
-    compatible_versions = approval.get("compatibleVersions")
-    if (
-        not isinstance(compatible_versions, list)
-        or not compatible_versions
-        or any(
-            not isinstance(version, str)
-            or not re.fullmatch(r"\d+\.\d+\.\d+", version)
-            for version in compatible_versions
-        )
-    ):
-        raise ExtensionValidationError("invalid compatible extension versions")
-    if (
-        len(set(compatible_versions)) != len(compatible_versions)
         or approval["version"] not in compatible_versions
     ):
         raise ExtensionValidationError("invalid compatible extension versions")
@@ -205,7 +188,6 @@ def validate_crx(path: Path, approval: dict[str, Any]) -> dict[str, Any]:
     return {
         "extensionId": actual_id,
         "version": manifest["version"],
-        "compatibleVersions": list(approval["compatibleVersions"]),
         "compatibleVersions": list(approval["compatibleVersions"]),
         "sha256": actual_sha256,
         "sizeBytes": actual_size,

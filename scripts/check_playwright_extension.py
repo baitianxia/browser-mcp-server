@@ -252,7 +252,11 @@ def _record_manifest_version(
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     version = manifest.get("version") if isinstance(manifest, dict) else None
-    return version if isinstance(version, str) else None
+    return (
+        version
+        if isinstance(version, str) and VERSION_PATTERN.fullmatch(version)
+        else None
+    )
 
 
 def extension_installed_in_profile(

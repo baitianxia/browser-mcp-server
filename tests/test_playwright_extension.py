@@ -78,9 +78,14 @@ class PlaywrightExtensionValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "approval.json"
             for compatible_versions in (
+                None,
+                [],
+                "0.4.0",
                 ["0.3.0"],
                 ["0.4.0", "0.4.0"],
                 ["0.4.0", {"version": "0.3.0"}],
+                ["0.4.0", "0.3.0.1"],
+                ["0.4.0", "../0.3.0"],
             ):
                 approval = self.approval()
                 approval["compatibleVersions"] = compatible_versions
@@ -583,6 +588,28 @@ class PlaywrightExtensionDetectionTests(unittest.TestCase):
                 ["0.2.0"],
             )
         )
+
+    def test_unreadable_or_invalid_version_is_reported_without_raw_manifest_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Path(temporary)
+            profile = checker.browser_user_data_dir(local, "chrome") / "Default"
+            profile.mkdir(parents=True)
+            approved = local / "browser-mcp-server" / "browser-extension" / self.VERSION / "unpacked"
+            (profile / "Preferences").write_text(
+                json.dumps({"extensions": {"settings": {
+                    checker.PLAYWRIGHT_EXTENSION_ID: self.record(str(approved))
+                }}}), encoding="utf-8",
+            )
+            for version in (None, "0.3.0|unexpected", "0.3.0\nCURRENT|0.3.0"):
+                with self.subTest(version=version):
+                    self.write_manifest(approved, version)
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        checker.report_status(SimpleNamespace(
+                            local_app_data=local, browser_channel="chrome",
+                            expected_version=self.VERSION, approved_unpacked_path=approved,
+                        ))
+                    self.assertEqual("INCOMPATIBLE|\n", output.getvalue())
 
     def test_rejects_unapproved_absolute_unpacked_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
