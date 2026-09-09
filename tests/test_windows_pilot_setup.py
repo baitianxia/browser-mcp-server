@@ -605,6 +605,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("validate_node_distribution.py", gate)
         self.assertIn("Get-NativeOutput $NodeExe", gate)
         self.assertIn("smoke_playwright_mcp.py", gate)
+        self.assertIn(
+            '$ProbeInteractionConfig = Join-Path $TemporaryRoot "interaction.config.json"',
+            gate,
+        )
+        self.assertIn('snapshotStrategy = "full"', gate)
         self.assertIn('[string]$TransferPath = ""', gate)
         self.assertIn("Resolve-Path -LiteralPath $InputPath", gate)
         self.assertIn("TransferPath must be the public Windows ZIP or its extracted root", gate)

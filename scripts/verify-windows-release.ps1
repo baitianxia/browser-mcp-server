@@ -270,6 +270,23 @@ function Invoke-ReleaseGate {
         [IO.File]::WriteAllText(
             $ProbeConfig, "{}`n", (New-Object System.Text.UTF8Encoding($false))
         )
+        # The compatibility wrapper requires its interaction sidecar whenever
+        # --config is supplied. Keep this probe configuration valid and
+        # deterministic instead of letting the first runtime handshake fail
+        # before Claude Code is exercised.
+        $ProbeInteractionConfig = Join-Path $TemporaryRoot "interaction.config.json"
+        $ProbeInteraction = @{
+            schemaVersion = 1
+            snapshotStrategy = "full"
+            compatibilityMode = "standard"
+            defaultSnapshotDepth = 6
+            settleMs = 1500
+        } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText(
+            $ProbeInteractionConfig,
+            "$ProbeInteraction`n",
+            (New-Object System.Text.UTF8Encoding($false))
+        )
         Invoke-PythonChecked @(
             (Join-Path $SourceRoot "scripts\smoke_playwright_mcp.py"),
             "--node-executable", $NodeExe,
