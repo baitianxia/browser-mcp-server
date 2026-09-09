@@ -22,6 +22,12 @@
 - 扩展批准文件、`KIT-METADATA.json` 和 `release-manifest.json` 的版本及 `compatibleVersions` 必须一致。检测覆盖当前/兼容/不可用/未安装、最近使用的 Profile、安全配置优先、精确受管目录和非法版本输入。保留兼容版本必须重新确认可用，选择更新必须等到包内当前版本；新增批准版本须补真实 MCP 连接证据，单元测试夹具不构成兼容批准。
 - 初始配置必须是 `extension + headed + session approval + compact + robust`，Extension 不得有 `headless/userDataDir`；persistent 只能使用本工程独立 Profile，并显式记录 headed/headless。配置工具可分别切换 `compact|full`、`robust|standard`，启动方式变化要求重启 MCP。
 - 所有日志和 MCP 响应不得包含扩展令牌、Cookie、密码或完整个人路径；令牌只通过短期进程环境进入注册事务，并持久化在 Claude user-scope 条目。
+- `browser_paste` 与 `browser_copy` 必须通过 UTF-8 OS 剪贴板和可信 Ctrl/Cmd 快捷键工作；`browser_clipboard` 的 secure-context 失败不得静默触发系统剪贴板读取。Windows 验收需覆盖中文、Tab、CRLF、多单元格 TSV、剪贴板读取失败和快捷键无效。
+- `expectedUrl`/`expectedUrlMode` 不匹配时，`browser_evaluate`、`browser_run_code_unsafe`、键盘、输入、导航和剪贴板动作必须在执行前失败，不能自动切换标签页或重放非幂等输入。
+- `browser_press_key` 传入 `verifyText`、`verifyTextGone`、`verifySelector` 或 `verifyUrl` 时，必须在快捷键之后验证对应后置条件；验证失败要明确提示“已发送但未确认”，不得自动重发。
+- 含非 ASCII 文本的 `browser_type` 必须在原生输入后回读确认；不一致时测试 contenteditable、input 和 textarea 兜底，并在仍无法确认时返回错误。测试不得以 secure context 作为输入回退条件。
+- helper 注册必须具有名称校验、TTL、重复注册保护、显式注销和 reload 后调用覆盖；helper 代码不得回显到响应，业务数据不得写入持久化配置。过期或页面上下文不可用时必须返回明确错误。
+- `browser_sheet_bridge` 必须先支持 `probe`，只允许经校验的 read/locate/write 方法前缀；write 缺少 `confirmWrite=true` 时失败。MODOC 页面需验收区域读取、中文/公式结果、`goto`/定位方法失败和写入后回读；未提供真实 SDK 方法证据时不得标记为 SDK E2E 通过。
 
 ## 原生 Windows 门禁
 

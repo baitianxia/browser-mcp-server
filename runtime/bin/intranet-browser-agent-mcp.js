@@ -64,9 +64,27 @@ const ACTION_TOOLS_WITH_SNAPSHOT = new Set([
   "browser_type",
   "browser_wait_for",
 ]);
+const EXPECTED_URL_TOOL_NAMES = new Set([
+  ...ACTION_TOOLS_WITH_SNAPSHOT,
+  "browser_evaluate",
+  "browser_run_code_unsafe",
+  "browser_select_custom_option",
+  "browser_click_and_wait",
+  "browser_click_pointer",
+  "browser_click_text",
+  "browser_clipboard",
+  "browser_paste",
+  "browser_copy",
+  "browser_call_helper",
+  "browser_sheet_bridge",
+]);
 const ACTIONABILITY_FAILURE = /(?:timed?\s*out|timeout|not\s+(?:visible|stable|enabled|actionable)|outside\s+(?:of\s+)?the\s+viewport|intercepts?\s+pointer|(?:does\s+not|is\s+not)\s+receiv(?:e|ing)\s+pointer|obscured|covered\s+by\s+another|detached|not\s+attached|element\s+is\s+not\s+visible|waiting\s+for\s+element\s+to\s+be\s+visible)/i;
 const AMBIGUOUS_TARGET_FAILURE = /(?:strict\s+mode\s+violation|resolved\s+to\s+\d+\s+elements?|matched\s+\d+\s+elements?|multiple\s+elements?)/i;
 const INFRASTRUCTURE_FAILURE = /(?:browser\b[^\n]{0,40}\b(?:disconnected|closed)|target\s+(?:page|context|browser)\s+[^\n]{0,40}\bclosed|connection\s+(?:closed|reset|lost)|protocol\s+error|transport\s+error)/i;
+const OS_CLIPBOARD_TIMEOUT_MS = 10000;
+const HELPER_DEFAULT_TTL_MS = 30 * 60 * 1000;
+const HELPER_MAX_TTL_MS = 60 * 60 * 1000;
+const SAFE_HELPER_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const SETTINGS_REQUIRED_KEYS = new Set([
   "schemaVersion",
   "product",
@@ -809,6 +827,118 @@ function timerShimCode(originalCode) {
 })`;
 }
 
+function executableInPath(name) {
+  if (!name || process.platform === "win32")
+    return undefined;
+  const pathEntries = String(process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  for (const entry of pathEntries) {
+    const candidate = path.join(entry, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Continue searching the PATH.
+    }
+  }
+  return undefined;
+}
+
+function runTextCommand(command, args, input, timeoutMs = OS_CLIPBOARD_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(command, args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled)
+        return;
+      settled = true;
+      try { child.kill(); } catch {}
+      reject(new Error(`command timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const finish = (error, value) => {
+      if (settled)
+        return;
+      settled = true;
+      clearTimeout(timer);
+      if (error)
+        reject(error);
+      else
+        resolve(value);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", value => { stdout += value; });
+    child.stderr.on("data", value => { stderr += value; });
+    child.on("error", error => finish(error));
+    child.on("close", (code, signal) => {
+      if (code === 0)
+        finish(undefined, stdout);
+      else
+        finish(new Error(`${command} exited with code=${code === null ? "null" : code}, signal=${signal || "none"}${stderr.trim() ? `: ${stderr.trim().slice(0, 500)}` : ""}`));
+    });
+    try {
+      if (input === undefined)
+        child.stdin.end();
+      else
+        child.stdin.end(String(input), "utf8");
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
+function osClipboardCommand(operation) {
+  if (process.platform === "win32") {
+    const executable = process.env.SystemRoot
+      ? path.join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+      : "powershell.exe";
+    const script = operation === "write"
+      ? "$OutputEncoding = New-Object System.Text.UTF8Encoding($false); [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false); Set-Clipboard -Value ([Console]::In.ReadToEnd())"
+      : "$OutputEncoding = New-Object System.Text.UTF8Encoding($false); [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false); [Console]::Write((Get-Clipboard -Raw))";
+    return { command: executable, args: ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script] };
+  }
+  if (process.platform === "darwin")
+    return operation === "write"
+      ? { command: "pbcopy", args: [] }
+      : { command: "pbpaste", args: [] };
+  const wayland = executableInPath(operation === "write" ? "wl-copy" : "wl-paste");
+  if (wayland)
+    return operation === "write"
+      ? { command: wayland, args: [] }
+      : { command: wayland, args: ["--no-newline"] };
+  const xclip = executableInPath("xclip");
+  if (xclip)
+    return operation === "write"
+      ? { command: xclip, args: ["-selection", "clipboard"] }
+      : { command: xclip, args: ["-selection", "clipboard", "-o"] };
+  const xsel = executableInPath("xsel");
+  if (xsel)
+    return operation === "write"
+      ? { command: xsel, args: ["--clipboard", "--input"] }
+      : { command: xsel, args: ["--clipboard", "--output"] };
+  throw new Error("no supported OS clipboard command is available (tried wl-clipboard, xclip, and xsel)");
+}
+
+async function osClipboardWrite(value) {
+  const selected = osClipboardCommand("write");
+  await runTextCommand(selected.command, selected.args, value);
+}
+
+async function osClipboardRead() {
+  const selected = osClipboardCommand("read");
+  return runTextCommand(selected.command, selected.args, undefined);
+}
+
 function loadInteractionConfig(args) {
   const defaults = {
     schemaVersion: 1,
@@ -1015,6 +1145,38 @@ function stripWaitOptions(args) {
   return result;
 }
 
+function stripSafetyOptions(args) {
+  const result = { ...(args || {}) };
+  delete result.expectedUrl;
+  delete result.expectedUrlMode;
+  return result;
+}
+
+function stripKeyboardVerification(args) {
+  const result = { ...(args || {}) };
+  for (const key of ["verifyText", "verifyTextGone", "verifySelector", "verifyUrl", "timeoutMs"])
+    delete result[key];
+  return result;
+}
+
+function keyboardVerificationOptions(args) {
+  const mapping = {
+    verifyText: "waitForText",
+    verifyTextGone: "waitForTextGone",
+    verifySelector: "waitForSelector",
+    verifyUrl: "waitForUrl",
+  };
+  const options = { timeoutMs: boundedInteger(args && args.timeoutMs, 10000, 100, 120000) };
+  for (const [inputKey, outputKey] of Object.entries(mapping)) {
+    if (args && args[inputKey] === undefined)
+      continue;
+    if (typeof args[inputKey] !== "string" || !args[inputKey].trim())
+      throw new Error(`${inputKey} must be a non-empty string when provided`);
+    options[outputKey] = args[inputKey];
+  }
+  return options;
+}
+
 function customTools() {
   const target = {
     type: "string",
@@ -1187,6 +1349,113 @@ function customTools() {
           target,
           element,
           grantPermissions: { type: "boolean", description: "Explicitly grant clipboard-read/write for the current page origin before attempting the operation" },
+          expectedUrl: { type: "string", minLength: 1, description: "Verify the currently selected page URL before the page clipboard operation" },
+          expectedUrlMode: { enum: ["exact", "contains"] },
+        },
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    {
+      name: "browser_paste",
+      title: "Paste through OS clipboard",
+      description: "Write caller-provided UTF-8 text to the OS clipboard, send a trusted paste shortcut to the focused browser page, and optionally verify visible text. This is an explicit system-clipboard operation.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text"],
+        properties: {
+          text: { type: "string", minLength: 1 },
+          target,
+          element,
+          verifyText: { type: "string", minLength: 1, description: "Optional page text that must appear after paste" },
+          timeoutMs: timeout,
+          expectedUrl: { type: "string", minLength: 1, description: "Exact URL expected before sending the shortcut" },
+          expectedUrlMode: { enum: ["exact", "contains"] },
+        },
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    {
+      name: "browser_copy",
+      title: "Copy through OS clipboard",
+      description: "Send a trusted copy shortcut and read the resulting UTF-8 OS clipboard text. The response never logs clipboard contents outside the MCP result.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          target,
+          element,
+          timeoutMs: timeout,
+          requireChanged: { type: "boolean", description: "Return an error when the OS clipboard is byte-for-byte unchanged after Ctrl/Cmd+C" },
+          expectedUrl: { type: "string", minLength: 1, description: "Exact URL expected before sending the shortcut" },
+          expectedUrlMode: { enum: ["exact", "contains"] },
+        },
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    {
+      name: "browser_register_helper",
+      title: "Register a page helper",
+      description: "Keep a named page helper in this MCP process for a bounded time. The helper is injected on each call, so it survives page reloads without persisting page data.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "code"],
+        properties: {
+          name: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9_.-]{0,63}$" },
+          code: { type: "string", minLength: 1, description: "A page-side function expression accepting (element, args)" },
+          ttlMs: { type: "integer", minimum: 1000, maximum: 3600000 },
+          replace: { type: "boolean" },
+        },
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    {
+      name: "browser_call_helper",
+      title: "Call a page helper",
+      description: "Inject and call a previously registered page helper after checking its TTL and optional target. Missing or expired helpers fail explicitly.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name"],
+        properties: {
+          name: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9_.-]{0,63}$" },
+          target,
+          element,
+          args: { type: "object", additionalProperties: true },
+          expectedUrl: { type: "string", minLength: 1, description: "Exact URL expected before helper execution" },
+          expectedUrlMode: { enum: ["exact", "contains"] },
+        },
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    {
+      name: "browser_unregister_helper",
+      title: "Unregister a page helper",
+      description: "Remove one named page helper from this MCP process.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name"],
+        properties: { name: { type: "string", pattern: "^[A-Za-z][A-Za-z0-9_.-]{0,63}$" } },
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: "browser_sheet_bridge",
+      title: "Bridge a page sheet SDK",
+      description: "Probe or explicitly invoke the page's window.sheetInst data-layer SDK for canvas spreadsheets. This provisional MODOC bridge supports verified read, locate, and write calls; it never guesses SDK method names.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["operation"],
+        properties: {
+          operation: { enum: ["probe", "read", "locate", "write"] },
+          method: { type: "string", minLength: 1, description: "Verified sheetInst method name; omit for probe" },
+          args: { type: "array", items: {} },
+          confirmWrite: { type: "boolean", description: "Must be true for a write operation" },
+          expectedUrl: { type: "string", minLength: 1, description: "Verify the currently selected MODOC page URL before the SDK call" },
+          expectedUrlMode: { enum: ["exact", "contains"] },
         },
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -1265,12 +1534,54 @@ function enhanceToolList(result, config) {
       if (config.compatibilityMode === "robust")
         copy.description = `${tool.description || "Navigate to a URL"}. Waits for explicit readiness fields or DOM stability and returns a fresh snapshot using the configured strategy.`;
     }
+    if (EXPECTED_URL_TOOL_NAMES.has(tool.name)) {
+      copy.inputSchema = JSON.parse(JSON.stringify(copy.inputSchema || { type: "object", properties: {} }));
+      copy.inputSchema.properties = copy.inputSchema.properties || {};
+      copy.inputSchema.properties.expectedUrl = {
+        type: "string",
+        minLength: 1,
+        description: "Verify the currently selected page URL before this action; a mismatch fails without executing it.",
+      };
+      copy.inputSchema.properties.expectedUrlMode = {
+        enum: ["exact", "contains"],
+        description: "Match expectedUrl exactly (default) or as a URL substring.",
+      };
+      copy.description = `${copy.description || "Browser action"} Supports expectedUrl target validation to prevent executing on a drifted tab.`;
+    }
+    if (tool.name === "browser_press_key") {
+      copy.inputSchema = JSON.parse(JSON.stringify(copy.inputSchema || { type: "object", properties: {} }));
+      copy.inputSchema.properties = copy.inputSchema.properties || {};
+      Object.assign(copy.inputSchema.properties, {
+        verifyText: { type: "string", minLength: 1, description: "Optional text that must appear after the key action" },
+        verifyTextGone: { type: "string", minLength: 1, description: "Optional text that must disappear after the key action" },
+        verifySelector: { type: "string", minLength: 1, description: "Optional visible CSS selector required after the key action" },
+        verifyUrl: { type: "string", minLength: 1, description: "Optional URL substring required after the key action" },
+        timeoutMs: { type: "integer", minimum: 100, maximum: 120000, description: "Post-key verification timeout" },
+      });
+    }
     return copy;
   });
   const names = new Set(tools.map(tool => tool && tool.name));
   for (const tool of customTools()) {
-    if (!names.has(tool.name))
+    if (names.has(tool.name))
+      continue;
+    if (!EXPECTED_URL_TOOL_NAMES.has(tool.name)) {
       tools.push(tool);
+      continue;
+    }
+    const copy = { ...tool, inputSchema: JSON.parse(JSON.stringify(tool.inputSchema || { type: "object", properties: {} })) };
+    copy.inputSchema.properties = copy.inputSchema.properties || {};
+    copy.inputSchema.properties.expectedUrl = {
+      type: "string",
+      minLength: 1,
+      description: "Verify the currently selected page URL before this action; a mismatch fails without executing it.",
+    };
+    copy.inputSchema.properties.expectedUrlMode = {
+      enum: ["exact", "contains"],
+      description: "Match expectedUrl exactly (default) or as a URL substring.",
+    };
+    copy.description = `${copy.description || "Browser action"} Supports expectedUrl target validation to prevent executing on a drifted tab.`;
+    tools.push(copy);
   }
   return { ...result, tools };
 }
@@ -1298,6 +1609,7 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
   let downloadSequence = 0;
   let lastDownloadEventAt = 0;
   const downloadRecords = [];
+  const helpers = new Map();
   const pendingRootRequests = new Set();
   let clientWorkspace = process.cwd();
   let activeRequestMeta;
@@ -1657,6 +1969,167 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
     return upstreamResult("tools/call", { name, arguments: forwardedArguments });
   }
 
+  async function verifyExpectedUrl(args) {
+    if (!args || args.expectedUrl === undefined)
+      return;
+    if (typeof args.expectedUrl !== "string" || !args.expectedUrl.trim())
+      throw new Error("expectedUrl must be a non-empty string");
+    if (args.expectedUrlMode !== undefined && !["exact", "contains"].includes(args.expectedUrlMode))
+      throw new Error("expectedUrlMode must be exact or contains");
+    const probe = await callTool("browser_evaluate", {
+      function: "() => ({ url: String(location.href) })",
+    });
+    if (!probe || probe.isError === true)
+      throw new Error("cannot verify expectedUrl because the selected page is unavailable");
+    const value = evaluationValue(probe);
+    const actual = value && typeof value.url === "string" ? value.url : "";
+    const expected = args.expectedUrl;
+    const matched = args.expectedUrlMode === "contains" ? actual.includes(expected) : actual === expected;
+    if (!matched)
+      throw new Error(`target page URL mismatch; expected ${expected} (${args.expectedUrlMode === "contains" ? "contains" : "exact"}), actual ${actual || "unknown"}`);
+  }
+
+  function validateHelperName(name) {
+    if (typeof name !== "string" || !SAFE_HELPER_NAME.test(name))
+      throw new Error("helper name must match ^[A-Za-z][A-Za-z0-9_.-]{0,63}$");
+    return name;
+  }
+
+  function validateHelperCode(code) {
+    if (typeof code !== "string" || !code.trim())
+      throw new Error("helper code must be a non-empty page-side function expression");
+    // Helpers run in the page VM. Reject obvious attempts to depend on the
+    // Node process so a named helper cannot silently change the unsafe-code
+    // boundary or become unusable after a browser reload.
+    if (/(?:\bprocess\b|\brequire\s*\(|\bchild_process\b|\bimport\s*\()/i.test(code))
+      throw new Error("helper code may only use page APIs; Node globals and imports are not allowed");
+    return code.trim();
+  }
+
+  function expireHelpers() {
+    const now = Date.now();
+    for (const [name, helper] of helpers.entries()) {
+      if (helper.expiresAt <= now)
+        helpers.delete(name);
+    }
+  }
+
+  async function registerHelper(args) {
+    assertOnlyKeys(args, new Set(["name", "code", "ttlMs", "replace"]));
+    const name = validateHelperName(args.name);
+    const code = validateHelperCode(args.code);
+    const ttlMs = boundedInteger(args.ttlMs, HELPER_DEFAULT_TTL_MS, 1000, HELPER_MAX_TTL_MS);
+    const replace = args.replace === true;
+    if (args.replace !== undefined && typeof args.replace !== "boolean")
+      throw new Error("replace must be a boolean");
+    expireHelpers();
+    if (helpers.has(name) && !replace)
+      throw new Error(`helper already exists: ${name}; pass replace=true to update it`);
+    helpers.set(name, { code, expiresAt: Date.now() + ttlMs });
+    return textResult(`Helper registered: ${name} (expires in ${ttlMs}ms). Page data is not persisted.`);
+  }
+
+  async function callHelper(args) {
+    assertOnlyKeys(args, new Set(["name", "target", "element", "args", "expectedUrl", "expectedUrlMode"]));
+    const name = validateHelperName(args.name);
+    expireHelpers();
+    const helper = helpers.get(name);
+    if (!helper)
+      return textResult(`helper missing or expired: ${name}; register it again after the page context changed`, true);
+    if (args.args !== undefined && (!args.args || typeof args.args !== "object" || Array.isArray(args.args)))
+      throw new Error("helper args must be an object");
+    const helperArguments = args.args || {};
+    const expression = `(element) => (async () => {
+      const helper = (${helper.code});
+      if (typeof helper !== "function") throw new Error("registered helper code did not evaluate to a function");
+      return await helper(element, ${JSON.stringify(helperArguments)});
+    })()`;
+    const result = await callTool("browser_evaluate", {
+      target: args.target,
+      element: args.element,
+      function: expression,
+    });
+    if (!result || result.isError === true)
+      return result;
+    return result;
+  }
+
+  function unregisterHelper(args) {
+    assertOnlyKeys(args, new Set(["name"]));
+    const name = validateHelperName(args.name);
+    const removed = helpers.delete(name);
+    return textResult(removed ? `Helper unregistered: ${name}` : `Helper was not registered: ${name}`);
+  }
+
+  async function sheetBridge(args) {
+    assertOnlyKeys(args, new Set(["operation", "method", "args", "confirmWrite"]));
+    const operation = requiredString(args, "operation");
+    if (!["probe", "read", "locate", "write"].includes(operation))
+      throw new Error("sheet bridge operation must be probe, read, locate, or write");
+    if (args.args !== undefined && (!Array.isArray(args.args)))
+      throw new Error("sheet bridge args must be an array");
+    if (operation === "probe" && args.method !== undefined)
+      throw new Error("method is only accepted for read, locate, or write operations");
+    if (operation !== "probe") {
+      const method = requiredString(args, "method");
+      if (!/^[A-Za-z_$][A-Za-z0-9_$]{0,95}$/.test(method))
+        throw new Error("sheet bridge method has an invalid name");
+      const family = operation === "read"
+        ? /^(?:get|read|fetch|find|range|cell|current|active)/i
+        : operation === "locate"
+          ? /^(?:find|locate|select|current|active|scroll|goto|cell)/i
+          : /^(?:set|write|update|patch|edit)/i;
+      if (!family.test(method))
+        throw new Error(`sheet bridge refuses ${operation} method ${method}; use a verified read/locate/write SDK method`);
+      if (operation === "write" && args.confirmWrite !== true)
+        throw new Error("sheet bridge write requires confirmWrite=true");
+    }
+    const method = args.method;
+    const callArgs = args.args || [];
+    const expression = `async () => {
+      const sheet = window.sheetInst;
+      if (!sheet) return { available: false, reason: "window.sheetInst is not present" };
+      const methods = object => {
+        const names = new Set();
+        let cursor = object;
+        while (cursor && cursor !== Object.prototype) {
+          for (const name of Object.getOwnPropertyNames(cursor)) {
+            if (name === "constructor") continue;
+            try {
+              if (typeof object[name] === "function") names.add(name);
+            } catch (_) {
+              // Ignore SDK getters that throw while the object is initializing.
+            }
+          }
+          cursor = Object.getPrototypeOf(cursor);
+        }
+        return [...names].sort();
+      };
+      if (${JSON.stringify(operation)} === "probe")
+        return { available: true, type: Object.prototype.toString.call(sheet), methods: methods(sheet) };
+      const method = ${JSON.stringify(method)};
+      if (typeof sheet[method] !== "function") return { available: true, ok: false, reason: "method-not-found", method, methods: methods(sheet) };
+      try {
+        const result = await sheet[method](...${JSON.stringify(callArgs)});
+        return { available: true, ok: true, operation: ${JSON.stringify(operation)}, method, result };
+      } catch (error) {
+        return { available: true, ok: false, operation: ${JSON.stringify(operation)}, method, reason: "sdk-error", message: String(error && error.message || error) };
+      }
+    }`;
+    const result = await callTool("browser_evaluate", { function: expression });
+    if (!result || result.isError === true)
+      return result;
+    const value = evaluationValue(result);
+    if (!value || value.available !== true)
+      return textResult(value && value.reason || "window.sheetInst is unavailable on the selected page", true);
+    if (value.ok === false)
+      return textResult(`sheetInst ${operation} failed: ${value.reason || value.message || "unknown error"}`, true);
+    return {
+      content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+      structuredContent: { sheet: value },
+    };
+  }
+
   function clickArguments(args) {
     const result = { ...(args || {}) };
     delete result.force;
@@ -1794,6 +2267,90 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
       return textResult(reason, true);
     }
     return operation === "read" ? textResult(value.text || "") : textResult(`Clipboard write completed.${permissionNote}`);
+  }
+
+  async function focusTarget(args) {
+    if (!args || (args.target === undefined && args.element === undefined))
+      return;
+    const focused = await callTool("browser_evaluate", {
+      target: args.target,
+      element: args.element,
+      function: `(element) => {
+        if (!(element instanceof Element) || !element.isConnected) throw new Error("clipboard target is detached");
+        if (typeof element.focus !== "function") throw new Error("clipboard target cannot receive focus");
+        element.focus({ preventScroll: true });
+        return { focused: document.activeElement === element || element.contains(document.activeElement) };
+      }`,
+    });
+    if (!focused || focused.isError === true)
+      throw new Error("could not focus the requested clipboard target");
+  }
+
+  function clipboardShortcut() {
+    return process.platform === "darwin" ? "Meta+V" : "Control+V";
+  }
+
+  function copyShortcut() {
+    return process.platform === "darwin" ? "Meta+C" : "Control+C";
+  }
+
+  async function pasteThroughOs(args) {
+    assertOnlyKeys(args, new Set(["text", "target", "element", "verifyText", "timeoutMs", "expectedUrl", "expectedUrlMode"]));
+    requiredString(args, "text");
+    if (args.verifyText !== undefined && (typeof args.verifyText !== "string" || !args.verifyText.trim()))
+      throw new Error("verifyText must be a non-empty string when provided");
+    const timeoutMs = boundedInteger(args.timeoutMs, 10000, 100, 120000);
+    await focusTarget(args);
+    await osClipboardWrite(args.text);
+    const pressed = await callTool("browser_press_key", { key: clipboardShortcut() });
+    if (!pressed || pressed.isError === true)
+      return pressed || textResult("OS clipboard paste shortcut failed", true);
+    let verified = false;
+    if (args.verifyText) {
+      const waited = await waitForConditions({ waitForText: args.verifyText, timeoutMs });
+      if (waited && waited.isError === true)
+        return mergeResults(waited, undefined, "OS clipboard paste shortcut was sent, but the requested text was not verified. Do not repeat it blindly.");
+      verified = true;
+    } else {
+      await waitForDomQuiet();
+    }
+    const note = verified
+      ? `OS clipboard paste completed and verified (${args.text.length} characters).`
+      : `OS clipboard paste shortcut sent (${args.text.length} characters); pass verifyText to confirm the page value.`;
+    return appendFreshSnapshot(
+      mergeResults(pressed, undefined, note),
+      verified ? "Paste completed and verified; fresh page snapshot:" : "Paste shortcut sent; fresh page snapshot:",
+    );
+  }
+
+  async function copyThroughOs(args) {
+    assertOnlyKeys(args, new Set(["target", "element", "timeoutMs", "requireChanged", "expectedUrl", "expectedUrlMode"]));
+    if (args.requireChanged !== undefined && typeof args.requireChanged !== "boolean")
+      throw new Error("requireChanged must be a boolean");
+    const timeoutMs = boundedInteger(args.timeoutMs, 10000, 100, 120000);
+    const before = await osClipboardRead();
+    await focusTarget(args);
+    const pressed = await callTool("browser_press_key", { key: copyShortcut() });
+    if (!pressed || pressed.isError === true)
+      return pressed || textResult("OS clipboard copy shortcut failed", true);
+    const deadline = Date.now() + timeoutMs;
+    let text = before;
+    let delayMs = 50;
+    while (text === before && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, Math.min(delayMs, Math.max(0, deadline - Date.now()))));
+      text = await osClipboardRead();
+      delayMs = Math.min(delayMs * 2, 250);
+    }
+    const changed = before !== text;
+    const response = {
+      content: [{ type: "text", text }],
+      structuredContent: { clipboard: { backend: "os", changed, length: text.length } },
+    };
+    if (!changed)
+      response.content.push({ type: "text", text: "OS clipboard content was unchanged after the copy shortcut; verify the selection and target page before retrying." });
+    if (!changed && args.requireChanged === true)
+      response.isError = true;
+    return response;
   }
 
   function textLocator(args) {
@@ -2046,8 +2603,101 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
         const readonly = field.hasAttribute("readonly") || field.getAttribute("aria-readonly") === "true";
         const disabled = field.matches(":disabled") || field.getAttribute("aria-disabled") === "true" || field.classList.contains("is-disabled");
         const customSelect = Boolean(field.closest(".el-select,.el-cascader,[role=combobox]") || role === "combobox");
-        const editable = !readonly && !disabled && (tag === "input" || tag === "textarea" || tag === "select" || field.isContentEditable);
-        return { tag, role, readonly, disabled, customSelect, editable };
+        const contentEditable = Boolean(field.isContentEditable || field.getAttribute("contenteditable") === "true");
+        const editable = !readonly && !disabled && (tag === "input" || tag === "textarea" || tag === "select" || contentEditable);
+        return { tag, role, readonly, disabled, customSelect, editable, contentEditable };
+      }`,
+    });
+  }
+
+  async function readFieldValue(args) {
+    return callTool("browser_evaluate", {
+      element: args.element,
+      target: args.target,
+      function: `(element) => {
+        const visible = node => {
+          if (!node || !node.isConnected) return false;
+          const style = getComputedStyle(node); const rect = node.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
+        };
+        let field = element instanceof Element && element.matches("input,textarea,select,[contenteditable],[role=combobox]") ? element :
+          element instanceof Element ? element.querySelector("input,textarea,select,[contenteditable],[role=combobox]") : null;
+        if (!field && element instanceof Element && !element.matches("input,textarea,select,[contenteditable],[role=combobox]")) {
+          const candidates = Array.from(document.querySelectorAll("input,textarea,select,[contenteditable],[role=combobox]")).filter(visible);
+          if (candidates.length === 1) field = candidates[0];
+        }
+        if (!field) throw new Error("editable field could not be resolved for verification");
+        const contentEditable = Boolean(field.isContentEditable || field.getAttribute("contenteditable") === "true");
+        return {
+          tag: field.tagName.toLowerCase(),
+          contentEditable,
+          value: typeof field.value === "string" ? field.value : "",
+          text: contentEditable ? (field.innerText || field.textContent || "") : "",
+          active: document.activeElement === field || field.contains(document.activeElement),
+        };
+      }`,
+    });
+  }
+
+  function fieldValueMatches(result, expected) {
+    const value = evaluationValue(result);
+    if (!value || typeof expected !== "string")
+      return false;
+    const actual = value.contentEditable ? value.text : value.value;
+    if (typeof actual !== "string")
+      return false;
+    const normalize = text => String(text).replace(/\r\n/g, "\n").trimEnd();
+    return normalize(actual) === normalize(expected);
+  }
+
+  async function insertTextFallback(args) {
+    const text = requiredString(args, "text");
+    return callTool("browser_evaluate", {
+      element: args.element,
+      target: args.target,
+      function: `(element) => {
+        const visible = node => {
+          if (!node || !node.isConnected) return false;
+          const style = getComputedStyle(node); const rect = node.getBoundingClientRect();
+          return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
+        };
+        const isField = node => node instanceof Element && node.matches("input,textarea,select,[contenteditable],[role=combobox]");
+        let field = isField(element) ? element : element instanceof Element ? element.querySelector("input,textarea,select,[contenteditable],[role=combobox]") : null;
+        if (!field && element instanceof Element && !isField(element)) {
+          const candidates = Array.from(document.querySelectorAll("[contenteditable],input,textarea")).filter(visible);
+          if (candidates.length !== 1) throw new Error(candidates.length ? "CJK fallback found multiple visible editable fields" : "CJK fallback could not find a visible editable field");
+          field = candidates[0];
+        }
+        if (!field || !field.isConnected) throw new Error("CJK fallback target is detached");
+        const disabled = field.matches(":disabled") || field.getAttribute("aria-disabled") === "true" || field.classList.contains("is-disabled");
+        const readonly = field.hasAttribute("readonly") || field.getAttribute("aria-readonly") === "true";
+        if (disabled || readonly) throw new Error("CJK fallback target is readonly or disabled");
+        field.focus();
+        const contentEditable = Boolean(field.isContentEditable || field.getAttribute("contenteditable") === "true");
+        let inserted = false;
+        if (contentEditable) {
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(field);
+          selection.removeAllRanges(); selection.addRange(range);
+          if (typeof document.execCommand === "function")
+            inserted = document.execCommand("insertText", false, ${JSON.stringify(text)});
+          const current = field.innerText || field.textContent || "";
+          if (!inserted || current !== ${JSON.stringify(text)}) {
+            range.deleteContents();
+            range.insertNode(document.createTextNode(${JSON.stringify(text)}));
+            selection.removeAllRanges();
+            const caret = document.createRange(); caret.selectNodeContents(field); caret.collapse(false); selection.addRange(caret);
+          }
+        } else if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) {
+          field.select();
+          field.setRangeText(${JSON.stringify(text)}, 0, field.value.length, "end");
+          inserted = true;
+        } else {
+          throw new Error("CJK fallback requires an input, textarea, or contenteditable target");
+        }
+        field.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ${JSON.stringify(text)} }));
+        return { inserted: true, contentEditable, value: contentEditable ? (field.innerText || field.textContent || "") : field.value };
       }`,
     });
   }
@@ -2248,7 +2898,12 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
         return browserConfigConfigure(rawArgs);
       if (name === "browser_config_reload")
         return browserConfigReload(rawArgs);
-      const args = normalizeArtifactFilename(name, rawArgs, outputDirectory);
+      // Validate the page target before forwarding any action or user code to
+      // the upstream MCP. The guard is deliberately fail-closed: it reports a
+      // drifted tab rather than selecting a different page automatically.
+      if (rawArgs.expectedUrl !== undefined)
+        await verifyExpectedUrl(rawArgs);
+      const args = normalizeArtifactFilename(name, stripSafetyOptions(rawArgs), outputDirectory);
       if (name === "browser_snapshot") {
         const snapshotArgs = { ...args };
         if (config.snapshotStrategy === "compact" && snapshotArgs.filename === undefined && snapshotArgs.depth === undefined) {
@@ -2321,7 +2976,42 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
       }
 
       if (name === "browser_clipboard")
-        return clipboard(args);
+        return await clipboard(args);
+
+      if (name === "browser_paste")
+        return await pasteThroughOs(args);
+
+      if (name === "browser_copy")
+        return await copyThroughOs(args);
+
+      if (name === "browser_register_helper")
+        return await registerHelper(args);
+
+      if (name === "browser_call_helper")
+        return await callHelper(args);
+
+      if (name === "browser_unregister_helper")
+        return unregisterHelper(args);
+
+      if (name === "browser_sheet_bridge")
+        return await sheetBridge(args);
+
+      if (name === "browser_press_key") {
+        const verification = keyboardVerificationOptions(args);
+        const pressed = await callTool(name, stripKeyboardVerification(args));
+        if (!pressed || pressed.isError === true)
+          return pressed;
+        const hasVerification = Boolean(verification.waitForText || verification.waitForTextGone || verification.waitForSelector || verification.waitForUrl);
+        if (hasVerification) {
+          const waited = await waitForConditions(verification);
+          if (waited && waited.isError === true)
+            return mergeResults(waited, undefined, "Key action was sent, but its postcondition was not verified. Do not repeat it blindly.");
+        }
+        return appendFreshSnapshot(
+          pressed,
+          hasVerification ? "Key action completed and verified; fresh page snapshot:" : "Key action completed; fresh page snapshot:",
+        );
+      }
 
       if (name === DOWNLOAD_WAIT_TOOL) {
         assertOnlyKeys(args, new Set(["timeoutMs"]));
@@ -2404,8 +3094,29 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
         }
         if (state && state.readonly)
           return textResult("The target is readonly and is not a recognized custom combobox; browser_type stopped without waiting for fill timeout.", true);
-        const typed = await callTool(name, args);
-        return appendFreshSnapshot(typed, "Input completed; fresh page snapshot:");
+        const typed = await callTool(name, stripSafetyOptions(args));
+        if (!/[^\x00-\x7F]/.test(args.text))
+          return appendFreshSnapshot(typed, "Input completed; fresh page snapshot:");
+        let verified = false;
+        try {
+          const afterNative = await readFieldValue(args);
+          verified = fieldValueMatches(afterNative, args.text);
+        } catch {
+          // The field may be a canvas editor whose contenteditable appears only
+          // after the native type call. Let the page-side fallback resolve it.
+        }
+        if (verified && typed && typed.isError !== true)
+          return appendFreshSnapshot(typed, "Input completed and verified; fresh page snapshot:");
+        const fallback = await insertTextFallback(args);
+        if (!fallback || fallback.isError === true)
+          return textResult("CJK input was not confirmed and the contenteditable fallback failed; inspect the target page before retrying.", true);
+        const afterFallback = await readFieldValue(args);
+        if (!fieldValueMatches(afterFallback, args.text))
+          return textResult("CJK input fallback ran but the field value could not be verified; do not assume the text was entered.", true);
+        return appendFreshSnapshot(
+          mergeResults(fallback, undefined, "CJK input fallback inserted text through the page editor and verified the resulting value."),
+          "Input completed and verified; fresh page snapshot:",
+        );
       }
 
       if (name === "browser_select_custom_option") {
@@ -2421,7 +3132,7 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
       }
 
       if (name === "browser_read_tooltip")
-        return readTooltip(args);
+        return await readTooltip(args);
 
       if (name === "browser_click_and_wait") {
         const options = waitOptions(args, Math.max(config.settleMs * 6, 5000));
@@ -2441,7 +3152,7 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
       }
 
       if (name === "browser_run_code_unsafe")
-        return runCodeWithTimerShim(args);
+        return await runCodeWithTimerShim(args);
 
       const result = await callTool(name, args);
       if (ACTION_TOOLS_WITH_SNAPSHOT.has(name))

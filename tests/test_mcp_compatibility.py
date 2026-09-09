@@ -5,6 +5,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -24,6 +25,7 @@ const path = require("path");
 const readline = require("readline");
 const vm = require("vm");
 let snapshotCount = 0;
+let cjkReadCount = 0;
 const logPath = process.env.FAKE_CALL_LOG;
 let outputDir = process.cwd();
 const configIndex = process.argv.indexOf("--config");
@@ -45,6 +47,7 @@ const tools = [
   { name: "browser_take_screenshot", description: "Screenshot", inputSchema: { type: "object", properties: { target: { type: "string" }, filename: { type: "string" } }, additionalProperties: false } },
   { name: "browser_click", description: "Click", inputSchema: { type: "object", required: ["target"], properties: { target: { type: "string" }, element: { type: "string" } }, additionalProperties: false } },
   { name: "browser_mouse_click_xy", description: "Mouse click", inputSchema: { type: "object", required: ["x", "y"], properties: { x: { type: "number" }, y: { type: "number" }, button: { type: "string" }, clickCount: { type: "number" } }, additionalProperties: false } },
+  { name: "browser_press_key", description: "Press key", inputSchema: { type: "object", required: ["key"], properties: { key: { type: "string" } }, additionalProperties: false } },
   { name: "browser_type", description: "Type", inputSchema: { type: "object", required: ["target", "text"], properties: { target: { type: "string" }, text: { type: "string" } }, additionalProperties: false } },
   { name: "browser_evaluate", description: "Evaluate", inputSchema: { type: "object", required: ["function"], properties: { function: { type: "string" }, target: { type: "string" }, element: { type: "string" } }, additionalProperties: false } },
   { name: "browser_run_code_unsafe", description: "Run code", inputSchema: { type: "object", properties: { code: { type: "string" }, filename: { type: "string" } }, additionalProperties: false } },
@@ -119,6 +122,12 @@ lines.on("line", line => {
     return;
   }
   if (name === "browser_mouse_click_xy") { result(message.id, toolResult(`MOUSE ${args.x},${args.y}`)); return; }
+  if (name === "browser_press_key") {
+    if (String(args.key || "").endsWith("+C") && process.env.FAKE_COPY_TEXT && process.env.FAKE_CLIPBOARD_FILE)
+      fs.writeFileSync(process.env.FAKE_CLIPBOARD_FILE, process.env.FAKE_COPY_TEXT, "utf8");
+    result(message.id, toolResult(`NATIVE KEY ${args.key}`));
+    return;
+  }
   if (name === "browser_run_code_unsafe") {
     if (process.env.FAKE_EXECUTE_CODE === "1") {
       const page = { waitForTimeout: ms => new Promise(resolve => setTimeout(resolve, ms)) };
@@ -135,7 +144,22 @@ lines.on("line", line => {
   if (name === "browser_evaluate") {
     const expression = String(args.function || "");
     let value = { ok: true };
-    if (expression.includes("return { tag, role, readonly")) {
+    if (expression.includes("window.sheetInst")) {
+      value = expression.includes('if ("probe" === "probe")')
+        ? { available: true, type: "[object Object]", methods: ["getRange", "setRange"] }
+        : expression.includes('operation: "locate"')
+          ? { available: true, ok: true, operation: "locate", method: "goto", result: { cell: "A72" } }
+        : { available: true, ok: true, operation: "read", method: "getRange", result: [["生产"]] };
+    } else if (expression.includes("({ url: String(location.href) })")) {
+      value = { url: process.env.FAKE_URL || "http://fixture/" };
+    } else if (expression.includes("CJK fallback target is detached")) {
+      value = { inserted: true, contentEditable: true, value: process.env.FAKE_CJK_VALUE || "生产数据" };
+    } else if (expression.includes("contentEditable") && expression.includes("active:")) {
+      cjkReadCount += 1;
+      value = { tag: "div", contentEditable: true, value: "", text: cjkReadCount === 1 ? "native-missing" : (process.env.FAKE_CJK_VALUE || "生产数据"), active: true };
+    } else if (expression.includes("focused: document.activeElement")) {
+      value = { focused: true };
+    } else if (expression.includes("return { tag, role, readonly")) {
       value = JSON.parse(process.env.FAKE_FIELD_STATE || '{"readonly":false,"disabled":false,"customSelect":false,"editable":true}');
     } else if (expression.includes("const wanted")) {
       value = { selected: "chosen", exact: true };
@@ -288,6 +312,27 @@ class McpCompatibilityTests(unittest.TestCase):
             json.dumps({"outputDir": str(output)}), encoding="utf-8"
         )
 
+    def fake_os_clipboard_environment(self, copy_text: str | None = None) -> dict[str, str]:
+        commands = self.root / "clipboard-bin"
+        commands.mkdir()
+        clipboard_file = self.root / "os-clipboard.txt"
+        clipboard_file.write_text("old", encoding="utf-8")
+        (commands / "pbcopy").write_text(
+            "#!/bin/sh\ncat > \"$FAKE_CLIPBOARD_FILE\"\n", encoding="utf-8"
+        )
+        (commands / "pbpaste").write_text(
+            "#!/bin/sh\ncat \"$FAKE_CLIPBOARD_FILE\"\n", encoding="utf-8"
+        )
+        for command in (commands / "pbcopy", commands / "pbpaste"):
+            command.chmod(0o755)
+        environment = {
+            "PATH": f"{commands}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FAKE_CLIPBOARD_FILE": str(clipboard_file),
+        }
+        if copy_text is not None:
+            environment["FAKE_COPY_TEXT"] = copy_text
+        return environment
+
     def start(self, **environment: str) -> McpClient:
         child_environment = dict(os.environ)
         child_environment.update(environment)
@@ -341,6 +386,15 @@ class McpCompatibilityTests(unittest.TestCase):
         self.assertIn("browser_click_pointer", by_name)
         self.assertIn("browser_click_text", by_name)
         self.assertIn("browser_clipboard", by_name)
+        self.assertIn("browser_paste", by_name)
+        self.assertIn("browser_copy", by_name)
+        self.assertIn("browser_register_helper", by_name)
+        self.assertIn("browser_call_helper", by_name)
+        self.assertIn("browser_sheet_bridge", by_name)
+        self.assertIn("expectedUrl", by_name["browser_run_code_unsafe"]["inputSchema"]["properties"])
+        self.assertIn("expectedUrl", by_name["browser_click_and_wait"]["inputSchema"]["properties"])
+        self.assertIn("expectedUrl", by_name["browser_select_custom_option"]["inputSchema"]["properties"])
+        self.assertIn("verifyText", by_name["browser_press_key"]["inputSchema"]["properties"])
         self.assertIn("browser_wait_for_download", by_name)
         self.assertIn("force", by_name["browser_click"]["inputSchema"]["properties"])
         self.assertIn("text", by_name["browser_click"]["inputSchema"]["properties"])
@@ -649,6 +703,121 @@ class McpCompatibilityTests(unittest.TestCase):
         result = self.call_tool("browser_clipboard", {"operation": "read"})
         self.assertTrue(result["isError"])
         self.assertIn("secure context", result["content"][0]["text"])
+
+    def test_expected_url_guard_rejects_drift_before_user_code(self) -> None:
+        self.start(FAKE_URL="http://fixture/other")
+        result = self.call_tool(
+            "browser_run_code_unsafe",
+            {"code": "async (page) => 'must-not-run'", "expectedUrl": "http://fixture/"},
+        )
+        self.assertTrue(result["isError"])
+        self.assertIn("URL mismatch", result["content"][0]["text"])
+        calls = self.calls()
+        self.assertFalse(any(item["name"] == "browser_run_code_unsafe" for item in calls))
+
+    def test_expected_url_guard_allows_exact_page(self) -> None:
+        self.start(FAKE_URL="http://fixture/")
+        result = self.call_tool(
+            "browser_run_code_unsafe",
+            {"code": "async (page) => 'guard-ok'", "expectedUrl": "http://fixture/"},
+        )
+        self.assertIn("guard-ok", json.dumps(result))
+
+    def test_key_action_verifies_explicit_postcondition(self) -> None:
+        self.start()
+        result = self.call_tool(
+            "browser_press_key", {"key": "ArrowDown", "verifyText": "ready", "timeoutMs": 1000}
+        )
+        self.assertNotEqual(True, result.get("isError"))
+        self.assertIn("completed and verified", json.dumps(result))
+
+    def test_cjk_type_uses_contenteditable_fallback_and_verifies_value(self) -> None:
+        self.start(FAKE_FIELD_STATE=json.dumps({"readonly": False, "disabled": False, "customSelect": False, "editable": True, "contentEditable": True}), FAKE_CJK_VALUE="生产数据")
+        result = self.call_tool(
+            "browser_type", {"target": "ref=editor", "text": "生产数据"}
+        )
+        self.assertNotEqual(True, result.get("isError"))
+        self.assertIn("CJK input fallback", json.dumps(result))
+        self.assertTrue(any(item["name"] == "browser_evaluate" and "CJK fallback target is detached" in item["args"].get("function", "") for item in self.calls()))
+
+    @unittest.skipUnless(sys.platform == "darwin", "deterministic fake pbcopy/pbpaste test is macOS-only")
+    def test_browser_paste_uses_utf8_os_clipboard_and_trusted_shortcut(self) -> None:
+        environment = self.fake_os_clipboard_environment()
+        self.start(**environment)
+        text = "姓名\t年龄\r\n小明\t29"
+        result = self.call_tool("browser_paste", {"text": text})
+        self.assertNotEqual(True, result.get("isError"))
+        self.assertEqual(text, (self.root / "os-clipboard.txt").read_bytes().decode("utf-8"))
+        press = next(item for item in self.calls() if item["name"] == "browser_press_key")
+        self.assertEqual("Meta+V" if sys.platform == "darwin" else "Control+V", press["args"]["key"])
+
+    @unittest.skipUnless(sys.platform == "darwin", "deterministic fake pbcopy/pbpaste test is macOS-only")
+    def test_browser_copy_reads_os_clipboard_and_reports_change(self) -> None:
+        copied = "A1\t生产"
+        environment = self.fake_os_clipboard_environment(copy_text=copied)
+        self.start(**environment)
+        result = self.call_tool("browser_copy", {"requireChanged": True})
+        self.assertEqual(copied, result["content"][0]["text"])
+        self.assertTrue(result["structuredContent"]["clipboard"]["changed"])
+
+    def test_helper_is_available_after_registration_and_has_no_code_echo(self) -> None:
+        self.start()
+        registered = self.call_tool(
+            "browser_register_helper",
+            {"name": "sheetProbe", "code": "(element, args) => ({ value: args.value })", "ttlMs": 1000},
+        )
+        self.assertIn("sheetProbe", registered["content"][0]["text"])
+        called = self.call_tool(
+            "browser_call_helper",
+            {"name": "sheetProbe", "args": {"value": "生产"}, "target": "ref=sheet"},
+        )
+        self.assertNotEqual(True, called.get("isError"))
+        self.assertNotIn("element, args", json.dumps(registered))
+
+    def test_duplicate_helper_requires_explicit_replace(self) -> None:
+        self.start()
+        self.call_tool(
+            "browser_register_helper",
+            {"name": "short", "code": "(element, args) => args", "ttlMs": 1000},
+        )
+        # Re-registration must be explicit so a page reload cannot silently
+        # replace a helper definition.
+        result = self.call_tool(
+            "browser_register_helper",
+            {"name": "short", "code": "(element, args) => args", "ttlMs": 1000},
+        )
+        self.assertTrue(result["isError"])
+
+    def test_helper_expiry_is_reported_after_page_reload_window(self) -> None:
+        self.start()
+        self.call_tool(
+            "browser_register_helper",
+            {"name": "expires", "code": "(element, args) => args", "ttlMs": 1000},
+        )
+        time.sleep(1.1)
+        result = self.call_tool("browser_call_helper", {"name": "expires"})
+        self.assertTrue(result["isError"])
+        self.assertIn("missing or expired", result["content"][0]["text"])
+
+    def test_sheet_bridge_requires_probe_and_explicit_write_confirmation(self) -> None:
+        self.start()
+        probe = self.call_tool("browser_sheet_bridge", {"operation": "probe"})
+        self.assertIn("getRange", json.dumps(probe))
+        rejected = self.call_tool(
+            "browser_sheet_bridge",
+            {"operation": "write", "method": "setRange", "args": [["生产"]]},
+        )
+        self.assertTrue(rejected["isError"])
+        read = self.call_tool(
+            "browser_sheet_bridge",
+            {"operation": "read", "method": "getRange", "args": ["A1:B2"]},
+        )
+        payload = json.loads(read["content"][0]["text"])
+        self.assertEqual("生产", payload["result"][0][0])
+        located = self.call_tool(
+            "browser_sheet_bridge", {"operation": "locate", "method": "goto", "args": ["A72"]}
+        )
+        self.assertEqual("A72", json.loads(located["content"][0]["text"])["result"]["cell"])
 
     def test_native_click_success_does_not_use_dom_fallback(self) -> None:
         self.start()

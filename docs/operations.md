@@ -60,6 +60,18 @@ Chrome/Edge 的 `LOCALAPPDATA` 只用于发现浏览器既有 Profile 和检查�
 - `browser_configure` 只接受 schema 允许的非秘密字段，使用临时文件和原子替换。
 - `browser_config_reload` 重新读取设置；快照、兼容性和等待时间可在线更新，浏览器启动方式、channel 或可执行文件变化需要重启 MCP/Claude Code。
 
+## Canvas、剪贴板与页面状态
+
+对 HTTP 页面，使用 `browser_paste`/`browser_copy` 处理系统剪贴板：文本通过 UTF-8 标准输入交给 Windows PowerShell `Set-Clipboard`/`Get-Clipboard -Raw`（macOS 使用 `pbcopy`/`pbpaste`，Linux 使用 `wl-clipboard`、`xclip` 或 `xsel`），随后由 Playwright 发送可信 Ctrl/Cmd+V 或 Ctrl/Cmd+C。调用方应传 `expectedUrl` 防止标签页漂移；粘贴可传 `verifyText`，复制可传 `requireChanged=true`。`browser_clipboard` 仍只访问页面 Clipboard API，secure-context 失败时不会自动读取系统剪贴板。
+
+`browser_type` 对含中文、日文、韩文或其他非 ASCII 文本先执行原生输入并回读；回读不一致时才在同一目标或唯一可见 contenteditable 上使用页面编辑器兜底。无法唯一定位编辑器或回读仍不一致时，工具返回错误，不能把调用当作成功。
+
+需要反复执行页面诊断时，先调用 `browser_register_helper`，再用 `browser_call_helper`。定义只存于当前 MCP 进程并按 TTL 过期，页面 reload 后调用会重新注入；不要把业务数据、Cookie 或剪贴板内容编码进 helper。MODOC canvas 表格先调用 `browser_sheet_bridge(operation=probe)`，确认 `window.sheetInst` 和方法后再读、定位或写入；定位操作可传 SDK 的 `goto`/`locate` 方法和单元格参数，写入必须显式 `confirmWrite=true`，并在真实页面上回读验证。
+
+所有会改变页面的工具都支持 `expectedUrl`/`expectedUrlMode`。校验失败时先重新执行 `browser_tabs` 或显式导航并重新观察，不能自动切换标签页，也不能重放输入、粘贴或写入。
+
+需要确认方向键、快捷键或标签切换生效时，给 `browser_press_key` 传 `verifyText`、`verifyTextGone`、`verifySelector` 或 `verifyUrl`。工具会串行发送一次按键并等待后置条件；失败时保留“已发送但未确认”的结果，不自动重复按键。
+
 扩展令牌只在注册事务的子进程环境中短暂存在，并保存在 Claude Code user-scope 配置；它不得出现在 `settings.json`、部署清单、命令行日志、测试输出、ZIP 或 MCP 响应。日志写入 `%TEMP%\browser-mcp-server\`，报告前删除令牌、Cookie 和个人路径。
 
 ## 升级、回滚和卸载

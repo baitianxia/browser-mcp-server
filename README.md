@@ -42,6 +42,8 @@ MCP 本身提供三个配置工具：
 - `browser_configure`：只接受经过校验的非秘密字段，以临时文件和原子替换写入设置文件。
 - `browser_config_reload`：重新读取磁盘设置并应用快照/动态页面兼容选项；浏览器启动方式或可执行文件变化时重启 Claude Code MCP 进程。
 
+兼容层还提供 `browser_paste`/`browser_copy`（显式 OS 剪贴板 + 可信快捷键）、`browser_register_helper`/`browser_call_helper`（进程内 TTL helper）、`browser_sheet_bridge`（MODOC `window.sheetInst` 探测及受限的读、定位、写调用）。页面 Clipboard API 仍由 `browser_clipboard` 单独负责，HTTP 页面不会自动读取用户系统剪贴板。涉及输入、剪贴板或页面代码的调用可传 `expectedUrl`，标签页漂移时工具会失败关闭。
+
 扩展令牌只能暂时通过注册器进程环境传递，并且唯一持久化在 Claude Code 当前用户配置中。它不会写入 ZIP、`settings.json`、部署清单、项目文件、日志或 MCP 响应。
 
 ## 开发与验证

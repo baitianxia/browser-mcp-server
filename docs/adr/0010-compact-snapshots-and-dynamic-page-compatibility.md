@@ -22,8 +22,10 @@
 6. 兼容层统一处理输出 artifact：上游仍保留调用方的工作目录和文件访问边界，兼容层读取配置的 `outputDir`，并要求截图、快照、PDF、已完成视频和下载文件的显式文件名保持在该目录内；响应在保留上游文本的同时附加 `structuredContent.artifacts`，其中包含绝对路径、output-relative 路径、类型和 `ready|pending|finished|timeout` 状态。下载触发动作会等待上游 download start/finish 通知的有界窗口；没有 Playwright download 事件的 Blob/fetch 页面行为仍须由页面自身导出工具处理。
 7. `browser_click` 继续原生点击优先，并公开显式 `force` 与 `pointer` 选项。`force` 只允许同一目标的受检 DOM 回退，必须明确提示它不是 trusted pointer input；`pointer` 和 `browser_click_pointer` 先检查同一目标可见、未禁用、中心点未被覆盖，再调用 vision `browser_mouse_click_xy`。不得自动把坐标点击或 DOM `dispatchEvent` 作为隐藏回退。
 8. `browser_click` 增加 `text`/`role`/`exact` 的 live locator 参数，并保留明确的 `browser_click_text` 入口；两者都用 `getByText`/`getByRole` 在动态菜单没有快照 ref 时定位，匹配必须唯一且默认 exact。增加 `browser_clipboard`，只调用当前页面 Clipboard API；`grantPermissions=true` 时仅按当前 origin 显式请求 clipboard 权限，仍不能绕过 HTTP 非 secure context 限制。
+   兼容层同时提供显式的 `browser_paste`/`browser_copy` 系统剪贴板路径：服务端以 UTF-8 调用本机剪贴板命令，再通过 Playwright 发送可信 Ctrl/Cmd 快捷键；它们不是 `browser_clipboard` 的自动降级。输入工具对非 ASCII 文本做回读验证和同目标 contenteditable 兜底，键盘、输入、页面代码和剪贴板动作支持 `expectedUrl` 预检，页面漂移时失败关闭。
 9. 对 `browser_run_code_unsafe` 的代码函数包一层 page-backed timer shim，仅在 VM 缺少全局计时器时提供 `setTimeout`、`clearTimeout`、`setInterval` 和 `clearInterval`。shim 只调用 `page.waitForTimeout`/页面计时器，不向 VM 暴露 Node `process`、`fs`、`require` 等全局；传入文件代码或上游拒绝 shim 时仍保留原始错误。
 10. 兼容层按 UTF-8 增量解码上游 stderr，避免多字节字符跨 chunk 时被终端替换；Python 注册器继续保留窄代码页的 `backslashreplace` 容错。终端本身的 GBK 解码仍属于客户端部署问题，不能由页面工具伪造修复。
+11. 提供短期进程内 `browser_register_helper`/`browser_call_helper`/`browser_unregister_helper`，每次调用重新注入页面函数，避免 reload 后依赖消失；helper 代码不进入持久化配置，业务数据不由兼容层保存。MODOC 页面可用 `browser_sheet_bridge` 探测并显式调用 `window.sheetInst` 的已验证读、定位或写方法，写操作必须显式确认。
 
 兼容层不扩展 origin、文件或浏览器 Profile 权限，不解析登录秘密，不自动确认高风险业务动作，也不把页面内容当作授权指令。DOM/pointer 回退必须保持原调用目标，不得寻找并点击另一个“相似”元素；clipboard 权限只能由调用方在当前 origin 显式请求。所有配置写入 `interaction.config.json`，由部署清单生成并纳入完整性、preflight、原子切换和回滚。
 

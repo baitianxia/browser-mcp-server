@@ -58,6 +58,14 @@ Windows MCP 条目必须是 user-scope stdio，命令直接执行清单中已验
 
 浏览器动作遵循 `Observe → Reason → Act → Wait/change detection → Verify`。导航、提交、Tab 切换、弹窗、SPA 路由和异步更新都会使旧观察失效。动态兼容回退只能作用于同一唯一、可见、已连接且未禁用的目标；pointer 和 clipboard 能力必须显式调用并遵守当前 origin/vision 权限。删除、上传、提交、权限变更和对外沟通属于确认动作。
 
+兼容层提供两个显式的系统剪贴板工具：`browser_paste` 通过 UTF-8 OS 剪贴板和可信 Ctrl/Cmd+V 粘贴调用方提供的文本，`browser_copy` 通过可信 Ctrl/Cmd+C 读取 OS 剪贴板。它们不作为 `browser_clipboard` 的自动降级路径；后者保持当前页面 Clipboard API 语义，避免把用户已有的系统剪贴板内容静默送入模型。系统剪贴板操作仍须在正确标签页上执行，并在需要时用 `verifyText` 或 `requireChanged` 校验结果。
+
+`browser_click`、`browser_type`、`browser_press_key`、`browser_evaluate`、`browser_run_code_unsafe`、导航和系统剪贴板工具接受可选的 `expectedUrl` 与 `expectedUrlMode`。兼容层在动作或页面代码执行前读取当前页 URL；不匹配时失败关闭，不自动切换标签页或重放键盘动作。可编辑文本含非 ASCII 字符且原生输入未通过回读校验时，`browser_type` 才使用页面侧编辑器兜底，并返回未确认错误而不是静默成功。
+
+`browser_press_key` 还接受 `verifyText`、`verifyTextGone`、`verifySelector` 和 `verifyUrl`，在快捷键后等待明确的页面后置条件；未提供后置条件时仍返回动作后的新快照，但不把快照当作键盘已生效的证明。
+
+`browser_register_helper` 只在 MCP 进程内保存命名的页面函数，默认 30 分钟、最长 1 小时；`browser_call_helper` 每次调用都重新注入，因此可跨页面 reload 使用，但不保存页面业务数据。helper 代码拒绝明显的 Node 全局和导入依赖，缺失或过期会显式报错。`browser_sheet_bridge` 是 MODOC 的受限适配入口：先 `probe` 再使用经验证的方法名进行 `read`、`locate` 或 `write`，其中定位可承载 `goto A72` 一类 SDK 调用，写入必须带 `confirmWrite=true`，不会猜测 SDK 方法或自动修改另一个页面。
+
 ## Windows 安装与升级
 
 正式用户交付物是一个 ZIP，只有一个顶层目录，顶层入口为 `INSTALL.cmd`、`CONFIGURE.cmd`、`OPEN-CONFIG.cmd` 和 `UNINSTALL.cmd`。用户解压后只需双击 `INSTALL.cmd`。安装器不运行测试、AST 扫描、注册器自检、npm/pnpm/npx 或在线下载；它只复用当前用户已经安装且可验证的 Claude Code。
