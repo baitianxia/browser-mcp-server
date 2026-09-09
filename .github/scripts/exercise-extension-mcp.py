@@ -252,6 +252,10 @@ def exercise(args: argparse.Namespace) -> tuple[str, int]:
         environment["DEBUG"] = "pw:mcp:relay"
         environment["PLAYWRIGHT_MCP_EXTENSION_TOKEN"] = token
         environment["PWTEST_EXTENSION_USER_DATA_DIR"] = str(profile)
+    else:
+        # Preserve browser-launch diagnostics when the first navigation cannot
+        # establish its dedicated context. This CI page has no real secrets.
+        environment["DEBUG"] = "pw:browser"
     mcp: McpProcess | None = None
     try:
         mcp = McpProcess(

@@ -791,6 +791,14 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('set "LOCALAPPDATA=$HostLocalAppData"', workflow)
         self.assertIn('set "USERPROFILE=$env:CI_HOST_USERPROFILE"', workflow)
         self.assertIn('set "LOCALAPPDATA=$env:CI_HOST_LOCALAPPDATA"', workflow)
+        dedicated_exercise = workflow.split(
+            '$OfflineRule = "browser-mcp-server settings offline', 1
+        )[1].split('Write-Host "CI DEDICATED HEADLESS PROFILE ISOLATION PASSED"', 1)[0]
+        self.assertIn('$env:USERPROFILE = $env:CI_HOST_USERPROFILE', dedicated_exercise)
+        self.assertIn('$env:LOCALAPPDATA = $env:CI_HOST_LOCALAPPDATA', dedicated_exercise)
+        dedicated_cleanup = dedicated_exercise.split('} finally {', 1)[1]
+        self.assertIn('$env:USERPROFILE = $DedicatedPilotUserProfile', dedicated_cleanup)
+        self.assertIn('$env:LOCALAPPDATA = $DedicatedPilotLocalAppData', dedicated_cleanup)
 
         self.assertIn('"browser_navigate"', exercise)
         self.assertIn('"browser_snapshot"', exercise)

@@ -1683,11 +1683,19 @@ jobs:
           Write-Host "CI ONE-CLICK DEDICATED SETTINGS UPGRADE PRESERVED"
 
           $OfflineRule = "browser-mcp-server settings offline $env:GITHUB_RUN_ID"
+          $DedicatedPilotUserProfile = $env:USERPROFILE
+          $DedicatedPilotLocalAppData = $env:LOCALAPPDATA
           try {
               New-NetFirewallRule -DisplayName $OfflineRule `
                   -Direction Outbound -Program $env:CHROME_EXE `
                   -RemoteAddress Internet -Action Block | Out-Null
               $RuntimeRoot = [string]$Manifest.installRoot
+              # As for the extension surrogate, Chrome must inherit the
+              # runner's real shell folders. The explicit installed config
+              # still fixes its dedicated userDataDir to the isolated pilot
+              # tree; restore the installer environment after this process.
+              $env:USERPROFILE = $env:CI_HOST_USERPROFILE
+              $env:LOCALAPPDATA = $env:CI_HOST_LOCALAPPDATA
               python .\.github\scripts\exercise-extension-mcp.py `
                   --mode dedicated `
                   --node-executable $Manifest.nodeExecutable `
@@ -1702,6 +1710,8 @@ jobs:
                   throw "Dedicated headless MCP E2E failed."
               }
           } finally {
+              $env:USERPROFILE = $DedicatedPilotUserProfile
+              $env:LOCALAPPDATA = $DedicatedPilotLocalAppData
               Remove-NetFirewallRule -DisplayName $OfflineRule `
                   -ErrorAction SilentlyContinue
               @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
