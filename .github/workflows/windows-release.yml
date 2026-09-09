@@ -1969,10 +1969,18 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-mcp-server-1.0.16-windows-x64-${{ github.run_id }}
-          path: |
-            ${{ env.READY_ARCHIVE }}
-            ${{ env.READY_ARCHIVE }}.sha256
+          name: browser-mcp-server-1.0.16-windows-x64.zip
+          path: ${{ env.READY_ARCHIVE }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload the adjacent public ZIP checksum without another wrapper
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-mcp-server-1.0.16-windows-x64.zip.sha256
+          path: ${{ env.READY_ARCHIVE }}.sha256
           archive: false
           if-no-files-found: error
           retention-days: 30

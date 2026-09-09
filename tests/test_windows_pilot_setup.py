@@ -766,10 +766,15 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("payload\\toolkit\\scripts\\verify-windows-release.ps1", workflow)
         ready_upload = workflow.split(
             "- name: Upload the public Windows ZIP and checksum", 1
-        )[1]
+        )[1].split("- name: Upload the adjacent public ZIP checksum", 1)[0]
         self.assertIn("archive: false", ready_upload)
         self.assertIn("${{ env.READY_ARCHIVE }}", ready_upload)
-        self.assertIn("${{ env.READY_ARCHIVE }}.sha256", ready_upload)
+        self.assertNotIn("${{ env.READY_ARCHIVE }}.sha256", ready_upload)
+        checksum_upload = workflow.split(
+            "- name: Upload the adjacent public ZIP checksum", 1
+        )[1]
+        self.assertIn("archive: false", checksum_upload)
+        self.assertIn("${{ env.READY_ARCHIVE }}.sha256", checksum_upload)
         self.assertIn("Prepare exact native and npm Claude Code CI fixtures", workflow)
         self.assertIn("CI-only native Claude Code", workflow)
         self.assertIn("CI-only npm Claude Code", workflow)
