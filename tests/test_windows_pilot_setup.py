@@ -823,6 +823,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("AccessControlType]::Deny", access_denied_injector)
         self.assertIn("OriginalRuntimeAccessSddl", access_denied_injector)
         self.assertIn("OriginalParentAccessSddl", access_denied_injector)
+        self.assertIn(
+            "catch [System.Management.Automation.ItemNotFoundException]",
+            access_denied_injector,
+        )
         self.assertIn("pnpm-workspace.yaml", access_denied_injector)
         extraction_marker = access_denied_injector.index(
             '$ExtractionCompletionMarker = Join-Path $DeniedPath "pnpm-workspace.yaml"'

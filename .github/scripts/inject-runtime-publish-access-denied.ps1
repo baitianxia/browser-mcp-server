@@ -32,8 +32,18 @@ try {
         foreach ($Candidate in $Candidates) {
             $DeniedPath = $Candidate.FullName
             $DeniedParentPath = Split-Path -Parent $DeniedPath
-            $RuntimeAcl = Get-Acl -LiteralPath $DeniedPath
-            $ParentAcl = Get-Acl -LiteralPath $DeniedParentPath
+            # The installer may publish the staged directory between the
+            # enumeration above and ACL inspection. Treat that one expected
+            # race as a stale candidate and keep looking; do not leave a
+            # partially armed parent ACL behind.
+            try {
+                $RuntimeAcl = Get-Acl -LiteralPath $DeniedPath
+                $ParentAcl = Get-Acl -LiteralPath $DeniedParentPath
+            } catch [System.Management.Automation.ItemNotFoundException] {
+                $DeniedPath = $null
+                $DeniedParentPath = $null
+                continue
+            }
             $OriginalRuntimeAccessSddl = $RuntimeAcl.GetSecurityDescriptorSddlForm(
                 [Security.AccessControl.AccessControlSections]::Access
             )
