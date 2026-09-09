@@ -785,8 +785,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"Google\\Chrome\\User Data"', workflow)
         self.assertIn('$HostUserProfile = $env:USERPROFILE', workflow)
         self.assertIn('$HostLocalAppData = $env:LOCALAPPDATA', workflow)
+        self.assertIn('CI_HOST_USERPROFILE=$HostUserProfile', workflow)
+        self.assertIn('CI_HOST_LOCALAPPDATA=$HostLocalAppData', workflow)
         self.assertIn('set "USERPROFILE=$HostUserProfile"', workflow)
         self.assertIn('set "LOCALAPPDATA=$HostLocalAppData"', workflow)
+        self.assertIn('set "USERPROFILE=$env:CI_HOST_USERPROFILE"', workflow)
+        self.assertIn('set "LOCALAPPDATA=$env:CI_HOST_LOCALAPPDATA"', workflow)
 
         self.assertIn('"browser_navigate"', exercise)
         self.assertIn('"browser_snapshot"', exercise)

@@ -445,6 +445,10 @@ jobs:
           if (-not $HostUserProfile -or -not $HostLocalAppData) {
               throw "The Windows runner did not expose its shell-folder environment."
           }
+          "CI_HOST_USERPROFILE=$HostUserProfile" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CI_HOST_LOCALAPPDATA=$HostLocalAppData" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $PilotUserProfile = Join-Path $env:RUNNER_TEMP "pilot-user-profile"
           New-Item -ItemType Directory -Path $PilotUserProfile -Force | Out-Null
           $env:USERPROFILE = $PilotUserProfile
@@ -1489,6 +1493,10 @@ jobs:
               "upgrade-extension-session.stderr.log"
           $UpgradeSessionWrapper = Join-Path $env:RUNNER_TEMP `
               "upgrade-extension-session.cmd"
+          if (-not $env:CI_HOST_USERPROFILE -or
+              -not $env:CI_HOST_LOCALAPPDATA) {
+              throw "The CI host shell-folder environment is unavailable."
+          }
           foreach ($Stale in @(
               $UpgradeSessionToken, $UpgradeSessionReady,
               $UpgradeSessionStop, $UpgradeSessionExit,
@@ -1501,6 +1509,8 @@ jobs:
               Stop-Process -Force -ErrorAction SilentlyContinue
           $UpgradeSessionWrapperBody = @"
           @echo off
+          set "USERPROFILE=$env:CI_HOST_USERPROFILE"
+          set "LOCALAPPDATA=$env:CI_HOST_LOCALAPPDATA"
           node.exe "$UpgradeCdpProbe" --chrome "$env:CHROME_EXE" --profile "$UpgradeChromeProfile" --extension "$UpgradeUnpacked" --expected-id "$($UpgradeApproval.extensionId)" --expected-version "$($UpgradeApproval.version)" --token-file "$UpgradeSessionToken" --ready-file "$UpgradeSessionReady" --stop-file "$UpgradeSessionStop" --maximum-seconds 300
           set "SESSION_EXIT=%errorlevel%"
           > "$UpgradeSessionExit" echo %SESSION_EXIT%
