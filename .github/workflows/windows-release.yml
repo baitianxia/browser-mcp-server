@@ -1836,16 +1836,15 @@ jobs:
           )
 
           $OriginalPath = $env:PATH
-          $OriginalUserProfile = $env:USERPROFILE
           $FakeEventsPath = Join-Path $env:RUNNER_TEMP `
               "settings-failing-claude-events.jsonl"
           Remove-Item -LiteralPath $FakeEventsPath -Force `
               -ErrorAction SilentlyContinue
           try {
-              $env:USERPROFILE = Join-Path $env:RUNNER_TEMP `
-                  "settings-fake-user-profile"
-              New-Item -ItemType Directory -Path $env:USERPROFILE -Force |
-                  Out-Null
+              # CLAUDE_CONFIG_DIR already points at the disposable user-scope
+              # fixture. Keep USERPROFILE unchanged so installed settings
+              # paths remain inside the same pilot root during this test;
+              # only Claude executable discovery is replaced below.
               $PathWithoutNativeClaude = @($OriginalPath -split ";" |
                   Where-Object {
                       $_ -and -not (Test-Path -LiteralPath `
@@ -1861,7 +1860,6 @@ jobs:
               $ExpectedFailureExit = $LASTEXITCODE
           } finally {
               $env:PATH = $OriginalPath
-              $env:USERPROFILE = $OriginalUserProfile
               Remove-Item Env:SETTINGS_FAKE_EVENTS `
                   -ErrorAction SilentlyContinue
           }

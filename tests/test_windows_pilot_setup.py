@@ -799,6 +799,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         dedicated_cleanup = dedicated_exercise.split('} finally {', 1)[1]
         self.assertIn('$env:USERPROFILE = $DedicatedPilotUserProfile', dedicated_cleanup)
         self.assertIn('$env:LOCALAPPDATA = $DedicatedPilotLocalAppData', dedicated_cleanup)
+        failure_injection = workflow.split('$OriginalPath = $env:PATH', 1)[1].split(
+            'if ($ExpectedFailureExit', 1
+        )[0]
+        self.assertNotIn(
+            '$env:USERPROFILE = Join-Path $env:RUNNER_TEMP', failure_injection
+        )
 
         self.assertIn('"browser_navigate"', exercise)
         self.assertIn('"browser_snapshot"', exercise)
