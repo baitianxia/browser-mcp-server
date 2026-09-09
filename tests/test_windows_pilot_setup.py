@@ -777,17 +777,14 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("NPM_CLAUDE_COMMAND", workflow)
         self.assertIn("NPM_CLAUDE_NODE", workflow)
         self.assertIn(
-            '$ChromeUserData = Join-Path $env:RUNNER_TEMP "chrome-ci-profile"',
+            '$ChromeUserData = Join-Path $PilotLocalAppData `',
             workflow,
         )
+        self.assertIn('"Google\\Chrome\\User Data"', workflow)
         self.assertIn('$HostUserProfile = $env:USERPROFILE', workflow)
         self.assertIn('$HostLocalAppData = $env:LOCALAPPDATA', workflow)
         self.assertIn('set "USERPROFILE=$HostUserProfile"', workflow)
         self.assertIn('set "LOCALAPPDATA=$HostLocalAppData"', workflow)
-        self.assertNotIn(
-            'Join-Path $env:LOCALAPPDATA "Google\\Chrome\\User Data"',
-            workflow,
-        )
 
         self.assertIn('"browser_navigate"', exercise)
         self.assertIn('"browser_snapshot"', exercise)
