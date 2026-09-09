@@ -194,6 +194,19 @@ class BrowserAgentManifestTests(unittest.TestCase):
         errors = browser_agent.validate_manifest(manifest)
         self.assertTrue(any("loopback" in error for error in errors))
 
+    def test_cdp_endpoint_rejects_malformed_or_out_of_range_ports(self) -> None:
+        for endpoint in (
+            "http://127.0.0.1:65536",
+            "http://[::1]:notaport",
+        ):
+            with self.subTest(endpoint=endpoint):
+                manifest = copy.deepcopy(self.demo)
+                manifest["mode"] = "cdp"
+                manifest["browser"].pop("userDataDir")
+                manifest["browser"]["cdpEndpoint"] = endpoint
+                errors = browser_agent.validate_manifest(manifest)
+                self.assertTrue(any("loopback" in error for error in errors))
+
     def test_default_personal_profile_is_rejected(self) -> None:
         manifest = copy.deepcopy(self.demo)
         manifest["browser"]["userDataDir"] = (

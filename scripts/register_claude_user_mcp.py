@@ -419,7 +419,7 @@ def register_user_mcp(
         )
         if remove_result.returncode == 0:
             reporter("已清理旧的用户级 MCP 条目，正在注册新版本。")
-        elif _remove_result_is_missing(remove_result):
+        elif remove_result.returncode == 1 and _remove_result_is_missing(remove_result):
             reporter("未发现可清理的当前 MCP 条目（首次安装时正常），继续注册。")
         else:
             raise RegistrationError(

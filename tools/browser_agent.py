@@ -258,9 +258,15 @@ def _is_loopback(host: str) -> bool:
 def _loopback_endpoint(endpoint: str) -> bool:
     try:
         parsed = urlsplit(endpoint)
+        # Accessing ``SplitResult.port`` forces urllib.parse to validate the
+        # numeric range and rejects malformed ports.  Checking only
+        # ``hostname`` would otherwise accept values such as :65536 or
+        # :notaport and defer the failure to the browser launcher.
+        port = parsed.port
         return (
             parsed.scheme in {"http", "https"}
             and parsed.hostname is not None
+            and (port is None or 0 <= port <= 65535)
             and _is_loopback(parsed.hostname)
             and parsed.username is None
             and parsed.password is None

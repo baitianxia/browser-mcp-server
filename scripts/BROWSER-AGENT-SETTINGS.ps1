@@ -325,6 +325,10 @@ try {
     if (-not $env:LOCALAPPDATA -or -not $env:USERPROFILE) {
         throw "当前 Windows 用户缺少 LOCALAPPDATA 或 USERPROFILE。"
     }
+    if (([string]$env:USERPROFILE) -notmatch '^[A-Za-z]:[\\/]' -or
+        ([string]$env:LOCALAPPDATA) -notmatch '^[A-Za-z]:[\\/]') {
+        throw "USERPROFILE 和 LOCALAPPDATA 必须是本机盘符绝对路径。"
+    }
     if (-not $script:LogPath) {
         $LogDirectory = Join-Path ([IO.Path]::GetTempPath()) `
             "browser-mcp-server"

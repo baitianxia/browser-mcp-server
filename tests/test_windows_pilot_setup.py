@@ -353,6 +353,9 @@ class WindowsPilotSetupTests(unittest.TestCase):
         launcher = (ROOT / "scripts" / "BROWSER-AGENT-SETTINGS.cmd").read_text(
             encoding="utf-8"
         )
+        uninstall = (ROOT / "scripts" / "UNINSTALL.ps1").read_text(
+            encoding="utf-8"
+        )
         self.assertTrue(
             settings_path.read_bytes().startswith(b"\xef\xbb\xbf"),
             "Windows PowerShell 5.1 requires a BOM for scripts containing Chinese text",
@@ -391,6 +394,12 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("-StandardInput", settings)
         self.assertNotIn('"extension-token.txt"', settings)
         self.assertIn("$ConfigBackedUp = $true", settings)
+        self.assertIn("$RemoveOutput = @(& $ClaudeInvocation.Executable", uninstall)
+        self.assertIn(
+            "no\\s+(?:user-scoped\\s+)?mcp\\s+server\\s+found\\s+with\\s+name",
+            uninstall,
+        )
+        self.assertNotIn("$LASTEXITCODE -notin @(0, 1)", uninstall)
         self.assertIn("Resolve-ClaudeCodeInvocation", settings)
         self.assertNotIn("npm.cmd", settings + launcher)
         self.assertNotIn("npx", settings + launcher)
@@ -420,7 +429,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         target_automation = (
             installer + launcher + registrar + discovery + metadata_validator
         )
-        self.assertNotIn("ExecutionPolicy", installer + launcher)
+        self.assertIn(
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File",
+            launcher,
+        )
+        self.assertNotIn("Set-ExecutionPolicy", installer + launcher)
         self.assertNotIn("ProjectRoot", installer)
         self.assertNotIn("--project-root", installer)
         self.assertNotIn("install-project", installer)
@@ -512,11 +525,6 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("Gate log:", launcher)
         self.assertNotIn('"unittest"', installer + launcher)
         self.assertNotIn('"self-test"', installer + launcher)
-        self.assertEqual(1, launcher.count("powershell.exe -NoProfile -File"))
-        self.assertIn(
-            'powershell.exe -NoProfile -File "%~dp0INSTALL-WINDOWS-PILOT.ps1"',
-            launcher,
-        )
         self.assertIn("targetCliSmokeTested", metadata_validator)
         self.assertIn("crossBuilt must be false", metadata_validator)
         self.assertIn("buildHost must be exactly windows/x64", metadata_validator)
@@ -538,6 +546,41 @@ class WindowsPilotSetupTests(unittest.TestCase):
             self.assertIn(
                 "$ErrorActionPreference = $PreviousErrorActionPreference", function_body
             )
+        self.assertEqual(
+            1,
+            launcher.count(
+                "powershell.exe -NoProfile -ExecutionPolicy Bypass -File"
+            ),
+        )
+        self.assertIn(
+            'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0INSTALL-WINDOWS-PILOT.ps1"',
+            launcher,
+        )
+
+    def test_all_windows_cmd_script_launchers_use_process_execution_policy_bypass(
+        self,
+    ) -> None:
+        launcher_paths = (
+            ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.cmd",
+            ROOT / "scripts" / "BROWSER-AGENT-SETTINGS.cmd",
+            ROOT / "scripts" / "CONFIGURE.cmd",
+            ROOT / "scripts" / "UNINSTALL.cmd",
+        )
+        for launcher_path in launcher_paths:
+            launcher = launcher_path.read_text(encoding="utf-8")
+            script_invocations = [
+                line.strip()
+                for line in launcher.splitlines()
+                if "powershell.exe" in line and "-File" in line
+            ]
+            self.assertTrue(script_invocations, launcher_path.name)
+            for invocation in script_invocations:
+                self.assertIn(
+                    "-NoProfile -ExecutionPolicy Bypass -File",
+                    invocation,
+                    launcher_path.name,
+                )
+            self.assertNotIn("Set-ExecutionPolicy", launcher)
 
     def test_publisher_windows_release_gate_is_full_and_not_a_target_launcher_step(
         self,

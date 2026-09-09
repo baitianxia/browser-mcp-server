@@ -24,7 +24,7 @@ if not exist "%SETTINGS_SCRIPT%" (
   exit /b 1
 )
 
-powershell.exe -NoProfile -File "%SETTINGS_SCRIPT%" %*
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SETTINGS_SCRIPT%" %*
 set "SETTINGS_EXIT=%ERRORLEVEL%"
 
 if not "%SETTINGS_EXIT%"=="0" (

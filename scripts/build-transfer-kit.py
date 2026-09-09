@@ -677,25 +677,6 @@ def build_transfer_kit(
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(project_root / relative, destination, follow_symlinks=False)
 
-        if target_system == "windows":
-            for launcher in ("INSTALL-WINDOWS-PILOT.cmd", "INSTALL-WINDOWS-PILOT.ps1"):
-                shutil.copy2(project_root / "scripts" / launcher, stage / launcher)
-            if browser_extension is None or extension_crx is None:
-                raise TransferKitError("validated browser extension metadata is missing")
-            browser_extension_root = stage / "browser-extension"
-            browser_extension_root.mkdir()
-            shutil.copy2(
-                extension_crx,
-                browser_extension_root / str(browser_extension["filename"]),
-                follow_symlinks=False,
-            )
-            unpacked_extension_root = browser_extension_root / "unpacked"
-            extract_crx_payload(extension_crx, unpacked_extension_root)
-            validate_unpacked_against_crx(
-                extension_crx,
-                unpacked_extension_root,
-            )
-
         shutil.copy2(runtime_archive, runtime_root / runtime_name)
         shutil.copy2(runtime_sidecar, runtime_root / runtime_sidecar.name)
         runtime_digest = sha256(runtime_archive)

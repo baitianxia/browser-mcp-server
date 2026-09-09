@@ -28,6 +28,8 @@ ZIP 只有一个顶层目录，目录内包含 `README.md`、`START-HERE.html`�
 
 不需要管理员权限、项目目录、网址白名单或系统 Node.js。包内携带经过批准的 Windows x64 Node.js 和 Playwright 运行时。浏览器扩展如果不能由当前用户策略自动安装，安装器会打开扩展页并等待用户加载包内的已解压目录；同一个安装进程会自动继续。
 
+如果双击入口后立即看到“此系统上禁止运行脚本”、`SecurityError` 或 `UnauthorizedAccess`，且没有生成安装/设置日志，通常是企业执行策略在 PowerShell 读取脚本前阻止了启动。入口会以进程级 `-ExecutionPolicy Bypass` 启动，不会修改系统策略；请在 PowerShell 中运行 `Get-ExecutionPolicy -List`，把输出交给企业管理员。若 `MachinePolicy` 或 `UserPolicy` 已锁定，必须按企业签名或策略流程处理，不能通过本工具绕过。
+
 已启用的当前扩展直接复用；其他版本只有进入发布方兼容批准列表后才可选择保留，否则进入离线修复。当前批准列表仅包含 `0.4.0`。
 
 安装后重启 Claude Code，在任意项目运行 `/mcp`，应看到 `browser-mcp`（浏览器助手）。第一次调用建议只读取一个已授权标签页的标题。

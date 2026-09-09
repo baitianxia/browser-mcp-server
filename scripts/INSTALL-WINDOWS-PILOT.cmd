@@ -8,7 +8,7 @@ if not exist "%~dp0INSTALL-WINDOWS-PILOT.ps1" (
   exit /b 2
 )
 set "INSTALL_LOG=%TEMP%\browser-mcp-server\INSTALL-%RANDOM%-%RANDOM%.log"
-powershell.exe -NoProfile -File "%~dp0INSTALL-WINDOWS-PILOT.ps1" -LogPath "%INSTALL_LOG%" %*
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0INSTALL-WINDOWS-PILOT.ps1" -LogPath "%INSTALL_LOG%" %*
 set "INSTALL_EXIT=%ERRORLEVEL%"
 
 if "%INSTALL_EXIT%"=="0" (

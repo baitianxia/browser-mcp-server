@@ -90,9 +90,18 @@ try {
         $RemoveArguments = @($ClaudeInvocation.Prefix) + @(
             "mcp", "remove", "browser-mcp", "--scope", "user"
         )
-        & $ClaudeInvocation.Executable @RemoveArguments 2>$null
-        if ($LASTEXITCODE -notin @(0, 1)) {
-            throw "Claude Code could not remove browser-mcp (exit $LASTEXITCODE)."
+        $RemoveOutput = @(& $ClaudeInvocation.Executable @RemoveArguments 2>&1)
+        $RemoveExitCode = $LASTEXITCODE
+        $RemoveText = (@($RemoveOutput) | ForEach-Object { [string]$_ }) -join `
+            [Environment]::NewLine
+        $MissingEntry = $RemoveText -match `
+            '(?i)\bno\s+(?:user-scoped\s+)?mcp\s+server\s+found\s+with\s+name\s*:'
+        if ($RemoveExitCode -ne 0 -and
+            -not ($RemoveExitCode -eq 1 -and $MissingEntry)) {
+            # The captured output is used only to recognize the documented
+            # missing-entry case. Do not echo arbitrary CLI output into the
+            # console, because it could contain configuration secrets.
+            throw "Claude Code could not remove browser-mcp (exit $RemoveExitCode)."
         }
     } catch {
         throw "Could not remove browser-mcp from Claude Code automatically; the active installation was left unchanged: $($_.Exception.Message)"

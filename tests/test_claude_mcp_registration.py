@@ -222,6 +222,43 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
             self.assertEqual(original, user_config.read_bytes())
             self.assertEqual(original, backup.read_bytes())
 
+    def test_missing_entry_text_with_unexpected_exit_code_is_not_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            node_executable, playwright_cli, playwright_config, user_config, backup = (
+                self.paths(root)
+            )
+            original = b'{"keep":"before-remove"}\r\n'
+            user_config.write_bytes(original)
+
+            def runner(_executable, _prefix, arguments, **_kwargs):
+                self.assertEqual("remove", arguments[1])
+                return subprocess.CompletedProcess(
+                    arguments,
+                    5,
+                    "",
+                    "No user-scoped MCP server found with name: intranet-browser-agent",
+                )
+
+            with mock.patch.object(registration, "_run_claude", side_effect=runner):
+                with self.assertRaisesRegex(
+                    registration.RegistrationError,
+                    "claude mcp remove exited with code 5",
+                ):
+                    registration.register_user_mcp(
+                        claude_executable="claude.exe",
+                        claude_prefix=(),
+                        server_name="intranet-browser-agent",
+                        node_executable=node_executable,
+                        playwright_cli=playwright_cli,
+                        playwright_config=playwright_config,
+                        user_config=user_config,
+                        backup=backup,
+                        reporter=lambda _message: None,
+                    )
+            self.assertEqual(original, user_config.read_bytes())
+            self.assertEqual(original, backup.read_bytes())
+
     def test_initial_backup_preserves_lf_and_crlf_bytes(self) -> None:
         for original in (b'{"lineEnding":"lf"}\n', b'{"lineEnding":"crlf"}\r\n'):
             with self.subTest(original=original), tempfile.TemporaryDirectory() as temporary:

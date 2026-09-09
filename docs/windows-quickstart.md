@@ -68,6 +68,14 @@ INSTALL.cmd
 
 保持安装窗口打开。扩展加载后，同一个安装进程会继续完成配置、注册和 MCP 握手，不需要再次双击。
 
+如果双击入口后立即看到“此系统上禁止运行脚本”、`SecurityError` 或 `UnauthorizedAccess`，且没有生成安装/设置日志，通常是企业执行策略在 PowerShell 读取脚本前阻止了启动。入口会以进程级 `-ExecutionPolicy Bypass` 启动，不会修改系统策略。请在 PowerShell 中运行：
+
+```powershell
+Get-ExecutionPolicy -List
+```
+
+把输出交给企业管理员；如果 `MachinePolicy` 或 `UserPolicy` 已锁定，必须按企业签名或策略流程处理，不能通过本工具绕过。
+
 ## 第一次使用
 
 安装完成后重启 Claude Code，在任意项目输入 `/mcp`，确认看到 `browser-mcp`（显示名“浏览器助手”）。第一次调用只读取一个已授权标签页的标题；连接 Playwright Extension 时选择已经登录的现有标签页。删除、上传、提交、权限变更和对外沟通仍须经过确认。
