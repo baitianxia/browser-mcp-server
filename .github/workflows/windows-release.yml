@@ -1298,6 +1298,15 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
+          # The installer intentionally runs under an isolated USERPROFILE.
+          # Keep the CI-only existing npm Claude fixture discoverable by the
+          # installed settings tool without changing the target installer or
+          # pretending that Claude Code is part of this package.
+          if (-not $env:NPM_CLAUDE_ROOT -or
+              -not (Test-Path -LiteralPath $env:NPM_CLAUDE_ROOT -PathType Container)) {
+              throw "The CI-only npm Claude fixture root is unavailable."
+          }
+          $env:PATH = $env:NPM_CLAUDE_ROOT + ";" + $env:PATH
           $AgentRoot = Join-Path $env:USERPROFILE "browser-mcp-server"
           $CurrentVersionPath = Join-Path $AgentRoot `
               "maintenance\current-version.txt"

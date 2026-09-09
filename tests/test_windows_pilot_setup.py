@@ -776,6 +776,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("Resolve-ClaudeCodeInvocation", workflow)
         self.assertIn("NPM_CLAUDE_COMMAND", workflow)
         self.assertIn("NPM_CLAUDE_NODE", workflow)
+        self.assertIn("$env:PATH = $env:NPM_CLAUDE_ROOT + \";\" + $env:PATH", workflow)
+        self.assertIn("The CI-only npm Claude fixture root is unavailable.", workflow)
         self.assertIn(
             '$ChromeUserData = Join-Path $PilotLocalAppData `',
             workflow,
