@@ -780,6 +780,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
             '$ChromeUserData = Join-Path $env:RUNNER_TEMP "chrome-ci-profile"',
             workflow,
         )
+        self.assertIn('$HostUserProfile = $env:USERPROFILE', workflow)
+        self.assertIn('$HostLocalAppData = $env:LOCALAPPDATA', workflow)
+        self.assertIn('set "USERPROFILE=$HostUserProfile"', workflow)
+        self.assertIn('set "LOCALAPPDATA=$HostLocalAppData"', workflow)
         self.assertNotIn(
             'Join-Path $env:LOCALAPPDATA "Google\\Chrome\\User Data"',
             workflow,

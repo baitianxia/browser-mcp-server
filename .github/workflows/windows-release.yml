@@ -432,6 +432,19 @@ jobs:
           if (-not (Test-Path -LiteralPath $Launcher -PathType Leaf)) {
               throw "Transfer launcher is missing: $Launcher"
           }
+          # Keep the runner's real shell-folder environment for the disposable
+          # Chrome process.  The installer itself must use an isolated
+          # USERPROFILE/LOCALAPPDATA below, but Chrome resolves its protected
+          # default data directory through Windows known folders.  Replacing
+          # those variables before launching the CDP surrogate can make Chrome
+          # fail closed with the misleading "Specify this using
+          # --user-data-dir" diagnostic even when an explicit non-default
+          # profile was supplied.
+          $HostUserProfile = $env:USERPROFILE
+          $HostLocalAppData = $env:LOCALAPPDATA
+          if (-not $HostUserProfile -or -not $HostLocalAppData) {
+              throw "The Windows runner did not expose its shell-folder environment."
+          }
           $PilotUserProfile = Join-Path $env:RUNNER_TEMP "pilot-user-profile"
           New-Item -ItemType Directory -Path $PilotUserProfile -Force | Out-Null
           $env:USERPROFILE = $PilotUserProfile
@@ -535,6 +548,8 @@ jobs:
               "run-playwright-extension-ci-session.cmd"
           $CdpWrapperBody = @"
           @echo off
+          set "USERPROFILE=$HostUserProfile"
+          set "LOCALAPPDATA=$HostLocalAppData"
           node.exe "$CdpProbe" --chrome "$ChromeExe" --profile "$ChromeUserData" --extension "$InstalledUnpacked" --expected-id "$($Approval.extensionId)" --expected-version "$($Approval.version)" --token-file "$ExtensionTokenFile" --ready-file "$CdpReadyFile" --stop-file "$CdpStopFile" --maximum-seconds 600
           set "CDP_EXIT=%errorlevel%"
           > "$CdpExitFile" echo %CDP_EXIT%
