@@ -776,6 +776,14 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("Resolve-ClaudeCodeInvocation", workflow)
         self.assertIn("NPM_CLAUDE_COMMAND", workflow)
         self.assertIn("NPM_CLAUDE_NODE", workflow)
+        self.assertIn(
+            '$ChromeUserData = Join-Path $env:RUNNER_TEMP "chrome-ci-profile"',
+            workflow,
+        )
+        self.assertNotIn(
+            'Join-Path $env:LOCALAPPDATA "Google\\Chrome\\User Data"',
+            workflow,
+        )
 
         self.assertIn('"browser_navigate"', exercise)
         self.assertIn('"browser_snapshot"', exercise)

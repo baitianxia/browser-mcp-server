@@ -509,8 +509,11 @@ jobs:
               "preserve-and-rebuild",
               (New-Object System.Text.UTF8Encoding($false))
           )
-          $ChromeUserData = Join-Path $env:LOCALAPPDATA `
-              "Google\Chrome\User Data"
+          # Chrome 136+ rejects remote debugging for its default data
+          # directory. Use an explicitly non-default disposable profile for
+          # the CDP session surrogate and the later extension exercise.
+          $ChromeUserData = Join-Path $env:RUNNER_TEMP "chrome-ci-profile"
+          New-Item -ItemType Directory -Path $ChromeUserData -Force | Out-Null
           & node.exe --check $CdpProbe
           if ($LASTEXITCODE -ne 0) {
               throw "The Chrome extension CDP probe has invalid JavaScript syntax."
