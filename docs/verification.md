@@ -6,7 +6,7 @@
 
 当前工作树已经把用户身份收敛为 `browser-mcp-server` / “浏览器助手” / `browser-mcp`，公共包收敛为 `browser-mcp-server-<版本>-windows-x64.zip`，安装与配置根目录收敛为 `%USERPROFILE%\browser-mcp-server`。历史身份、旧 MCP 别名和旧目录迁移明确不属于本次 breaking release。
 
-本次本地验证只证明 Python 回归、静态结构和可在当前主机运行的打包校验；当前 macOS 主机没有执行 Windows PowerShell 5.1、Windows x64 原生运行包构建、目标安装/升级/卸载、Chrome/Edge 扩展或真实 Claude user-scope 门禁。因此还不能把当前工作树标为 Windows 已放行。原生门禁完成后，应在本节追加实际 run、提交、ZIP SHA-256、门禁日志和人工边界证据。
+当前工作树已由原生 Windows x64 发布门禁放行。macOS 本地检查仍只覆盖 Python 回归、静态结构和可在当前主机运行的打包校验；Windows PowerShell 5.1、Windows x64 运行包构建、目标安装/升级/卸载、Chrome/Edge 扩展和真实 Claude user-scope 门禁以 Actions 证据为准。
 
 ## 历史 1.0.x 证据（已被统一身份和交付契约取代）
 
@@ -14,7 +14,13 @@
 
 ## 1.0.16 Windows 验证状态（CI 已放行）
 
-1.0.16 将再次双击新版 `INSTALL-WINDOWS-PILOT.cmd` 定义为覆盖升级：安装器在发布新运行时或移动现有配置前，先从受管的当前用户 manifest 中只提取受支持的浏览器模式、浏览器通道、有头/无头、扩展授权、快照和兼容模式；新配置始终重建为新版固定运行时及当前用户固定路径。扩展当前用户授权令牌只从 Claude 当前用户 MCP 条目读取，经严格格式验证后通过短期子进程环境变量重新注册，不进入命令行、升级偏好文件或日志。独立 Profile 模式覆盖升级不再检查或安装 Extension。旧配置不符合受管身份、路径或选项约束时，安装器会在移动旧配置前停止，不猜测迁移。
+本次用户包对应提交 `c30f5a9` 和 [Windows release validation #85](https://github.com/baitianxia/browser-mcp-server/actions/runs/34343134422)。`windows-2022`、`windows-latest` 两套 Windows PowerShell 5.1 job 和原生 package job 全部成功；本地完整回归为 166 项通过、3 项按设计跳过。公开 ZIP artifact 为 `browser-mcp-server-1.0.16-windows-x64.zip`（artifact `10100775989`），相邻校验文件为 `browser-mcp-server-1.0.16-windows-x64.zip.sha256`（artifact `10100776483`），下载后复算 ZIP SHA-256 为 `d4eaa56aa19f769d5e4d4e11bf1d6d136fc5da2b7df36a1d4ee4db54c9a7ad13`，`scripts/verify-bundle.py` 对 ZIP 和单顶层目录均返回 `VALID`。包内元数据确认 `target=windows/x64`、`buildHost=windows/x64`、`crossBuilt=false`、`targetCliSmokeTested=true`、`bundledNode=true`。
+
+本次发布门禁覆盖构建、安装、设置升级、MCP/浏览器自动化边界和包完整性；真实 MODOC `window.sheetInst` 业务方法的区域读取、定位、写入和回读仍按验收标准交由用户在目标页面验证，未被标记为 SDK E2E 已通过。
+
+1.0.16 使用新版 `INSTALL-WINDOWS-PILOT.cmd` 定义覆盖升级：安装器在发布新运行时或移动现有配置前，先从受管的当前用户 manifest 中只提取受支持的浏览器模式、浏览器通道、有头/无头、扩展授权、快照和兼容模式；新配置始终重建为新版固定运行时及当前用户固定路径。扩展当前用户授权令牌只从 Claude 当前用户 MCP 条目读取，经严格格式验证后通过短期子进程环境变量重新注册，不进入命令行、升级偏好文件或日志。独立 Profile 模式覆盖升级不再检查或安装 Extension。旧配置不符合受管身份、路径或选项约束时，安装器会在移动旧配置前停止，不猜测迁移。
+
+### 统一身份收敛前的历史 1.0.16 证据
 
 本地完整回归实际运行 114 项，112 项通过，2 项仅因需要 Windows PowerShell 5.1 而跳过；GitHub Actions YAML、Bash 语法和 `git diff --check` 通过。[Windows release validation #66](https://github.com/baitianxia/intranet-browser-agent/actions/runs/33509602584) 已在提交 `e68ea02ec255f3244541cc45b2ab57eb5a2e912e` 上全绿，总耗时 5 分 50 秒。`windows-2022` 与 `windows-latest` 两套 Windows PowerShell 5.1 源码/AST job 全部成功，Windows 原生 package job 又完成固定运行时、现有 npm Claude 2.1.84、单次首次安装、MCP 注册/握手、页面 E2E 和最终单次解压包校验。
 
