@@ -14,9 +14,9 @@
 
 ## 1.0.17 Windows 验证状态（CI 已放行）
 
-1.0.16 用户反馈在中文 Windows 上安装失败：公共 `release-manifest.json` 使用 UTF-8，但 Windows PowerShell 5.1 的 `Get-Content -Raw` 按系统 ANSI 代码页读取，中文 `displayName` 发生乱码并在 `ConvertFrom-Json` 处报误导性的 JSON 语法错误。1.0.17 在安装器、发布门禁和设置工具中统一使用严格 UTF-8 文件读取，并增加静态回归，防止再次依赖 `Get-Content` 的 ANSI 默认值。
+1.0.16 用户反馈在中文 Windows 上安装失败：公共 `release-manifest.json` 使用 UTF-8，但 Windows PowerShell 5.1 的 `Get-Content -Raw` 按系统 ANSI 代码页读取，中文 `displayName` 发生乱码并在 `ConvertFrom-Json` 处报误导性的 JSON 语法错误。目标机的实际 Windows 版本和活动代码页没有随日志采集，因此本记录只确认“隐式 ANSI 读取违反 UTF-8 契约”，不把具体代码页或错误形态写成已复现事实。详细记录见 [`docs/windows-issues/2026-09-13-powershell-json-encoding.md`](windows-issues/2026-09-13-powershell-json-encoding.md)。1.0.17 在安装器、发布门禁和设置工具中统一使用显式 UTF-8 文件读取，并增加静态回归，防止再次依赖 `Get-Content` 的 ANSI 默认值。
 
-[Windows release validation #88](https://github.com/baitianxia/browser-mcp-server/actions/runs/34755010110) 已在提交 `107d21b` 上全绿；两套 Windows PowerShell 5.1 job 和原生 package job 均成功。本地完整回归为 167 项通过、3 项按设计跳过。用户包为 `browser-mcp-server-1.0.17-windows-x64.zip`，下载后 `scripts/verify-bundle.py` 对 ZIP 和单顶层目录均返回 `VALID`，Windows 发布元数据返回 `WINDOWS RELEASE METADATA: VALID`；ZIP SHA-256 为 `20d94e9b7bf91a82a1598c2c6cfadc4a8e40482b998b3d83b68b43a265be6cdd`。
+[Windows release validation #88](https://github.com/baitianxia/browser-mcp-server/actions/runs/34755010110) 已在提交 `107d21b` 上全绿；两套 Windows PowerShell 5.1 job 和原生 package job 均成功。本地完整回归实际为 167 项，其中 164 项通过、3 项按设计跳过。用户包为 `browser-mcp-server-1.0.17-windows-x64.zip`，下载后 `scripts/verify-bundle.py` 对 ZIP 和单顶层目录均返回 `VALID`，Windows 发布元数据返回 `WINDOWS RELEASE METADATA: VALID`；ZIP SHA-256 为 `20d94e9b7bf91a82a1598c2c6cfadc4a8e40482b998b3d83b68b43a265be6cdd`。
 
 真实 MODOC `window.sheetInst` 业务方法的区域读取、定位、写入和回读仍按验收标准交由用户在目标页面验证，未被标记为 SDK E2E 已通过。
 
