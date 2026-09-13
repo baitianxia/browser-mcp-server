@@ -781,7 +781,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         # launcher and publishes the ZIP produced by the reviewed builder.
         for marker in (
             "Assemble and extract the reviewed Windows ZIP",
-            "browser-mcp-server-1.0.16-windows-x64.zip",
+            "browser-mcp-server-1.0.17-windows-x64.zip",
             "Expand-Archive",
             "Public Windows ZIP must extract to exactly one top-level directory",
             "Prove native Claude compatibility in an isolated release gate",
