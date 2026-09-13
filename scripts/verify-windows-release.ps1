@@ -25,6 +25,20 @@ if (-not (Test-Path -LiteralPath $ToolDiscovery -PathType Leaf)) {
 $script:PythonExecutable = ""
 $script:PythonPrefix = @()
 
+function Read-Utf8JsonFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    # Windows PowerShell 5.1 otherwise decodes UTF-8 JSON with the system ANSI
+    # code page. Release metadata contains Chinese display names and must be
+    # read by bytes with an explicit strict UTF-8 decoder.
+    $Encoding = [System.Text.UTF8Encoding]::new($false, $true)
+    try {
+        $Text = [IO.File]::ReadAllText($Path, $Encoding)
+    } catch {
+        throw "JSON file is not valid UTF-8: $Path. $($_.Exception.Message)"
+    }
+    return $Text | ConvertFrom-Json
+}
+
 # A caller-supplied interpreter is part of the release environment contract.
 # Resolve it once and use it verbatim; silently falling back to ``py.exe`` or a
 # different PATH entry would make the recorded gate non-reproducible.
@@ -215,8 +229,8 @@ function Invoke-ReleaseGate {
         }
         Invoke-PythonChecked @($MetadataVerifier, $ReleaseManifestPath)
         Invoke-PythonChecked @($MetadataVerifier, $KitMetadataPath)
-        $ReleaseManifest = Get-Content -LiteralPath $ReleaseManifestPath -Raw | ConvertFrom-Json
-        $KitMetadata = Get-Content -LiteralPath $KitMetadataPath -Raw | ConvertFrom-Json
+        $ReleaseManifest = Read-Utf8JsonFile -Path $ReleaseManifestPath
+        $KitMetadata = Read-Utf8JsonFile -Path $KitMetadataPath
         if ([string]$ReleaseManifest.product -ne "browser-mcp-server" -or
             [string]$ReleaseManifest.mcpServerName -ne "browser-mcp" -or
             [string]$KitMetadata.product -ne "browser-mcp-server" -or

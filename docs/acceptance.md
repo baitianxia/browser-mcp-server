@@ -17,6 +17,7 @@
 - Windows CI 在 `windows-2022` 与 `windows-latest` 的 Windows PowerShell 5.1 上解析全部 `.ps1` 并运行完整 Python suite；原生 package job 运行 `scripts/verify-windows-release.ps1`，再执行一次顶层 `INSTALL.cmd` 和设置工具 smoke。目标 launcher 日志不得包含测试发现器、AST 扫描或注册器 `self-test`。
 - 发布门禁必须先验证 ZIP/解压目录，再执行 PowerShell AST、完整测试、注册器自测、内层运行包和包内 Node `--version`、MCP `initialize/tools/list`，并用临时 `CLAUDE_CONFIG_DIR` 对真实现有 Claude CLI 做隔离 `remove/add/get`。门禁执行前后复验包未改变，且不能由目标 launcher 调用。
 - 安装器必须在真实写入前验证现有 Claude Code；原生 `claude.exe` 和可验证的 npm `claude.cmd` 均支持，缺少入口时停止且不安装 Claude。注册失败必须逐字节恢复 Claude 用户配置和旧部署配置。
+- Windows PowerShell 5.1 读取包内和本工程配置 JSON 时必须使用显式严格 UTF-8 解码；不得依赖 `Get-Content` 的系统 ANSI 默认值。验收环境应至少覆盖含中文 `displayName` 的发布清单。
 - 安装、升级、设置和卸载只影响当前工程。升级从当前受管清单提取浏览器模式、channel、授权、无头和交互设置，不复制旧运行路径、未知字段或历史身份；新版本验证完成后才原子切换。`UNINSTALL.cmd` 只移除 `browser-mcp` 和本工程活动目录，默认保留配置备份。
 - 扩展必须是批准 CRX 与逐文件一致的 `payload/browser-extension/unpacked`。自动策略不可用时必须显示三步人工加载指引并在同一进程等待，检测到精确 ID/版本/路径后续跑；不得下载扩展或接受任意目录。
 - 扩展批准文件、`KIT-METADATA.json` 和 `release-manifest.json` 的版本及 `compatibleVersions` 必须一致。检测覆盖当前/兼容/不可用/未安装、最近使用的 Profile、安全配置优先、精确受管目录和非法版本输入。保留兼容版本必须重新确认可用，选择更新必须等到包内当前版本；新增批准版本须补真实 MCP 连接证据，单元测试夹具不构成兼容批准。

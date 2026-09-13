@@ -62,6 +62,17 @@ function Write-SettingsLog {
     }
 }
 
+function Read-Utf8JsonFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $Encoding = [System.Text.UTF8Encoding]::new($false, $true)
+    try {
+        $Text = [IO.File]::ReadAllText($Path, $Encoding)
+    } catch {
+        throw "JSON file is not valid UTF-8: $Path. $($_.Exception.Message)"
+    }
+    return $Text | ConvertFrom-Json
+}
+
 function Invoke-Python {
     param([string[]]$Arguments)
     $Prefix = $script:PythonPrefix
@@ -225,7 +236,7 @@ function Get-ExistingExtensionToken {
         if (-not (Test-Path -LiteralPath $UserConfigPath -PathType Leaf)) {
             return ""
         }
-        $Payload = Get-Content -LiteralPath $UserConfigPath -Raw | ConvertFrom-Json
+        $Payload = Read-Utf8JsonFile -Path $UserConfigPath
         $ServersProperty = $Payload.PSObject.Properties["mcpServers"]
         if ($null -eq $ServersProperty -or $null -eq $ServersProperty.Value) {
             return ""
@@ -369,7 +380,7 @@ try {
     Invoke-ExistingCommand ([string]$ClaudeInvocation.Executable) `
         (@($ClaudeInvocation.Prefix) + @("--version"))
 
-    $Manifest = Get-Content -LiteralPath $InstalledManifest -Raw | ConvertFrom-Json
+    $Manifest = Read-Utf8JsonFile -Path $InstalledManifest
     if ([string]$Manifest.environment -ne "pilot" -or
         [string]$Manifest.mcpScope -ne "user" -or
         [string]$Manifest.target.os -ne "windows" -or

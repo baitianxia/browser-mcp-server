@@ -290,6 +290,41 @@ class WindowsPilotSetupTests(unittest.TestCase):
         extension_policy = installer.index("$ExtensionPolicySubKey = if")
         self.assertLess(dedicated_skip, extension_policy)
 
+    def test_windows_powershell_reads_json_as_strict_utf8(self) -> None:
+        # Windows PowerShell 5.1 defaults Get-Content to the system ANSI code
+        # page. The public manifests contain Chinese display names, so every
+        # package/config JSON read must use the explicit UTF-8 helper.
+        installer = (ROOT / "scripts" / "INSTALL-WINDOWS-PILOT.ps1").read_text(
+            encoding="utf-8"
+        )
+        release_gate = (ROOT / "scripts" / "verify-windows-release.ps1").read_text(
+            encoding="utf-8"
+        )
+        settings = (ROOT / "scripts" / "BROWSER-AGENT-SETTINGS.ps1").read_text(
+            encoding="utf-8"
+        )
+        for source in (installer, release_gate, settings):
+            self.assertIn("function Read-Utf8JsonFile", source)
+            self.assertIn(
+                "[System.Text.UTF8Encoding]::new($false, $true)", source
+            )
+            self.assertIn("[IO.File]::ReadAllText($Path, $Encoding)", source)
+        self.assertIn(
+            "$ReleaseManifest = Read-Utf8JsonFile -Path $ReleaseManifestPath",
+            installer,
+        )
+        self.assertIn(
+            "$KitMetadata = Read-Utf8JsonFile -Path $KitMetadataPath", installer
+        )
+        self.assertNotIn(
+            "Get-Content -LiteralPath $ReleaseManifestPath -Raw | ConvertFrom-Json",
+            installer,
+        )
+        self.assertNotIn(
+            "Get-Content -LiteralPath $ReleaseManifestPath -Raw | ConvertFrom-Json",
+            release_gate,
+        )
+
     def test_reconfigure_writes_a_complete_rendered_dedicated_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

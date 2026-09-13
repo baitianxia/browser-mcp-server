@@ -90,6 +90,21 @@ function Write-Step {
     Write-InstallLog "STEP $Number/6: $Message"
 }
 
+function Read-Utf8JsonFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    # Windows PowerShell 5.1 Get-Content uses the system ANSI code page when
+    # -Encoding is omitted. Public metadata is UTF-8 and contains Chinese
+    # display names, so an implicit read can turn valid JSON into mojibake or
+    # a misleading ConvertFrom-Json parse error on a GBK host.
+    $Encoding = [System.Text.UTF8Encoding]::new($false, $true)
+    try {
+        $Text = [IO.File]::ReadAllText($Path, $Encoding)
+    } catch {
+        throw "JSON 文件不是有效的 UTF-8：$Path。$($_.Exception.Message)"
+    }
+    return $Text | ConvertFrom-Json
+}
+
 function Invoke-External {
     param([string]$Executable, [string[]]$Arguments)
     $Output = @()
@@ -171,8 +186,7 @@ function Get-ExistingExtensionToken {
         if (-not (Test-Path -LiteralPath $UserConfigPath -PathType Leaf)) {
             return ""
         }
-        $Payload = Get-Content -LiteralPath $UserConfigPath -Raw |
-            ConvertFrom-Json
+        $Payload = Read-Utf8JsonFile -Path $UserConfigPath
         $ServersProperty = $Payload.PSObject.Properties["mcpServers"]
         if ($null -eq $ServersProperty -or $null -eq $ServersProperty.Value) {
             return ""
@@ -938,8 +952,8 @@ try {
     Invoke-Python @($ReleaseMetadataVerifier, $ReleaseManifestPath)
     Invoke-Python @($ReleaseMetadataVerifier, $KitMetadataPath)
 
-    $ReleaseManifest = Get-Content -LiteralPath $ReleaseManifestPath -Raw | ConvertFrom-Json
-    $KitMetadata = Get-Content -LiteralPath $KitMetadataPath -Raw | ConvertFrom-Json
+    $ReleaseManifest = Read-Utf8JsonFile -Path $ReleaseManifestPath
+    $KitMetadata = Read-Utf8JsonFile -Path $KitMetadataPath
     $RuntimeMetadata = $KitMetadata.runtime
     $BuildMetadata = $RuntimeMetadata.buildMetadata
     $ToolkitVersion = [string]$KitMetadata.toolkitVersion
@@ -1012,8 +1026,7 @@ try {
         "--approval-file", $ExtensionApproval,
         "--unpacked-directory", $ExtensionUnpackedSourcePath
     )
-    $ApprovedExtensionMetadata = Get-Content -LiteralPath $ExtensionApproval -Raw |
-        ConvertFrom-Json
+    $ApprovedExtensionMetadata = Read-Utf8JsonFile -Path $ExtensionApproval
     Assert-PlaywrightExtensionMetadata $BrowserExtensionMetadata `
         $ReleaseManifest.browserExtension $ApprovedExtensionMetadata
     $RuntimeArchiveName = [string]$RuntimeMetadata.archive
@@ -1116,8 +1129,7 @@ try {
             "--dedicated-user-data-dir", $UpgradeSourceDedicatedProfile,
             "--preferences-out", $UpgradePreferencesPath
         )
-        $UpgradePreferences = Get-Content -LiteralPath $UpgradePreferencesPath `
-            -Raw | ConvertFrom-Json
+        $UpgradePreferences = Read-Utf8JsonFile -Path $UpgradePreferencesPath
         $InstallBrowserMode = [string]$UpgradePreferences.browserMode
         $InstallHeadless = $UpgradePreferences.headless -eq $true
         $InstallExtensionAuthorization = `
