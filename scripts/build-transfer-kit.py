@@ -291,7 +291,7 @@ def start_here(kit_name: str, runtime_name: str, metadata: dict[str, object]) ->
 完整测试、PowerShell 语法检查、注册故障矩阵和真实隔离探针已经由发布方 Windows 流水线完成。目标机不重复开发测试；安装器仍会校验当前解压目录、内层运行包、固定哈希的官方 Playwright Extension、包内 Node 和最终 MCP stdio 握手。"""
         deployment_section = """## 3. 双击安装
 
-双击本目录的 `INSTALL.cmd` 一次，无需 UAC，也不填写项目目录、网址、防火墙或审批字段。启动器只启动一个安装/升级事务，不运行单元测试或注册器自检。向导验证 Windows 原生发布元数据和所有包内制品，把运行时和配置安装到当前用户 `%USERPROFILE%\browser-mcp-server`，自动识别 Chrome 或 Edge；扩展安装和人工授权仍受浏览器安全边界约束。随后复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，把直接执行包内 `node.exe + 固定兼容层` 的 MCP 注册到 Claude Code user scope，名称为 `browser-mcp`（显示名“浏览器助手”）。npm 入口只解析现有安装并直接运行其 Node/CLI，不执行 npm；找不到可用 Claude 时安全停止，绝不安装、升级或修复 Claude Code。
+双击本目录的 `INSTALL.cmd` 一次，无需 UAC，也不填写项目目录、网址、防火墙或审批字段。启动器只启动一个安装/升级事务，不运行单元测试或注册器自检。向导验证 Windows 原生发布元数据和所有包内制品，把运行时和配置安装到当前用户 `%USERPROFILE%\browser-mcp-server`，自动识别 Chrome 或 Edge；扩展安装和人工授权仍受浏览器安全边界约束。随后复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，把直接执行包内 `node.exe + 固定兼容层` 的 MCP 注册到 Claude Code user scope，名称为 `browser-mcp`（显示名“浏览器助手”）。npm 入口只读取现有包的 bin：JavaScript bin 用现有 Node，Windows 原生 bin（如 `bin\\claude.exe`）直接执行，不把 `.exe` 交给 Node，也不执行 npm；找不到可验证 Claude 时安全停止，绝不安装、升级或修复 Claude Code。
 
 向导会自动验证运行包、在同盘暂存后发布固定版本、生成清单并先暂存/preflight 再整目录切换配置。随后逐字节备份真实 Claude 用户配置，事务化注册并核对用户级 MCP 命令、参数及固定环境。首次安装明确没有旧 MCP 条目时会直接继续，其他删除错误会恢复并停止。安装后还会以最终命令完成 MCP stdio `initialize + tools/list` 握手。它不会创建项目目录，也不会写项目 `.mcp.json`/`CLAUDE.md`。任何校验失败都会停止并恢复用户配置和旧部署配置；不会运行 `npm install`、`pnpm install` 或 `npx`。
 

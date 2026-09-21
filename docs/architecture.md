@@ -48,6 +48,8 @@ V1 只允许 loopback 的受控调试端点或官方 channel；禁止 `0.0.0.0`�
 
 Windows MCP 条目必须是 user-scope stdio，命令直接执行清单中已验证的 `node.exe`，首个脚本参数为固定运行包内的兼容层（当前文件名仍为内部实现 `bin\intranet-browser-agent-mcp.js`），随后由兼容层启动同包上游 CLI。不得把 `.cmd`、`.bat` 或 `npx` 作为 MCP `command`，不得在线解析或下载依赖。
 
+安装器、设置工具、卸载工具和发布门禁复用当前用户已有的 npm Claude Code 时，必须先读取同级 `node_modules\@anthropic-ai\claude-code\package.json` 的 `claude` bin，并确认目标仍在该包目录内。JavaScript bin（`.js`、`.cjs` 或 `.mjs`）通过该 npm 安装本来使用的 `node.exe` 直接执行；Windows 原生 bin（`.exe`，例如 `bin\claude.exe`）直接执行，不得把 PE 文件交给 Node。`.cmd` 只用于发现入口，不能作为子进程 executable。候选收集、WindowsApps 排除、NVM/npm 链接解析、PE/身份/能力探针和诊断字段遵循[公共 Windows Claude Code 探测与调用标准](../../docs/windows-claude-code-discovery.md)；本工程若尚未覆盖其中某项，必须在验证记录中标为未验证。
+
 部署清单固定声明 `target.os=windows`、`target.arch=x64`、`mcpScope=user` 和空 `workspaceRoots`。Extension 和 persistent 条目都绑定安装器实际识别的 Chrome/Edge `.exe`；渲染、握手、注册和最终核对必须使用同一 `--browser` 与 `--executable-path`。MCP 环境严格来自 `config/windows-mcp-environment.json`，只允许固定的空覆盖变量和心跳超时；当前用户令牌是唯一可选额外值。
 
 设置文件为 `%USERPROFILE%\browser-mcp-server\config\settings.json`，由本工程独立维护。MCP 提供 `browser_config_status`、`browser_configure` 和 `browser_config_reload`：状态包含绝对路径、schema 版本、缺失字段和下一步命令且遮蔽秘密；配置写入使用校验、临时文件和原子替换；重载可应用交互设置，启动方式、channel 或可执行文件变化要求重启 MCP/Claude Code。

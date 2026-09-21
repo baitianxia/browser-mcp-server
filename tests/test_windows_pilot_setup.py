@@ -508,6 +508,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("Resolve-NpmClaudeInvocation", discovery)
         self.assertIn('"node_modules\\@anthropic-ai\\claude-code"', discovery)
         self.assertIn('Package.bin.PSObject.Properties["claude"]', discovery)
+        self.assertIn('$BinExtension -eq ".exe"', discovery)
+        self.assertIn('$BinExtension -notin @(".js", ".cjs", ".mjs")', discovery)
         self.assertIn('"--user-config", $ClaudeUserConfigPath', installer)
         self.assertIn("[IO.Path]::IsPathRooted($ClaudeConfigDirectory)", installer)
         self.assertIn("$ClaudeConfigDirectory -notmatch '^[A-Za-z]:[\\\\/]'", installer)
@@ -1005,7 +1007,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 f"$ExpectedCliHash = Get-TestFileHash {ps_literal(cli)}; "
                 "if ($ResolvedCommandHash -ne $ExpectedCommandHash -or "
                 "$ResolvedNodeHash -ne $ExpectedNodeHash -or "
-                "$Resolved.Kind -ne 'npm' -or $ResolvedPrefix.Count -ne 1 -or "
+                "$Resolved.Kind -ne 'npm-js' -or $ResolvedPrefix.Count -ne 1 -or "
                 "$ResolvedCliHash -ne $ExpectedCliHash) { "
                 "throw ('Unexpected npm Claude invocation: ' + "
                 "([ordered]@{ CommandPath = $Resolved.CommandPath; "
@@ -1014,8 +1016,97 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 "ConvertTo-Json -Compress)) }; "
                 f"$Explicit = Resolve-ClaudeCodeInvocation -ExplicitPath "
                 f"{ps_literal(command)}; "
-                "if ($Explicit.Kind -ne 'npm') { "
+                "if ($Explicit.Kind -ne 'npm-js') { "
                 "throw 'Explicit npm Claude command was not accepted' }"
+            )
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    powershell,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                msg=f"stdout={result.stdout}\nstderr={result.stderr}",
+            )
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell 5.1")
+    def test_npm_claude_resolver_directly_runs_native_package_bin(self) -> None:
+        """A Windows npm package may publish bin\\claude.exe instead of cli.js."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            user_profile = root / "profile"
+            user_profile.mkdir(parents=True)
+
+            npm_root = root / "npm prefix with spaces"
+            npm_root.mkdir(parents=True)
+            command = npm_root / "claude.cmd"
+            command.write_bytes(b"@echo off\r\nrem native npm Claude fixture\r\n")
+            # This must not be selected as the runtime for the native package
+            # bin.  The pre-fix resolver returned node.exe + claude.exe here.
+            node = npm_root / "node.exe"
+            node.write_bytes(b"MZNODE")
+            package_root = (
+                npm_root / "node_modules" / "@anthropic-ai" / "claude-code"
+            )
+            native_bin = package_root / "bin" / "claude.exe"
+            native_bin.parent.mkdir(parents=True)
+            native_bin.write_bytes(b"MZNATIVECLAUDE")
+            (package_root / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "@anthropic-ai/claude-code",
+                        "bin": {"claude": "bin/claude.exe"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            resolver = ROOT / "scripts" / "windows-tool-discovery.ps1"
+
+            def ps_literal(value: Path) -> str:
+                return "'" + str(value).replace("'", "''") + "'"
+
+            powershell = (
+                "$ErrorActionPreference = 'Stop'; "
+                f"$env:USERPROFILE = {ps_literal(user_profile)}; "
+                f"$env:PATH = {ps_literal(npm_root)}; "
+                f". {ps_literal(resolver)}; "
+                "$Resolved = Resolve-ClaudeCodeInvocation; "
+                "$ResolvedPrefix = @($Resolved.Prefix); "
+                "function Get-TestFileHash { param([string]$Path) "
+                "if (-not $Path -or -not "
+                "(Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }; "
+                "return (Get-FileHash -LiteralPath $Path "
+                "-Algorithm SHA256).Hash }; "
+                "$ResolvedCommandHash = Get-TestFileHash "
+                "([string]$Resolved.CommandPath); "
+                "$ResolvedExecutableHash = Get-TestFileHash "
+                "([string]$Resolved.Executable); "
+                f"$ExpectedCommandHash = Get-TestFileHash {ps_literal(command)}; "
+                f"$ExpectedExecutableHash = Get-TestFileHash {ps_literal(native_bin)}; "
+                "if ($ResolvedCommandHash -ne $ExpectedCommandHash -or "
+                "$ResolvedExecutableHash -ne $ExpectedExecutableHash -or "
+                "$Resolved.Kind -ne 'npm-native' -or $ResolvedPrefix.Count -ne 0 -or "
+                "[IO.Path]::GetExtension([string]$Resolved.Executable) -ine '.exe') { "
+                "throw ('Unexpected native npm Claude invocation: ' + "
+                "([ordered]@{ CommandPath = $Resolved.CommandPath; "
+                "Executable = $Resolved.Executable; Kind = $Resolved.Kind; "
+                "Prefix = $ResolvedPrefix } | "
+                "ConvertTo-Json -Compress)) }; "
+                f"$Explicit = Resolve-ClaudeCodeInvocation -ExplicitPath "
+                f"{ps_literal(command)}; "
+                "if ($Explicit.Kind -ne 'npm-native' -or "
+                "$Explicit.Executable -ne $Resolved.Executable -or "
+                "@($Explicit.Prefix).Count -ne 0) { "
+                "throw 'Explicit native npm Claude command was not accepted' }"
             )
             result = subprocess.run(
                 [

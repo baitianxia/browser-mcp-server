@@ -42,12 +42,32 @@ function Resolve-NpmClaudeInvocation {
             return $null
         }
         $PackageRootFull = [IO.Path]::GetFullPath($PackageRoot).TrimEnd("\")
-        $CliPath = [IO.Path]::GetFullPath((Join-Path $PackageRootFull $BinPath))
+        $PackageBinPath = [IO.Path]::GetFullPath((Join-Path $PackageRootFull $BinPath))
         $PackagePrefix = $PackageRootFull + "\"
-        if (-not $CliPath.StartsWith(
+        if (-not $PackageBinPath.StartsWith(
             $PackagePrefix,
             [StringComparison]::OrdinalIgnoreCase
-        ) -or -not (Test-Path -LiteralPath $CliPath -PathType Leaf)) {
+        ) -or -not (Test-Path -LiteralPath $PackageBinPath -PathType Leaf)) {
+            return $null
+        }
+
+        # Recent npm Claude Code packages publish a Windows-native bin target
+        # (for example, bin\claude.exe) instead of a JavaScript CLI.  Do not
+        # pass that PE file to Node: Node's ESM loader then reports
+        # ERR_UNKNOWN_FILE_EXTENSION for .exe.  Native package bins are still
+        # represented as an npm invocation so all callers keep the same
+        # command/prefix contract, but the executable is the package bin and
+        # the prefix is empty.
+        $BinExtension = [IO.Path]::GetExtension($PackageBinPath).ToLowerInvariant()
+        if ($BinExtension -eq ".exe") {
+            return [pscustomobject]@{
+                CommandPath = $ResolvedCommand
+                Executable = $PackageBinPath
+                Prefix = [string[]]@()
+                Kind = "npm-native"
+            }
+        }
+        if ($BinExtension -notin @(".js", ".cjs", ".mjs")) {
             return $null
         }
 
@@ -77,8 +97,8 @@ function Resolve-NpmClaudeInvocation {
             return [pscustomobject]@{
                 CommandPath = $ResolvedCommand
                 Executable = $ResolvedNode
-                Prefix = [string[]]@($CliPath)
-                Kind = "npm"
+                Prefix = [string[]]@($PackageBinPath)
+                Kind = "npm-js"
             }
         }
     } catch {

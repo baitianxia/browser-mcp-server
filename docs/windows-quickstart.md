@@ -4,7 +4,7 @@
 
 ## 目标机要求
 
-目标机需要 Windows x64、Python 3.10 或更高版本、Chrome（优先）或 Edge，以及当前用户已经可以正常运行的 Claude Code。Claude Code 可以是原生 `claude.exe`，也可以是现有 npm 安装提供的 `claude.cmd`；安装器只复用并验证现有入口，不安装、升级、替换或修复 Claude Code。目标机不需要系统 Node.js，正式包会携带批准的 Windows x64 Node.js 和固定 Playwright MCP 运行时。整个目标机流程不运行 `npm`、`pnpm`、`npx` 或在线下载。
+目标机需要 Windows x64、Python 3.10 或更高版本、Chrome（优先）或 Edge，以及当前用户已经可以正常运行的 Claude Code。Claude Code 可以是原生 `claude.exe`，也可以是现有 npm 安装提供的 `claude.cmd`；安装器只复用并验证现有入口，不安装、升级、替换或修复 Claude Code。入口发现和 `.exe`/JS 分流遵循[公共 Windows Claude Code 探测与调用标准](../../docs/windows-claude-code-discovery.md)。目标机不需要系统 Node.js，正式包会携带批准的 Windows x64 Node.js 和固定 Playwright MCP 运行时。整个目标机流程不运行 `npm`、`pnpm`、`npx` 或在线下载。
 
 ## 校验并解压
 
