@@ -46,6 +46,10 @@ MCP 本身提供三个配置工具：
 
 兼容层还提供 `browser_paste`/`browser_copy`（显式 OS 剪贴板 + 可信快捷键）、`browser_register_helper`/`browser_call_helper`（进程内 TTL helper）、`browser_sheet_bridge`（MODOC `window.sheetInst` 探测及受限的读、定位、写调用）。页面 Clipboard API 仍由 `browser_clipboard` 单独负责，HTTP 页面不会自动读取用户系统剪贴板。涉及输入、剪贴板或页面代码的调用可传 `expectedUrl`，标签页漂移时工具会失败关闭。
 
+需要让一次任务结束后自动收拢新标签页时，先调用 `browser_task_start`，任务完成后调用 `browser_task_cleanup` 并传 `{"confirm":true}`。兼容层会在当前 Playwright 连接中记录实际通过 `BrowserContext.newPage()` 创建的 Page 对象；导航、重载、同名网址和索引变化不会改变归属，只关闭本次任务创建的页面，原有页面保留。`keepTabs:true` 可在不关闭页面的情况下结束记录。这个生命周期需要调用方明确发出开始和结束调用，MCP 不会用空闲时间猜测业务任务已经完成，也不会在进程崩溃或页面上下文重置后猜测要关闭哪些页面。
+
+同一个活动 Playwright 连接中的新页面会继续使用已有的 Playwright 分组。扩展 0.4.0 在重新建立连接时会清理旧分组并建立新连接分组；当前签名扩展不能安全地跨连接复用旧分组，因此不能通过修改运行时绕过这一边界。任务清理后空分组由 Chrome/扩展管理；仍有用户页面的分组不会被自动拆散。
+
 扩展令牌只能暂时通过注册器进程环境传递，并且唯一持久化在 Claude Code 当前用户配置中。它不会写入 ZIP、`settings.json`、部署清单、项目文件、日志或 MCP 响应。
 
 ## 开发与验证

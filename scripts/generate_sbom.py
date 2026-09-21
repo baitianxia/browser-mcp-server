@@ -91,7 +91,7 @@ def generate(node_modules: Path) -> dict[str, Any]:
             "component": {
                 "type": "application",
                 "name": "browser-mcp-server-runtime",
-                "version": "1.0.17",
+                "version": "1.0.18",
             }
         },
         "components": components,

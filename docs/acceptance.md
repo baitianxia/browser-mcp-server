@@ -25,6 +25,8 @@
 - 所有日志和 MCP 响应不得包含扩展令牌、Cookie、密码或完整个人路径；令牌只通过短期进程环境进入注册事务，并持久化在 Claude user-scope 条目。
 - `browser_paste` 与 `browser_copy` 必须通过 UTF-8 OS 剪贴板和可信 Ctrl/Cmd 快捷键工作；`browser_clipboard` 的 secure-context 失败不得静默触发系统剪贴板读取。Windows 验收需覆盖中文、Tab、CRLF、多单元格 TSV、剪贴板读取失败和快捷键无效。
 - `expectedUrl`/`expectedUrlMode` 不匹配时，`browser_evaluate`、`browser_run_code_unsafe`、键盘、输入、导航和剪贴板动作必须在执行前失败，不能自动切换标签页或重放非幂等输入。
+- `browser_task_start`/`browser_task_cleanup` 必须以 Page 对象身份记录和关闭任务期间通过 `BrowserContext.newPage()` 创建的页面；验收需覆盖新页导航/reload/重复 URL、原有页面保留、`confirm=true`、`keepTabs=true`、关闭失败/`beforeunload`、无基线页和 BrowserContext 重置失败关闭。不得以 URL、标题或临时 tab 索引作为唯一归属依据，也不得因客户端空闲、断开或进程崩溃猜测关闭页面。
+- Extension 模式验收需证明同一活动 Playwright 连接中的新页继续使用同一 Playwright 分组；重连后旧分组被批准扩展清理并建立新连接分组。跨连接按标题/URL 复用 Chrome 分组未获得稳定 groupId 证据前不得标为通过；任务页关闭后的空组回收由 Chrome/扩展负责，含用户基线页的组不得被任务清理拆散。
 - `browser_press_key` 传入 `verifyText`、`verifyTextGone`、`verifySelector` 或 `verifyUrl` 时，必须在快捷键之后验证对应后置条件；验证失败要明确提示“已发送但未确认”，不得自动重发。
 - 含非 ASCII 文本的 `browser_type` 必须在原生输入后回读确认；不一致时测试 contenteditable、input 和 textarea 兜底，并在仍无法确认时返回错误。测试不得以 secure context 作为输入回退条件。
 - helper 注册必须具有名称校验、TTL、重复注册保护、显式注销和 reload 后调用覆盖；helper 代码不得回显到响应，业务数据不得写入持久化配置。过期或页面上下文不可用时必须返回明确错误。

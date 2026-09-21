@@ -85,6 +85,11 @@ const OS_CLIPBOARD_TIMEOUT_MS = 10000;
 const HELPER_DEFAULT_TTL_MS = 30 * 60 * 1000;
 const HELPER_MAX_TTL_MS = 60 * 60 * 1000;
 const SAFE_HELPER_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+const TASK_STATE_KEY = "__browserMcpTaskLifecycleState";
+const TASK_START_CODE = "browser-mcp-task-start";
+const TASK_INSPECT_CODE = "browser-mcp-task-inspect";
+const TASK_CLEANUP_CODE = "browser-mcp-task-cleanup";
+const TASK_KEEP_CODE = "browser-mcp-task-keep";
 const SETTINGS_REQUIRED_KEYS = new Set([
   "schemaVersion",
   "product",
@@ -1461,6 +1466,32 @@ function customTools() {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     {
+      name: "browser_task_start",
+      title: "Start a browser task session",
+      description: "Mark the currently open Playwright pages as task-owned baseline pages. Use this before opening new tabs when the task should clean up only pages it created; the active Playwright connection and its existing group are reused.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    {
+      name: "browser_task_cleanup",
+      title: "Close browser task tabs",
+      description: "Close only pages opened after browser_task_start, using Playwright page identity rather than URL/title/index. This is destructive and requires confirm=true. Existing pages are preserved; empty group removal is left to Chrome and the signed extension.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["confirm"],
+        properties: {
+          confirm: { const: true, description: "Explicitly confirm closing task-created tabs" },
+          keepTabs: { type: "boolean", description: "End ownership tracking without closing task-created tabs" },
+        },
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    {
       name: "browser_wait_for_download",
       title: "Wait for download",
       description: "Wait for a Playwright download already triggered by the preceding action and return its absolute output path.",
@@ -1610,6 +1641,7 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
   let lastDownloadEventAt = 0;
   const downloadRecords = [];
   const helpers = new Map();
+  let taskLifecycle;
   const pendingRootRequests = new Set();
   let clientWorkspace = process.cwd();
   let activeRequestMeta;
@@ -1967,6 +1999,221 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
     if (activeRequestMeta && forwardedArguments._meta === undefined)
       forwardedArguments._meta = activeRequestMeta;
     return upstreamResult("tools/call", { name, arguments: forwardedArguments });
+  }
+
+  function taskPageCode(kind, token) {
+    const key = JSON.stringify(TASK_STATE_KEY);
+    const renderedToken = JSON.stringify(token);
+    if (kind === "start") {
+      return `async page => {
+        /* ${TASK_START_CODE} */
+        const context = page.context();
+        const key = ${key};
+        const token = ${renderedToken};
+        const existing = context[key];
+        if (existing && existing.token === token)
+          return { state: "active", pageCount: context.pages().length, ownedCount: existing.owned.length };
+        if (existing)
+          return { state: "conflict", reason: "another task lifecycle is installed on this browser context" };
+        const original = context.newPage;
+        if (typeof original !== "function")
+          return { state: "unsupported", reason: "Playwright BrowserContext.newPage is unavailable" };
+        const hadOwn = Object.prototype.hasOwnProperty.call(context, "newPage");
+        const owned = [];
+        const hook = async function(...args) {
+          const created = await original.apply(this, args);
+          owned.push(created);
+          return created;
+        };
+        try {
+          context[key] = { token, original, hook, hadOwn, owned };
+          context.newPage = hook;
+        } catch (error) {
+          try { delete context[key]; } catch {}
+          return { state: "unsupported", reason: String(error && error.message || error) };
+        }
+        if (context.newPage !== hook) {
+          try { delete context[key]; } catch {}
+          return { state: "unsupported", reason: "Playwright BrowserContext.newPage cannot be wrapped" };
+        }
+        return { state: "started", pageCount: context.pages().length, ownedCount: 0 };
+      }`;
+    }
+    if (kind === "inspect") {
+      return `async page => {
+        /* ${TASK_INSPECT_CODE} */
+        const context = page.context();
+        const state = context[${key}];
+        if (!state || state.token !== ${renderedToken} || !Array.isArray(state.owned))
+          return { state: "missing" };
+        const pages = context.pages();
+        const owned = state.owned.filter(candidate => candidate && !(typeof candidate.isClosed === "function" && candidate.isClosed()));
+        state.owned = owned;
+        const ownedSet = new Set(owned);
+        const baselineIndex = pages.findIndex(candidate => !ownedSet.has(candidate));
+        return {
+          state: "active",
+          pageCount: pages.length,
+          ownedCount: owned.length,
+          currentOwned: ownedSet.has(page),
+          baselineIndex: baselineIndex < 0 ? null : baselineIndex,
+        };
+      }`;
+    }
+    if (kind === "keep") {
+      return `async page => {
+        /* ${TASK_KEEP_CODE} */
+        const context = page.context();
+        const key = ${key};
+        const state = context[key];
+        if (!state || state.token !== ${renderedToken} || !Array.isArray(state.owned))
+          return { state: "missing" };
+        const keptCount = state.owned.filter(candidate => candidate && !(typeof candidate.isClosed === "function" && candidate.isClosed())).length;
+        if (context.newPage === state.hook) {
+          if (state.hadOwn) context.newPage = state.original;
+          else delete context.newPage;
+        }
+        delete context[key];
+        return { state: "kept", keptCount };
+      }`;
+    }
+    return `async page => {
+      /* ${TASK_CLEANUP_CODE} */
+      const context = page.context();
+      const key = ${key};
+      const state = context[key];
+      if (!state || state.token !== ${renderedToken} || !Array.isArray(state.owned))
+        return { state: "missing" };
+      const pages = context.pages();
+      const owned = state.owned.filter(candidate => candidate && !(typeof candidate.isClosed === "function" && candidate.isClosed()));
+      state.owned = owned;
+      const ownedSet = new Set(owned);
+      if (owned.length && !pages.some(candidate => !ownedSet.has(candidate)))
+        return { state: "no-baseline", remainingCount: owned.length };
+      const closed = [];
+      const failed = [];
+      const closedRefs = new Set();
+      const urlOf = candidate => {
+        try { return String(candidate.url()); } catch { return "<unavailable>"; }
+      };
+      for (const candidate of owned) {
+        if (candidate === page) {
+          failed.push({ url: urlOf(candidate), reason: "current page has no safe baseline page" });
+          continue;
+        }
+        const url = urlOf(candidate);
+        try {
+          await Promise.race([
+            Promise.resolve(candidate.close({ runBeforeUnload: true })),
+            new Promise(resolve => setTimeout(resolve, 5000)),
+          ]);
+          const isClosed = typeof candidate.isClosed === "function" && candidate.isClosed();
+          if (isClosed) {
+            closedRefs.add(candidate);
+            closed.push(url);
+          } else {
+            failed.push({ url, reason: "page remained open after close timeout" });
+          }
+        } catch (error) {
+          failed.push({ url, reason: String(error && error.message || error) });
+        }
+      }
+      state.owned = owned.filter(candidate => !closedRefs.has(candidate) && !(typeof candidate.isClosed === "function" && candidate.isClosed()));
+      const remainingCount = state.owned.length;
+      let restored = false;
+      if (remainingCount === 0 && context.newPage === state.hook) {
+        if (state.hadOwn) context.newPage = state.original;
+        else delete context.newPage;
+        delete context[key];
+        restored = true;
+      }
+      return { state: "cleaned", closed, failed, closedCount: closed.length, remainingCount, restored };
+    }`;
+  }
+
+  async function taskCode(kind, token) {
+    const result = await runCodeWithTimerShim({ code: taskPageCode(kind, token) });
+    if (!result || result.isError === true)
+      return { result, value: undefined };
+    return { result, value: evaluationValue(result) };
+  }
+
+  function taskSummary(value) {
+    return value && typeof value === "object" ? value : { state: "invalid", reason: "page lifecycle response was not valid JSON" };
+  }
+
+  async function taskStart(args) {
+    assertOnlyKeys(args, new Set());
+    if (taskLifecycle)
+      return { content: [{ type: "text", text: "Browser task lifecycle is already active; existing ownership is unchanged." }], structuredContent: { task: { state: "active" } } };
+    const listed = await callTool("browser_tabs", { action: "list" });
+    if (!listed || listed.isError === true)
+      return listed || textResult("Cannot start browser task lifecycle because the current Playwright page is unavailable.", true);
+    const token = `${INTERNAL_ID_PREFIX}task-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const { result, value } = await taskCode("start", token);
+    const summary = taskSummary(value);
+    if (!result || result.isError === true || summary.state !== "started" && summary.state !== "active")
+      return textResult(`Browser task lifecycle was not started: ${summary.reason || summary.state || textFromResult(result) || "unknown error"}`, true);
+    taskLifecycle = { token, startedAt: new Date().toISOString() };
+    return {
+      content: [{ type: "text", text: "Browser task lifecycle started. Existing pages remain baseline pages; pages opened after this call can be cleaned up explicitly." }],
+      structuredContent: { task: { state: "started", baselinePageCount: summary.pageCount, ownedCount: summary.ownedCount } },
+    };
+  }
+
+  async function taskCleanup(args) {
+    assertOnlyKeys(args, new Set(["confirm", "keepTabs"]));
+    if (args.confirm !== true)
+      throw new Error("browser_task_cleanup requires confirm=true");
+    if (args.keepTabs !== undefined && typeof args.keepTabs !== "boolean")
+      throw new Error("keepTabs must be a boolean when provided");
+    if (!taskLifecycle)
+      return textResult("No active browser task lifecycle exists; no tabs were closed.", true);
+    const token = taskLifecycle.token;
+    const inspected = taskSummary((await taskCode("inspect", token)).value);
+    if (inspected.state === "missing")
+      return textResult("The Playwright browser context was reset or the task lifecycle helper is missing; no tab identity was guessed and no tabs were closed.", true);
+    if (inspected.state !== "active")
+      return textResult(`Cannot inspect browser task tabs safely: ${inspected.reason || inspected.state}`, true);
+    if (args.keepTabs === true) {
+      const kept = taskSummary((await taskCode("keep", token)).value);
+      if (kept.state !== "kept")
+        return textResult(`Task lifecycle was not released: ${kept.reason || kept.state}`, true);
+      taskLifecycle = undefined;
+      return {
+        content: [{ type: "text", text: `Task lifecycle ended; ${kept.keptCount || 0} task-created tab(s) were left open.` }],
+        structuredContent: { task: { state: "kept", keptCount: kept.keptCount || 0 } },
+      };
+    }
+    if (inspected.currentOwned) {
+      if (!Number.isInteger(inspected.baselineIndex))
+        return textResult("The current task tab is the only open page and no baseline page remains; cleanup stopped without closing it.", true);
+      const selected = await callTool("browser_tabs", { action: "select", index: inspected.baselineIndex });
+      if (!selected || selected.isError === true)
+        return textResult("Cleanup stopped because the baseline page could not be selected; no task tab was closed.", true);
+    }
+    const cleaned = taskSummary((await taskCode("cleanup", token)).value);
+    if (cleaned.state === "missing")
+      return textResult("The Playwright browser context was reset during cleanup; remaining tabs were left open and ownership was not guessed.", true);
+    if (cleaned.state === "no-baseline")
+      return textResult("Cleanup stopped because no baseline page remains; task tabs were left open.", true);
+    if (cleaned.state !== "cleaned")
+      return textResult(`Cleanup did not complete safely: ${cleaned.reason || cleaned.state}`, true);
+    if (cleaned.remainingCount === 0 && cleaned.restored) {
+      taskLifecycle = undefined;
+      const failures = Array.isArray(cleaned.failed) ? cleaned.failed : [];
+      const suffix = failures.length ? ` ${failures.length} tab(s) reported a close failure.` : "";
+      return {
+        content: [{ type: "text", text: `Closed ${cleaned.closedCount || 0} task-created tab(s); existing pages were preserved.${suffix}` }],
+        structuredContent: { task: { state: failures.length ? "closed_with_failures" : "closed", closedCount: cleaned.closedCount || 0, failed: failures } },
+        ...(failures.length ? { isError: true } : {}),
+      };
+    }
+    return {
+      isError: true,
+      content: [{ type: "text", text: `Closed ${cleaned.closedCount || 0} task-created tab(s), but ${cleaned.remainingCount || 0} remain open. Retry browser_task_cleanup after inspecting the reported failures.` }],
+      structuredContent: { task: { state: "partially_closed", closedCount: cleaned.closedCount || 0, remainingCount: cleaned.remainingCount || 0, failed: cleaned.failed || [] } },
+    };
   }
 
   async function verifyExpectedUrl(args) {
@@ -2898,6 +3145,10 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
         return browserConfigConfigure(rawArgs);
       if (name === "browser_config_reload")
         return browserConfigReload(rawArgs);
+      if (name === "browser_task_start")
+        return await taskStart(rawArgs);
+      if (name === "browser_task_cleanup")
+        return await taskCleanup(rawArgs);
       // Validate the page target before forwarding any action or user code to
       // the upstream MCP. The guard is deliberately fail-closed: it reports a
       // drifted tab rather than selecting a different page automatically.
@@ -3181,6 +3432,7 @@ function runProxy(upstreamCli, upstreamArgs, config, settings = {}) {
         `browser-mcp-server（${settings.displayName || "浏览器助手"}） manages the configured browser session over local stdio.`,
         `Settings file: ${summary.settingsPath || "not configured"}.`,
         "Use browser_config_status to inspect settings, browser_configure to update live interaction fields, and browser_config_reload to apply a file edited by an administrator. Use the installed CONFIGURE.cmd for browser executable, profile, authorization, or output changes, then restart Claude Code when status reports restartRequired.",
+        "For a task that opens additional tabs, call browser_task_start before opening them and browser_task_cleanup with confirm=true when the task is complete. Cleanup uses Playwright Page identity, preserves baseline pages, and fails closed after a context reset; it does not infer task completion from idle time.",
         "Browser security boundaries, user approval, and Claude Code confirmation requirements remain in force.",
         typeof upstream.instructions === "string" && upstream.instructions.trim() ? upstream.instructions.trim() : "",
       ].filter(Boolean).join("\n");

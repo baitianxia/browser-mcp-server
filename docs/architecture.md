@@ -66,6 +66,10 @@ Windows MCP 条目必须是 user-scope stdio，命令直接执行清单中已验
 
 `browser_press_key` 还接受 `verifyText`、`verifyTextGone`、`verifySelector` 和 `verifyUrl`，在快捷键后等待明确的页面后置条件；未提供后置条件时仍返回动作后的新快照，但不把快照当作键盘已生效的证明。
 
+标签页生命周期由 `browser_task_start`/`browser_task_cleanup` 显式控制。开始调用在当前 Playwright BrowserContext 上安装进程内、带随机令牌的 `newPage` 包装器，保存实际 Page 对象而不是 URL、标题或临时 tab 索引；因此任务期间通过 MCP 创建的页面即使导航、重载或改名仍可识别。清理要求 `confirm=true`，逐个以 `runBeforeUnload=true` 尝试关闭并验证 `isClosed()`；关闭失败、没有保留的基线页面或 BrowserContext 已重置时失败关闭并保留现场。`keepTabs=true` 只移除包装器和记录，不关闭页面。该能力不接管用户手动打开的页面、弹出页或跨进程页面，也不提供空闲超时自动关闭。
+
+Extension 模式的同一活动连接会复用一个 Playwright 分组，任务生命周期不会另建分组。批准的签名扩展在重连时主动清理旧 Playwright 分组；由于运行时只看到临时 Page 对象，没有可靠的 Chrome `groupId`，跨连接按标题或 URL 复用会误认用户分组，故本版本不实现跨连接复用。任务页关闭后空组由 Chrome/扩展回收；含基线页的组保持不变。
+
 `browser_register_helper` 只在 MCP 进程内保存命名的页面函数，默认 30 分钟、最长 1 小时；`browser_call_helper` 每次调用都重新注入，因此可跨页面 reload 使用，但不保存页面业务数据。helper 代码拒绝明显的 Node 全局和导入依赖，缺失或过期会显式报错。`browser_sheet_bridge` 是 MODOC 的受限适配入口：先 `probe` 再使用经验证的方法名进行 `read`、`locate` 或 `write`，其中定位可承载 `goto A72` 一类 SDK 调用，写入必须带 `confirmWrite=true`，不会猜测 SDK 方法或自动修改另一个页面。
 
 ## Windows 安装与升级

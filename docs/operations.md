@@ -70,6 +70,16 @@ Chrome/Edge 的 `LOCALAPPDATA` 只用于发现浏览器既有 Profile 和检查�
 
 所有会改变页面的工具都支持 `expectedUrl`/`expectedUrlMode`。校验失败时先重新执行 `browser_tabs` 或显式导航并重新观察，不能自动切换标签页，也不能重放输入、粘贴或写入。
 
+### 任务标签页清理
+
+需要在一次业务任务结束时关闭任务新建的页面时，按以下顺序调用：
+
+1. `browser_task_start`：把当时已存在的页面作为基线，并在同一个 Playwright BrowserContext 记录后续 `newPage()` 返回的 Page 对象。
+2. 执行任务；`browser_tabs(action="new")` 和页面代码里的 `context.newPage()` 都会进入记录。页面导航、reload、标题变化和临时 tab 索引变化不会改变对象归属。
+3. `browser_task_cleanup({"confirm":true})`：选择仍在的基线页作为操作页，逐个请求关闭任务页并检查关闭结果。存在 `beforeunload`、页面上下文重置、关闭失败或没有基线页时，工具停止并报告未关闭页面，不猜测 URL/标题对应关系。
+
+如果需要保留新页面，使用 `keepTabs:true` 结束记录；不要把 `browser_close` 当作任务清理工具，它关闭的是当前 Playwright 页/连接，可能影响用户正在查看的页面。任务清理不拆分仍含基线页的 Chrome 分组；任务页全部关闭后，空分组由 Chrome/签名扩展自行回收。调用方必须明确发出结束调用，MCP 不根据空闲时间、客户端断开或崩溃自动关闭页面。
+
 需要确认方向键、快捷键或标签切换生效时，给 `browser_press_key` 传 `verifyText`、`verifyTextGone`、`verifySelector` 或 `verifyUrl`。工具会串行发送一次按键并等待后置条件；失败时保留“已发送但未确认”的结果，不自动重复按键。
 
 扩展令牌只在注册事务的子进程环境中短暂存在，并保存在 Claude Code user-scope 配置；它不得出现在 `settings.json`、部署清单、命令行日志、测试输出、ZIP 或 MCP 响应。日志写入 `%TEMP%\browser-mcp-server\`，报告前删除令牌、Cookie 和个人路径。

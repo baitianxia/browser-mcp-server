@@ -26,6 +26,9 @@ const readline = require("readline");
 const vm = require("vm");
 let snapshotCount = 0;
 let cjkReadCount = 0;
+let taskLifecycleActive = false;
+let fakePages = [{ id: 0, url: "http://fixture/", title: "Fixture", owned: false }];
+let currentPage = 0;
 const logPath = process.env.FAKE_CALL_LOG;
 let outputDir = process.cwd();
 const configIndex = process.argv.indexOf("--config");
@@ -42,6 +45,7 @@ function toolResult(text, isError = false) {
   return { content: text === null ? [] : [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
 }
 const tools = [
+  { name: "browser_tabs", description: "Tabs", inputSchema: { type: "object", properties: { action: { type: "string" }, index: { type: "number" }, url: { type: "string" } }, additionalProperties: false } },
   { name: "browser_navigate", description: "Navigate", inputSchema: { type: "object", required: ["url"], properties: { url: { type: "string" } }, additionalProperties: false } },
   { name: "browser_snapshot", description: "Snapshot", inputSchema: { type: "object", properties: { target: { type: "string" }, filename: { type: "string" }, depth: { type: "number" }, boxes: { type: "boolean" } }, additionalProperties: false } },
   { name: "browser_take_screenshot", description: "Screenshot", inputSchema: { type: "object", properties: { target: { type: "string" }, filename: { type: "string" } }, additionalProperties: false } },
@@ -53,6 +57,37 @@ const tools = [
   { name: "browser_run_code_unsafe", description: "Run code", inputSchema: { type: "object", properties: { code: { type: "string" }, filename: { type: "string" } }, additionalProperties: false } },
   { name: "browser_wait_for", description: "Wait", inputSchema: { type: "object", properties: {} } },
 ];
+function tabsText() {
+  return fakePages.map((tab, index) => `- ${index}:${index === currentPage ? " (current)" : ""} [${tab.title}](${tab.url})`).join("\\n");
+}
+function taskValue(code) {
+  if (code.includes("browser-mcp-task-start")) {
+    taskLifecycleActive = true;
+    return { state: "started", pageCount: fakePages.length, ownedCount: 0 };
+  }
+  if (code.includes("browser-mcp-task-inspect")) {
+    const ownedCount = fakePages.filter(tab => tab.owned).length;
+    const currentOwned = Boolean(fakePages[currentPage] && fakePages[currentPage].owned);
+    const baselineIndex = fakePages.findIndex(tab => !tab.owned);
+    return taskLifecycleActive
+      ? { state: "active", pageCount: fakePages.length, ownedCount, currentOwned, baselineIndex: baselineIndex < 0 ? null : baselineIndex }
+      : { state: "missing" };
+  }
+  if (code.includes("browser-mcp-task-keep")) {
+    const keptCount = fakePages.filter(tab => tab.owned).length;
+    taskLifecycleActive = false;
+    return { state: "kept", keptCount };
+  }
+  if (code.includes("browser-mcp-task-cleanup")) {
+    if (!taskLifecycleActive) return { state: "missing" };
+    const before = fakePages.length;
+    fakePages = fakePages.filter(tab => !tab.owned);
+    currentPage = Math.min(currentPage, Math.max(0, fakePages.length - 1));
+    taskLifecycleActive = false;
+    return { state: "cleaned", closedCount: before - fakePages.length, closed: [], failed: [], remainingCount: 0, restored: true };
+  }
+  return { ok: true };
+}
 const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on("line", line => {
   const message = JSON.parse(line);
@@ -66,6 +101,22 @@ lines.on("line", line => {
   const name = message.params.name;
   const args = message.params.arguments || {};
   if (logPath) fs.appendFileSync(logPath, JSON.stringify({ name, args }) + "\n");
+  if (name === "browser_tabs") {
+    if (args.action === "new") {
+      const id = fakePages.reduce((max, tab) => Math.max(max, tab.id), -1) + 1;
+      fakePages.push({ id, url: args.url || "about:blank", title: args.url || "New tab", owned: taskLifecycleActive });
+      currentPage = fakePages.length - 1;
+    } else if (args.action === "select") {
+      if (Number.isInteger(args.index) && args.index >= 0 && args.index < fakePages.length) currentPage = args.index;
+    } else if (args.action === "close") {
+      if (fakePages.length) {
+        fakePages.splice(args.index === undefined ? currentPage : args.index, 1);
+        currentPage = Math.min(currentPage, Math.max(0, fakePages.length - 1));
+      }
+    }
+    result(message.id, toolResult(tabsText()));
+    return;
+  }
   if (name === "browser_snapshot") {
     snapshotCount += 1;
     if (args.filename) fs.writeFileSync(artifactPath(args.filename), "snapshot artifact\n");
@@ -81,6 +132,7 @@ lines.on("line", line => {
     return;
   }
   if (name === "browser_navigate") {
+    if (fakePages[currentPage]) fakePages[currentPage].url = String(args.url || fakePages[currentPage].url);
     if (process.env.FAKE_DOWNLOAD_ON_NAVIGATE === "1") {
       send({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info", data: "Downloading attachment" } });
       setTimeout(() => {
@@ -129,6 +181,10 @@ lines.on("line", line => {
     return;
   }
   if (name === "browser_run_code_unsafe") {
+    if (process.env.FAKE_TASK_LIFECYCLE === "1") {
+      result(message.id, toolResult("```json\\n" + JSON.stringify(taskValue(String(args.code || ""))) + "\\n```"));
+      return;
+    }
     if (process.env.FAKE_EXECUTE_CODE === "1") {
       const page = { waitForTimeout: ms => new Promise(resolve => setTimeout(resolve, ms)) };
       Promise.resolve(vm.runInNewContext(`(${String(args.code || "")})`, { page }))
@@ -403,6 +459,37 @@ class McpCompatibilityTests(unittest.TestCase):
             "waitForSelector",
             by_name["browser_navigate"]["inputSchema"]["properties"],
         )
+        self.assertIn("browser_task_start", by_name)
+        self.assertIn("browser_task_cleanup", by_name)
+        self.assertEqual(["confirm"], by_name["browser_task_cleanup"]["inputSchema"]["required"])
+
+    def test_task_lifecycle_closes_only_tabs_created_after_start(self) -> None:
+        self.start(FAKE_TASK_LIFECYCLE="1")
+        started = self.call_tool("browser_task_start", {})
+        self.assertNotEqual(True, started.get("isError"))
+        opened = self.call_tool("browser_tabs", {"action": "new", "url": "http://fixture/task"})
+        self.assertNotEqual(True, opened.get("isError"))
+        self.call_tool("browser_navigate", {"url": "http://fixture/task/reloaded"})
+        cleaned = self.call_tool("browser_task_cleanup", {"confirm": True})
+        self.assertNotEqual(True, cleaned.get("isError"))
+        task = cleaned["structuredContent"]["task"]
+        self.assertEqual("closed", task["state"])
+        self.assertEqual(1, task["closedCount"])
+        calls = self.calls()
+        self.assertEqual("browser_tabs", calls[0]["name"])
+        self.assertTrue(any(item["name"] == "browser_tabs" and item["args"].get("action") == "select" for item in calls))
+
+    def test_task_cleanup_requires_explicit_confirmation_and_can_keep_tabs(self) -> None:
+        self.start(FAKE_TASK_LIFECYCLE="1")
+        self.call_tool("browser_task_start", {})
+        self.call_tool("browser_tabs", {"action": "new", "url": "http://fixture/kept"})
+        rejected = self.call_tool("browser_task_cleanup", {"confirm": False})
+        self.assertTrue(rejected["isError"])
+        self.assertIn("confirm=true", rejected["content"][0]["text"])
+        kept = self.call_tool("browser_task_cleanup", {"confirm": True, "keepTabs": True})
+        self.assertNotEqual(True, kept.get("isError"))
+        self.assertEqual("kept", kept["structuredContent"]["task"]["state"])
+        self.assertEqual(1, kept["structuredContent"]["task"]["keptCount"])
 
     def test_missing_interaction_config_fails_closed(self) -> None:
         (self.config_root / "interaction.config.json").unlink()

@@ -33,6 +33,7 @@
 | clipboard 权限被扩大或 HTTP 页面误报成功 | 默认不授予权限；`browser_clipboard(grantPermissions=true)` 只针对当前 origin 请求，并检查 `isSecureContext`/API 存在 | HTTPS 页面仍可能被浏览器策略拒绝；HTTP 页面不能保证 Clipboard API 可用 |
 | OS 剪贴板把用户已有内容泄露到模型，或粘贴到漂移的标签页 | `browser_paste`/`browser_copy` 是显式工具；系统剪贴板不作为页面 Clipboard API 的自动降级；动作前支持 `expectedUrl`，复制可要求 `requireChanged`；响应之外不记录剪贴板内容 | 用户主动调用复制仍会把选区内容送入模型；其他本机程序可同时改变剪贴板 |
 | 多 Agent 状态竞争 | production 单 Profile 单 Agent；pilot 清单固定 `maxConcurrentAgents=1`，独立 Profile 由单进程持有；Extension 初始逐次选择，持久令牌模式明确提示扩大授权 | 人工与 Agent或两个已获授权连接同时改同一页面仍可能竞态 |
+| 任务结束误关用户标签页或误拆 Chrome 分组 | `browser_task_start` 在当前 BrowserContext 记录基线，包装 `newPage()` 保存实际 Page 对象；`browser_task_cleanup` 要求 `confirm=true`、逐页验证关闭，并在上下文重置、无基线页或关闭失败时失败关闭；不按 URL/标题/临时索引猜测，不因空闲或断开自动清理 | MCP 无法区分用户手动打开的弹出页与任务弹出页；同一连接的分组可复用，跨重连分组只能由签名扩展重新建立 |
 | 页面 reload 后 helper 依赖旧上下文或持久化业务数据 | helper 仅在 MCP 进程内保存短期函数定义，每次调用重新注入；名称、TTL 和页面 URL 受校验；不把 `__rows`、Cookie 或剪贴板写入配置 | helper 本身仍可执行调用方授权的页面代码；页面 API 变化时需重新 probe |
 | MODOC SDK 方法被误调用或写入错误区域 | `browser_sheet_bridge` 要求先 probe，限制方法名模式，写操作要求 `confirmWrite=true`，并由调用方提供 `expectedUrl`；未有真实 SDK 证据不宣称兼容 | 页面私有 `window.sheetInst` 可能随版本变化，写入语义仍需业务验收 |
 | 动态页面兼容回退绕过浏览器原生 actionability 检查 | 先执行原生动作；只对明确的可见性/稳定性/视口类失败回退，且必须重新解析同一个唯一目标，确认节点连接、可见、未禁用后才滚动并 DOM 点击；`standard` 模式可完全关闭回退 | 页面脚本仍可能在检查与点击间重渲染或改变业务语义；高风险动作仍需独立人工确认和结果复核 |

@@ -14,6 +14,12 @@
 
 本次变更只闭合 `.exe` bin 被错误交给 Node 的入口类型缺陷；它不是公共标准的完整采纳证明。当前 helper 仍需在后续工程整改中补齐最终句柄路径解析、WindowsApps 排除、PE/Claude 身份与能力探针、候选拒绝诊断和有界进程清理；这些缺口以及 Windows PowerShell 5.1 真实回归在验证完成前均标记为“未验证”。
 
+## 1.0.18 任务标签页生命周期（待 CI 验证）
+
+本版本增加 `browser_task_start`/`browser_task_cleanup`。兼容层在当前 Playwright BrowserContext 上包装 `newPage()` 并保存实际 Page 对象，清理时只关闭任务开始后由该方法创建且仍可识别的页面；不按标题、URL 或临时 tab 索引猜测，也不因空闲、客户端断开或上下文重置自动关闭。`confirm=true` 是关闭前提，`keepTabs=true` 只结束记录。Extension 同一活动连接继续使用已有 Playwright 分组；跨重连分组复用仍受签名扩展行为限制。
+
+本机 Python 回归已覆盖工具清单和生命周期协议夹具，但当前 macOS 没有 Node.js 与 Windows PowerShell 5.1，因此真实 JSON-RPC 子进程、Windows 原生构建、安装器和 Chrome/Edge 分组行为等待新的 GitHub Actions 门禁。真实 MODOC `window.sheetInst` 业务方法仍按验收标准交由用户验证。
+
 ## 历史 1.0.x 证据（已被统一身份和交付契约取代）
 
 以下章节保留旧版本故障与修复证据。它们出现的旧包名、旧 MCP 名称、`%LOCALAPPDATA%` 路径和旧 launcher 只描述当时制品，不是当前安装说明，也不能覆盖现行规范。
