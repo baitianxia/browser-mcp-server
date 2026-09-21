@@ -14,11 +14,15 @@
 
 本次变更只闭合 `.exe` bin 被错误交给 Node 的入口类型缺陷；它不是公共标准的完整采纳证明。当前 helper 仍需在后续工程整改中补齐最终句柄路径解析、WindowsApps 排除、PE/Claude 身份与能力探针、候选拒绝诊断和有界进程清理；这些缺口以及 Windows PowerShell 5.1 真实回归在验证完成前均标记为“未验证”。
 
-## 1.0.18 任务标签页生命周期（待 CI 验证）
+## 1.0.19 Windows 验证状态（CI 已放行）
 
-本版本增加 `browser_task_start`/`browser_task_cleanup`。兼容层在当前 Playwright BrowserContext 上包装 `newPage()` 并保存实际 Page 对象，清理时只关闭任务开始后由该方法创建且仍可识别的页面；不按标题、URL 或临时 tab 索引猜测，也不因空闲、客户端断开或上下文重置自动关闭。`confirm=true` 是关闭前提，`keepTabs=true` 只结束记录。Extension 同一活动连接继续使用已有 Playwright 分组；跨重连分组复用仍受签名扩展行为限制。
+1.0.19 把任务标签页生命周期工具和 Windows 发布门禁修复一起交付。`browser_task_start`/`browser_task_cleanup` 在当前 Playwright BrowserContext 上包装 `newPage()` 并保存实际 Page 对象；清理时只关闭任务开始后由该方法创建且仍可识别的页面，不按标题、URL 或临时 tab 索引猜测，也不因空闲、客户端断开或上下文重置自动关闭。`confirm=true` 是关闭前提，`keepTabs=true` 只结束记录。Extension 同一活动连接继续使用已有 Playwright 分组；跨重连分组复用仍受签名扩展行为限制。
 
-本机 Python 回归已覆盖工具清单和生命周期协议夹具，但当前 macOS 没有 Node.js 与 Windows PowerShell 5.1，因此真实 JSON-RPC 子进程、Windows 原生构建、安装器和 Chrome/Edge 分组行为等待新的 GitHub Actions 门禁。真实 MODOC `window.sheetInst` 业务方法仍按验收标准交由用户验证。
+[Windows release validation #94](https://github.com/baitianxia/browser-mcp-server/actions/runs/35616091661) 在提交 `8d55b76fd4b336500145f3dd5f1b4105554d5e35` 上全绿：`windows-2022`、`windows-latest` 两套 Windows PowerShell 5.1 源码 job，以及 `Package, existing-Claude gates, and one-click install` 原生 package job 均成功。package job 的确定性运行时发布故障夹具在安装器发布前完成 ready/release 握手，实际施加 ACL 删除拒绝并观察到 `RUNTIME PUBLISH RETRY`、恢复和 ACL 还原；同一 job 还通过了现有 npm Claude 入口门禁、一键安装、安装后配置/Profile/MCP smoke 和最终 ZIP 复核。目标机流程没有运行 npm、pnpm、npx 或 Claude 修复命令。
+
+本地 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v` 实际为 170 项通过、55 项按设计跳过；`python3 scripts/verify-bundle.py` 对下载的 Windows ZIP 返回 `VALID`，ZIP SHA-256 与包内 `.sha256` sidecar 一致：`11a78e52669816d1a25bd6023820aa37ab7b9f7786f79762234ffd9a3e00c9bc`。
+
+正式用户包为 [`browser-mcp-server-1.0.19-windows-x64.zip`](https://github.com/baitianxia/browser-mcp-server/actions/runs/35616091661/artifacts/10645949467)，GitHub artifact digest 与 ZIP SHA-256 均为 `11a78e52669816d1a25bd6023820aa37ab7b9f7786f79762234ffd9a3e00c9bc`；相邻校验文件为 [`browser-mcp-server-1.0.19-windows-x64.zip.sha256`](https://github.com/baitianxia/browser-mcp-server/actions/runs/35616091661/artifacts/10646394012)，验证证据为 [`windows-validation-evidence-35616091661`](https://github.com/baitianxia/browser-mcp-server/actions/runs/35616091661/artifacts/10646637057)。真实 MODOC `window.sheetInst` 业务方法的区域读取、定位、写入和回读仍按验收标准交由用户在目标页面验证，未被标记为 SDK E2E 已通过。
 
 ## 历史 1.0.x 证据（已被统一身份和交付契约取代）
 
