@@ -783,7 +783,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         # launcher and publishes the ZIP produced by the reviewed builder.
         for marker in (
             "Assemble and extract the reviewed Windows ZIP",
-            "browser-mcp-server-1.0.18-windows-x64.zip",
+            "browser-mcp-server-1.0.19-windows-x64.zip",
             "Expand-Archive",
             "Public Windows ZIP must extract to exactly one top-level directory",
             "Prove native Claude compatibility in an isolated release gate",
@@ -816,6 +816,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("CI-only native Claude Code", workflow)
         self.assertIn("CI-only npm Claude Code", workflow)
         self.assertIn("Resolve-ClaudeCodeInvocation", workflow)
+        self.assertIn(
+            '$ClaudeInvocation.Kind -notin @("npm-js", "npm-native")',
+            workflow,
+        )
+        self.assertNotIn('$ClaudeInvocation.Kind -ne "npm"', workflow)
         self.assertIn("NPM_CLAUDE_COMMAND", workflow)
         self.assertIn("NPM_CLAUDE_NODE", workflow)
         self.assertIn("$env:PATH = $env:NPM_CLAUDE_ROOT + \";\" + $env:PATH", workflow)
