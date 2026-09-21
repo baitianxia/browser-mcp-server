@@ -6,11 +6,27 @@ param(
     [string]$BrowserChannel = "auto",
     [ValidateRange(0, 86400)]
     [int]$ManualExtensionWaitSeconds = 0,
-    [string]$LogPath = ""
+    [string]$LogPath = "",
+    # CI-only fault-injection handshake. Normal user launchers leave both
+    # paths empty, so ordinary installs never wait on an external process.
+    [string]$RuntimePublishReadyFile = "",
+    [string]$RuntimePublishReleaseFile = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ([bool]$RuntimePublishReadyFile -ne [bool]$RuntimePublishReleaseFile) {
+    throw "Runtime publish gate requires both ready and release paths."
+}
+if ($RuntimePublishReadyFile) {
+    if (-not [IO.Path]::IsPathRooted($RuntimePublishReadyFile) -or
+        -not [IO.Path]::IsPathRooted($RuntimePublishReleaseFile)) {
+        throw "Runtime publish gate paths must be absolute."
+    }
+    $RuntimePublishReadyFile = [IO.Path]::GetFullPath($RuntimePublishReadyFile)
+    $RuntimePublishReleaseFile = [IO.Path]::GetFullPath($RuntimePublishReleaseFile)
+}
 
 $ToolDiscovery = Join-Path $PSScriptRoot `
     "toolkit\scripts\windows-tool-discovery.ps1"
@@ -26,6 +42,8 @@ if (-not (Test-Path -LiteralPath $ToolDiscovery -PathType Leaf)) {
 $script:PythonExe = ""
 $script:PythonPrefix = @()
 $script:LogPath = $LogPath
+$script:RuntimePublishReadyFile = $RuntimePublishReadyFile
+$script:RuntimePublishReleaseFile = $RuntimePublishReleaseFile
 $StageRoot = $null
 $RuntimeExtractionRoot = $null
 $ExtensionStagingRoot = $null
@@ -329,6 +347,42 @@ function Publish-StagedRuntime {
         -Destination $Destination `
         -OperationLabel "暂存运行时" `
         -LogPrefix "RUNTIME PUBLISH"
+}
+
+function Wait-CiRuntimePublishRelease {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source
+    )
+    if (-not $script:RuntimePublishReadyFile) {
+        return
+    }
+    $ReadyParent = Split-Path -Parent $script:RuntimePublishReadyFile
+    if ($ReadyParent) {
+        New-Item -ItemType Directory -Path $ReadyParent -Force | Out-Null
+    }
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText(
+        $script:RuntimePublishReadyFile,
+        $Source + [Environment]::NewLine,
+        $Utf8NoBom
+    )
+    Write-InstallLog "CI RUNTIME PUBLISH GATE READY: $Source"
+    $Deadline = [DateTime]::UtcNow.AddSeconds(300)
+    while ([DateTime]::UtcNow -lt $Deadline) {
+        if (Test-Path -LiteralPath $script:RuntimePublishReleaseFile -PathType Leaf) {
+            $Release = [IO.File]::ReadAllText(
+                $script:RuntimePublishReleaseFile,
+                $Utf8NoBom
+            ).Trim()
+            if ($Release -ceq "allow") {
+                Write-InstallLog "CI RUNTIME PUBLISH GATE RELEASED"
+                return
+            }
+            throw "Runtime publish gate wrote an invalid release token."
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    throw "Runtime publish gate did not receive a release signal."
 }
 
 function Publish-FileAtomically {
@@ -1279,6 +1333,7 @@ try {
         if (Test-Path -LiteralPath $RuntimeRoot) {
             throw "运行版本目录在安装期间被其他进程创建：$RuntimeRoot"
         }
+        Wait-CiRuntimePublishRelease -Source $StagedRuntimeRoot
         Publish-StagedRuntime -Source $StagedRuntimeRoot -Destination $RuntimeRoot
         Remove-Item -LiteralPath $RuntimeExtractionRoot -Recurse -Force
         $RuntimeExtractionRoot = $null

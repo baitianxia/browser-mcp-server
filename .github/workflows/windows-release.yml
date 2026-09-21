@@ -498,11 +498,26 @@ jobs:
               "runtime-publish-access-denied.stderr.log"
           $RuntimeLockExitFile = Join-Path $env:RUNNER_TEMP `
               "runtime-publish-access-denied.exit.txt"
+          $RuntimePublishReadyFile = Join-Path $env:RUNNER_TEMP `
+              "runtime-publish-ready.txt"
+          $RuntimePublishReleaseFile = Join-Path $env:RUNNER_TEMP `
+              "runtime-publish-release.txt"
           $RuntimeLockScript = Join-Path $env:GITHUB_WORKSPACE `
               ".github\scripts\inject-runtime-publish-access-denied.ps1"
           $RuntimeLockStagingRoot = Join-Path $env:USERPROFILE `
               "browser-mcp-server\staging"
           $InstallLogRoot = Join-Path $env:TEMP "browser-mcp-server"
+          New-Item -ItemType Directory -Path $InstallLogRoot -Force | Out-Null
+          Get-ChildItem -LiteralPath $InstallLogRoot -Filter "INSTALL-*.log" `
+              -File -ErrorAction SilentlyContinue |
+              Remove-Item -Force -ErrorAction SilentlyContinue
+          foreach ($StaleRuntimeMarker in @(
+              $RuntimeLockMarker, $RuntimeLockExitFile,
+              $RuntimePublishReadyFile, $RuntimePublishReleaseFile
+          )) {
+              Remove-Item -LiteralPath $StaleRuntimeMarker -Force `
+                  -ErrorAction SilentlyContinue
+          }
           $CiExtensionPolicySubKey = `
               "Software\Policies\Google\Chrome\ExtensionInstallForcelist"
           $CiExtensionPolicyPath = "HKCU:\$CiExtensionPolicySubKey"
@@ -542,7 +557,7 @@ jobs:
           $Wrapper = Join-Path $env:RUNNER_TEMP "run-one-click-pilot.cmd"
           $WrapperBody = @"
           @echo off
-          call "$Launcher" -ManualExtensionWaitSeconds 180 < nul
+          call "$Launcher" -ManualExtensionWaitSeconds 180 -RuntimePublishReadyFile "$RuntimePublishReadyFile" -RuntimePublishReleaseFile "$RuntimePublishReleaseFile" < nul
           set "PILOT_EXIT=%errorlevel%"
           > "$LauncherExitFile" echo %PILOT_EXIT%
           exit /b %PILOT_EXIT%
@@ -572,7 +587,7 @@ jobs:
               "run-runtime-publish-access-denied.cmd"
           $RuntimeLockWrapperBody = @"
           @echo off
-          powershell.exe -NoLogo -NoProfile -NonInteractive -File "$RuntimeLockScript" -StagingRoot "$RuntimeLockStagingRoot" -MarkerPath "$RuntimeLockMarker" -InstallLogRoot "$InstallLogRoot"
+          powershell.exe -NoLogo -NoProfile -NonInteractive -File "$RuntimeLockScript" -StagingRoot "$RuntimeLockStagingRoot" -ReadyFile "$RuntimePublishReadyFile" -ReleaseFile "$RuntimePublishReleaseFile" -MarkerPath "$RuntimeLockMarker" -InstallLogRoot "$InstallLogRoot"
           set "RUNTIME_LOCK_EXIT=%errorlevel%"
           > "$RuntimeLockExitFile" echo %RUNTIME_LOCK_EXIT%
           exit /b %RUNTIME_LOCK_EXIT%
@@ -959,7 +974,7 @@ jobs:
               if ($LauncherExitCode -ne 0) {
                   throw "One-click Windows launcher failed with exit code $LauncherExitCode"
               }
-              if (-not $RuntimeLockProcess.WaitForExit(30000)) {
+              if (-not $RuntimeLockProcess.WaitForExit(120000)) {
                   throw "The runtime publish fault injector did not finish."
               }
               $RuntimeLockExitCode = Read-CiExitCode `
@@ -1091,7 +1106,9 @@ jobs:
                   -ErrorAction SilentlyContinue
               foreach ($Marker in @(
                   $ExtensionTokenFile, $CdpReadyFile, $CdpStopFile,
-                  $LauncherExitFile, $CdpExitFile
+                  $LauncherExitFile, $CdpExitFile, $RuntimeLockMarker,
+                  $RuntimeLockExitFile, $RuntimePublishReadyFile,
+                  $RuntimePublishReleaseFile
               )) {
                   Remove-Item -LiteralPath $Marker -Force `
                       -ErrorAction SilentlyContinue

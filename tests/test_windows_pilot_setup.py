@@ -542,6 +542,11 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("无需重新运行安装器", installer)
         self.assertIn("Restore-ExtensionPolicyChange", installer)
         self.assertIn("[int]$ManualExtensionWaitSeconds = 0", installer)
+        self.assertIn('[string]$RuntimePublishReadyFile = ""', installer)
+        self.assertIn('[string]$RuntimePublishReleaseFile = ""', installer)
+        self.assertIn("Wait-CiRuntimePublishRelease", installer)
+        self.assertIn("CI RUNTIME PUBLISH GATE READY", installer)
+        self.assertIn("CI RUNTIME PUBLISH GATE RELEASED", installer)
         self.assertNotIn("chromewebstore.google.com", installer)
         self.assertNotIn("Invoke-WebRequest", installer)
         self.assertNotIn("clients2.google.com", installer)
@@ -861,6 +866,10 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("session_cookie=reused", exercise)
         self.assertNotIn('"browser_close"', exercise)
 
+        self.assertIn("ReadyFile", access_denied_injector)
+        self.assertIn("ReleaseFile", access_denied_injector)
+        self.assertIn("Get-ContainedReadyPath", access_denied_injector)
+        self.assertIn("InstallLogRoot", access_denied_injector)
         self.assertIn("Set-Acl", access_denied_injector)
         self.assertIn("FileSystemRights]::Delete", access_denied_injector)
         self.assertIn(
@@ -870,26 +879,18 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("AccessControlType]::Deny", access_denied_injector)
         self.assertIn("OriginalRuntimeAccessSddl", access_denied_injector)
         self.assertIn("OriginalParentAccessSddl", access_denied_injector)
-        self.assertIn(
-            "catch [System.Management.Automation.ItemNotFoundException]",
-            access_denied_injector,
-        )
-        self.assertIn("pnpm-workspace.yaml", access_denied_injector)
-        extraction_marker = access_denied_injector.index(
-            '$ExtractionCompletionMarker = Join-Path $DeniedPath "pnpm-workspace.yaml"'
-        )
-        self.assertLess(
-            access_denied_injector.index(
-                "Set-Acl -LiteralPath $DeniedParentPath -AclObject $ParentAcl"
-            ),
-            extraction_marker,
-        )
-        self.assertLess(
-            access_denied_injector.index(
-                "Set-Acl -LiteralPath $DeniedPath -AclObject $RuntimeAcl"
-            ),
-            extraction_marker,
-        )
+        self.assertIn('WriteAllText($ReleaseFile, "allow`n"', access_denied_injector)
+        self.assertIn("RUNTIME PUBLISH RETRY", access_denied_injector)
+        self.assertIn("CI RUNTIME PUBLISH RETRY OBSERVED", workflow)
+        self.assertIn("CI RUNTIME PUBLISH ACCESS DENIED ARMED", access_denied_injector)
+        self.assertIn("CI RUNTIME PUBLISH ACCESS DENIED RESTORED", access_denied_injector)
+        self.assertIn("RuntimePublishReadyFile", workflow)
+        self.assertIn("RuntimePublishReleaseFile", workflow)
+        self.assertIn("-RuntimePublishReadyFile", workflow)
+        self.assertIn("-RuntimePublishReleaseFile", workflow)
+        self.assertIn("-ReadyFile", workflow)
+        self.assertIn("-ReleaseFile", workflow)
+        self.assertIn("-InstallLogRoot", workflow)
         self.assertIn(
             "Set-Acl -LiteralPath $DeniedPath -AclObject $RestoreRuntimeAcl",
             access_denied_injector,
@@ -898,12 +899,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
             "Set-Acl -LiteralPath $DeniedParentPath -AclObject $RestoreParentAcl",
             access_denied_injector,
         )
-        self.assertIn("InstallLogRoot", access_denied_injector)
-        self.assertIn("RUNTIME PUBLISH RETRY", access_denied_injector)
-        self.assertIn("CI RUNTIME PUBLISH RETRY OBSERVED", workflow)
         self.assertNotIn("-HoldSeconds", workflow)
-        self.assertIn("CI RUNTIME PUBLISH ACCESS DENIED ARMED", access_denied_injector)
-        self.assertIn("CI RUNTIME PUBLISH ACCESS DENIED RESTORED", access_denied_injector)
 
     @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell 5.1")
     def test_native_claude_resolver_finds_official_path_when_path_is_stale(

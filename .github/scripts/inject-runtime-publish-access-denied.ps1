@@ -3,6 +3,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$StagingRoot,
+    [Parameter(Mandatory = $true)][string]$ReadyFile,
+    [Parameter(Mandatory = $true)][string]$ReleaseFile,
     [Parameter(Mandatory = $true)][string]$MarkerPath,
     [Parameter(Mandatory = $true)][string]$InstallLogRoot,
     [ValidateRange(10, 300)][int]$RetryWaitSeconds = 180,
@@ -12,7 +14,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
 $DeniedPath = $null
 $DeniedParentPath = $null
 $OriginalRuntimeAccessSddl = $null
@@ -21,96 +22,89 @@ $RuntimeAccessDenied = $false
 $ParentAccessDenied = $false
 $AccessDeniedArmed = $false
 $RetryObserved = $false
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+function Get-ContainedReadyPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+    if (-not [IO.Path]::IsPathRooted($Path)) {
+        throw "The installer published a non-absolute runtime gate path."
+    }
+    $ResolvedPath = [IO.Path]::GetFullPath($Path).TrimEnd("\")
+    $ResolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd("\") + "\"
+    if (-not $ResolvedPath.StartsWith(
+        $ResolvedRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "The runtime gate path escaped the isolated staging root."
+    }
+    return $ResolvedPath
+}
+
 try {
-    while ([DateTime]::UtcNow -lt $Deadline) {
-        $Candidates = @(Get-ChildItem -LiteralPath $StagingRoot `
-            -Directory -Filter "r-*" -ErrorAction SilentlyContinue | ForEach-Object {
-                Get-ChildItem -LiteralPath $_.FullName -Directory `
-                    -Filter "browser-agent-runtime-*-windows-x64" `
-                    -ErrorAction SilentlyContinue
-            })
-        foreach ($Candidate in $Candidates) {
-            $DeniedPath = $Candidate.FullName
-            $DeniedParentPath = Split-Path -Parent $DeniedPath
-            # The installer may publish the staged directory between the
-            # enumeration above and ACL inspection. Treat that one expected
-            # race as a stale candidate and keep looking; do not leave a
-            # partially armed parent ACL behind.
-            try {
-                $RuntimeAcl = Get-Acl -LiteralPath $DeniedPath
-                $ParentAcl = Get-Acl -LiteralPath $DeniedParentPath
-            } catch [System.Management.Automation.ItemNotFoundException] {
-                $DeniedPath = $null
-                $DeniedParentPath = $null
-                continue
-            }
-            $OriginalRuntimeAccessSddl = $RuntimeAcl.GetSecurityDescriptorSddlForm(
-                [Security.AccessControl.AccessControlSections]::Access
-            )
-            $OriginalParentAccessSddl = $ParentAcl.GetSecurityDescriptorSddlForm(
-                [Security.AccessControl.AccessControlSections]::Access
-            )
-            $CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-            $DenyDeleteRule = New-Object `
-                -TypeName Security.AccessControl.FileSystemAccessRule `
-                -ArgumentList @(
-                    $CurrentSid,
-                    [Security.AccessControl.FileSystemRights]::Delete,
-                    [Security.AccessControl.AccessControlType]::Deny
-                )
-            $DenyDeleteChildRule = New-Object `
-                -TypeName Security.AccessControl.FileSystemAccessRule `
-                -ArgumentList @(
-                    $CurrentSid,
-                    [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
-                    [Security.AccessControl.AccessControlType]::Deny
-                )
-
-            # Windows permits a rename when either Delete on the child or
-            # DeleteChild on its parent is granted. Deny both paths before
-            # extraction completes so the installer cannot race the injector.
-            $null = $ParentAcl.AddAccessRule($DenyDeleteChildRule)
-            Set-Acl -LiteralPath $DeniedParentPath -AclObject $ParentAcl
-            $ParentAccessDenied = $true
-            $null = $RuntimeAcl.AddAccessRule($DenyDeleteRule)
-            Set-Acl -LiteralPath $DeniedPath -AclObject $RuntimeAcl
-            $RuntimeAccessDenied = $true
-            break
-        }
-        if ($RuntimeAccessDenied -and $ParentAccessDenied) {
-            break
-        }
+    $ReadyDeadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
+    while (-not (Test-Path -LiteralPath $ReadyFile -PathType Leaf) -and
+        [DateTime]::UtcNow -lt $ReadyDeadline) {
         Start-Sleep -Milliseconds 25
     }
-    if (-not $RuntimeAccessDenied -or -not $ParentAccessDenied -or
-        -not $DeniedPath -or -not $DeniedParentPath -or
-        -not $OriginalRuntimeAccessSddl -or -not $OriginalParentAccessSddl) {
-        throw "The CI fault injector could not deny runtime Delete and parent DeleteChild."
+    if (-not (Test-Path -LiteralPath $ReadyFile -PathType Leaf)) {
+        throw "The installer did not publish its runtime gate before the timeout."
     }
 
-    # Runtime archives are emitted in lexical order, making this root file the
-    # final archive entry. The ACLs are already armed, but the marker must only
-    # announce a fully extracted runtime that is ready for publish.
-    $NodePath = Join-Path $DeniedPath "node\node.exe"
-    $ExtractionCompletionMarker = Join-Path $DeniedPath "pnpm-workspace.yaml"
-    while ([DateTime]::UtcNow -lt $Deadline -and
-        ((-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) -or
-        (-not (Test-Path -LiteralPath $ExtractionCompletionMarker -PathType Leaf)))) {
-        if (-not (Test-Path -LiteralPath $DeniedPath -PathType Container)) {
-            throw "The staged runtime moved before the access denial was fully armed."
-        }
-        Start-Sleep -Milliseconds 25
+    $ReadyText = [IO.File]::ReadAllText($ReadyFile, $Utf8NoBom).Trim()
+    if (-not $ReadyText) {
+        throw "The installer published an empty runtime gate path."
     }
-    if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $ExtractionCompletionMarker -PathType Leaf)) {
-        throw "The staged runtime did not finish extraction while access denial was armed."
+    $DeniedPath = Get-ContainedReadyPath -Path $ReadyText -Root $StagingRoot
+    if (-not (Test-Path -LiteralPath $DeniedPath -PathType Container)) {
+        throw "The staged runtime gate path does not exist: $DeniedPath"
     }
+    $DeniedParentPath = Split-Path -Parent $DeniedPath
+
+    # The installer is paused immediately before Directory.Move, so ACL
+    # inspection and arming no longer race extraction or publication.
+    $RuntimeAcl = Get-Acl -LiteralPath $DeniedPath
+    $ParentAcl = Get-Acl -LiteralPath $DeniedParentPath
+    $OriginalRuntimeAccessSddl = $RuntimeAcl.GetSecurityDescriptorSddlForm(
+        [Security.AccessControl.AccessControlSections]::Access
+    )
+    $OriginalParentAccessSddl = $ParentAcl.GetSecurityDescriptorSddlForm(
+        [Security.AccessControl.AccessControlSections]::Access
+    )
+    $CurrentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $DenyDeleteRule = New-Object `
+        -TypeName Security.AccessControl.FileSystemAccessRule `
+        -ArgumentList @(
+            $CurrentSid,
+            [Security.AccessControl.FileSystemRights]::Delete,
+            [Security.AccessControl.AccessControlType]::Deny
+        )
+    $DenyDeleteChildRule = New-Object `
+        -TypeName Security.AccessControl.FileSystemAccessRule `
+        -ArgumentList @(
+            $CurrentSid,
+            [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
+            [Security.AccessControl.AccessControlType]::Deny
+        )
+
+    # Windows permits a rename when either Delete on the child or DeleteChild
+    # on its parent is granted. Deny both paths before releasing the installer.
+    $null = $ParentAcl.AddAccessRule($DenyDeleteChildRule)
+    Set-Acl -LiteralPath $DeniedParentPath -AclObject $ParentAcl
+    $ParentAccessDenied = $true
+    $null = $RuntimeAcl.AddAccessRule($DenyDeleteRule)
+    Set-Acl -LiteralPath $DeniedPath -AclObject $RuntimeAcl
+    $RuntimeAccessDenied = $true
     $AccessDeniedArmed = $true
+
     [IO.File]::WriteAllText(
         $MarkerPath,
         "$DeniedPath`n$DeniedParentPath",
-        (New-Object System.Text.UTF8Encoding($false))
+        $Utf8NoBom
     )
+    [IO.File]::WriteAllText($ReleaseFile, "allow`n", $Utf8NoBom)
     $FaultArmedAtUtc = [DateTime]::UtcNow
     Write-Host ("CI RUNTIME PUBLISH ACCESS DENIED ARMED {0}: {1}" -f `
         (Get-Date -Format "o"), $DeniedPath)
@@ -118,10 +112,7 @@ try {
     $RetryDeadline = $FaultArmedAtUtc.AddSeconds($RetryWaitSeconds)
     while ([DateTime]::UtcNow -lt $RetryDeadline) {
         $InstallLogs = @(Get-ChildItem -LiteralPath $InstallLogRoot `
-            -Filter "INSTALL-*.log" -File `
-            -ErrorAction SilentlyContinue | Where-Object {
-                $_.LastWriteTimeUtc -ge $FaultArmedAtUtc
-            })
+            -Filter "INSTALL-*.log" -File -ErrorAction SilentlyContinue)
         foreach ($InstallLog in $InstallLogs) {
             if (Select-String -LiteralPath $InstallLog.FullName `
                 -SimpleMatch "RUNTIME PUBLISH RETRY" -Quiet `
