@@ -10,7 +10,7 @@
 
 ## 2026-09-22 browser 1.0.21 Windows 发布
 
-在公共标准迁移之后，browser 发布版本提升到 `1.0.21`，避免与 1.0.20 修复前制品复用同一个文件名。GitHub Actions run `35726547727` 已在 `windows-2022`、`windows-latest` 和原生 package/install job 全部通过；该 run 的 ZIP、checksum 和 validation evidence 由同一提交生成。
+在公共标准迁移之后，browser 发布版本提升到 `1.0.21`，避免与 1.0.20 修复前制品复用同一个文件名。GitHub Actions run `35728526693` 已在 `windows-2022`、`windows-latest` 和原生 package/install job 全部通过；该 run 的 ZIP、checksum 和 validation evidence 由同一提交生成：[`ZIP artifact`](https://github.com/baitianxia/browser-mcp-server/actions/runs/35728526693/artifacts/10693959563)、[`checksum artifact`](https://github.com/baitianxia/browser-mcp-server/actions/runs/35728526693/artifacts/10694104555)、[`Windows evidence`](https://github.com/baitianxia/browser-mcp-server/actions/runs/35728526693/artifacts/10694034577)。
 
 ## 2026-09-22 公共标准迁移
 
