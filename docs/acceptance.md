@@ -6,7 +6,7 @@
 
 ## 自动验收
 
-- `python3 -m unittest discover -s tests -v` 全部通过；测试覆盖兼容层 JSON-RPC、配置状态/写入/重载、动态页面回退、artifact containment、注册事务和失败回滚。
+- `python3 -m unittest discover -s tests -v` 全部通过；测试覆盖兼容层 JSON-RPC、配置状态/写入/重载、动态页面回退、artifact containment、注册事务和失败回滚，并覆盖 `standards/mcp_standards` 的 Claude Code 探测、精确 missing-entry 诊断、注册回滚和 stdio `initialize/tools/list`。
 - `scripts/verify-bundle.py` 对运行包、公共 ZIP 和各自解压目录均返回 `VALID`。包内 `SHA256SUMS.txt` 和 ZIP 相邻 `.sha256` 使用规范小写 SHA-256、两个空格、文件名和 LF，无 BOM/CRLF。
 - `validate_windows_release_metadata.py` 证明 `product=browser-mcp-server`、`displayName=浏览器助手`、`mcpServerName=browser-mcp`、`target=windows/x64`、`buildHost=windows/x64`、`crossBuilt=false`、`targetCliSmokeTested=true` 和 `bundledNode=true`。版本、运行包哈希/大小、Node 来源和扩展 ID/版本必须可追溯。
 - 公共 ZIP 只有一个顶层目录，并在顶层包含 `README.md`、`START-HERE.html`、`INSTALL.cmd`、`CONFIGURE.cmd`、`OPEN-CONFIG.cmd`、`UNINSTALL.cmd`、`config/settings.example.json`、`payload/`、`release-manifest.json`、`SHA256SUMS.txt` 和 `NOTICE.md`。用户 artifact 直接上传该 ZIP 和相邻 checksum，不能再由流水线重新压缩。
@@ -19,6 +19,7 @@
 - 安装器必须在真实写入前验证现有 Claude Code；原生 `claude.exe` 和可验证的 npm `claude.cmd` 均支持。npm 入口必须核对包内 `claude` bin：JavaScript bin 使用现有 Node，Windows `.exe` bin 直接执行，不能让 Node 加载 PE 文件；缺少入口时停止且不安装 Claude。注册失败必须逐字节恢复 Claude 用户配置和旧部署配置。候选、链接、WindowsApps、PE/身份/能力探针和失败原因按[公共 Windows Claude Code 探测与调用标准](../../docs/windows-claude-code-discovery.md)验收。
 - Windows PowerShell 5.1 读取包内和本工程配置 JSON 时必须使用显式严格 UTF-8 解码；不得依赖 `Get-Content` 的系统 ANSI 默认值。验收环境应至少覆盖含中文 `displayName` 的发布清单。
 - 安装、升级、设置和卸载只影响当前工程。升级从当前受管清单提取浏览器模式、channel、授权、无头和交互设置，不复制旧运行路径、未知字段或历史身份；新版本验证完成后才原子切换。`UNINSTALL.cmd` 只移除 `browser-mcp` 和本工程活动目录，默认保留配置备份。
+- 跨项目 Claude Code 探测、user-scope 注册和 stdio 契约遵循 [`docs/mcp-engineering-standard.md`](mcp-engineering-standard.md)；本工程按 L1 公共实现维护，Windows 原生路径、链接、PE 和真实 Claude Code 证据仍以 L2 Windows gate 为准。
 - 扩展必须是批准 CRX 与逐文件一致的 `payload/browser-extension/unpacked`。自动策略不可用时必须显示三步人工加载指引并在同一进程等待，检测到精确 ID/版本/路径后续跑；不得下载扩展或接受任意目录。
 - 扩展批准文件、`KIT-METADATA.json` 和 `release-manifest.json` 的版本及 `compatibleVersions` 必须一致。检测覆盖当前/兼容/不可用/未安装、最近使用的 Profile、安全配置优先、精确受管目录和非法版本输入。保留兼容版本必须重新确认可用，选择更新必须等到包内当前版本；新增批准版本须补真实 MCP 连接证据，单元测试夹具不构成兼容批准。
 - 初始配置必须是 `extension + headed + session approval + compact + robust`，Extension 不得有 `headless/userDataDir`；persistent 只能使用本工程独立 Profile，并显式记录 headed/headless。配置工具可分别切换 `compact|full`、`robust|standard`，启动方式变化要求重启 MCP。

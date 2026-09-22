@@ -87,3 +87,5 @@ Extension 模式的同一活动连接会复用一个 Playwright 分组，任务�
 ## 变更规则
 
 改变运行模式、信任边界、默认权限、版本、配置字段、路径、MCP 身份或放行条件时，必须同步更新本文件、部署 Schema、校验器、测试和用户文档。共享 Windows 基线见 `/Users/baitianxia/project/docs/windows-development.md`；本项目的 `browser-mcp-server` 路径和不迁移历史身份规则优先。
+
+跨项目的 Claude Code 探测、用户级 MCP 注册事务和 stdio 握手使用仓库内的 [`standards/mcp_standards`](../standards/mcp_standards) 参考实现，规范和其他 MCP 工程的迁移清单见 [`mcp-engineering-standard.md`](mcp-engineering-standard.md)，决策记录见 [`ADR 0011`](adr/0011-cross-project-mcp-engineering-standard.md)。本项目的 `browser-mcp` 参数、固定运行包路径和 required tools 仍由本文件与验收文档定义；公共实现不能替代这些项目专属约束。

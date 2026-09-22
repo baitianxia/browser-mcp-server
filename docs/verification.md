@@ -8,6 +8,12 @@
 
 该阶段工作树已由原生 Windows x64 发布门禁放行。macOS 本地检查仍只覆盖 Python 回归、静态结构和可在当前主机运行的打包校验；Windows PowerShell 5.1、Windows x64 运行包构建、目标安装/升级/卸载、Chrome/Edge 扩展和真实 Claude user-scope 门禁以 Actions 证据为准。
 
+## 2026-09-22 MCP 公共标准实现
+
+本次新增 `standards/mcp_standards` 1.0.0，统一 Claude Code 候选发现、npm native/JavaScript bin 分流、版本/`mcp --help` 探针、用户级 `remove → add → 配置核对 → get` 注册事务、按字节回滚和 MCP stdio `initialize → tools/list` 冒烟。规范记录了对 mail、database 和 workspace 工程的审计结果，以及后续 L0-L3 迁移等级。
+
+本机执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`：183 项通过、55 项按设计跳过。新增 11 项测试覆盖公共实现，包括 WindowsApps 拒绝、native/JavaScript bin 分流、npm 包身份和注册/卸载核对；其中 POSIX resolver fixture 只证明跨平台代码路径，不能替代 Windows PowerShell 5.1、Windows 链接/PE 或真实 Claude Code gate。本次没有声称 Windows 已验证，也没有运行 npm、pnpm 或 npx。
+
 ## 2026-09-21 npm Claude 原生 bin 回归修复
 
 从用户日志中的目标路径可以确认，旧探测器最终把 npm 包的 `claude` bin 组合成了 `node.exe + bin\claude.exe`；Node 20 因此尝试按 ESM 加载 PE 文件并失败。`scripts/windows-tool-discovery.ps1` 现在对 `.exe` bin 直接执行，对 `.js`、`.cjs` 和 `.mjs` bin 才使用现有 Node，并拒绝其他未知后缀；安装、设置、卸载和发布门禁继续共用该解析结果。Windows PowerShell 回归夹具已覆盖 `bin\claude.exe` 形态；当前开发主机没有 PowerShell 5.1，因此该真实子进程用例仍待 Windows CI 执行。
