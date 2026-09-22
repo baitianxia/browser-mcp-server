@@ -8,6 +8,10 @@
 
 该阶段工作树已由原生 Windows x64 发布门禁放行。macOS 本地检查仍只覆盖 Python 回归、静态结构和可在当前主机运行的打包校验；Windows PowerShell 5.1、Windows x64 运行包构建、目标安装/升级/卸载、Chrome/Edge 扩展和真实 Claude user-scope 门禁以 Actions 证据为准。
 
+## 2026-09-22 browser 1.0.21 Windows 发布
+
+在公共标准迁移之后，browser 发布版本提升到 `1.0.21`，避免与 1.0.20 修复前制品复用同一个文件名。GitHub Actions run `35726547727` 已在 `windows-2022`、`windows-latest` 和原生 package/install job 全部通过；该 run 的 ZIP、checksum 和 validation evidence 由同一提交生成。
+
 ## 2026-09-22 公共标准迁移
 
 公共 Claude Code 探测、user-scope 注册事务和 MCP stdio 冒烟已从本仓库的临时参考目录迁移到独立工程 [`mcp-engineering-standards`](https://github.com/baitianxia/mcp-engineering-standards)。browser 工程删除了重复实现和重复测试，只保留自己的产品契约；公共包在提交 `76d80f3` 的 GitHub Actions run `35722575075` 中由 `windows-2022`、`windows-latest`、Ubuntu Python 3.10/3.13 和 package job 全部通过，并上传 wheel/sdist 制品。
