@@ -145,47 +145,50 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
             self.assertEqual(original, backup.read_bytes())
 
     def test_missing_old_entry_and_success_stderr_are_nonfatal(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            node_executable, playwright_cli, playwright_config, user_config, backup = (
-                self.paths(root)
-            )
-            results = iter(
-                (
-                    subprocess.CompletedProcess(
-                        [],
-                        1,
-                        "",
-                        "No user-scoped MCP server found with name: intranet-browser-agent",
-                    ),
-                    subprocess.CompletedProcess([], 0, "", "non-fatal warning"),
-                    subprocess.CompletedProcess([], 0, "server", ""),
+        missing_messages = (
+            "No user-scoped MCP server found with name: intranet-browser-agent",
+            'No MCP server named "intranet-browser-agent" in user scope',
+        )
+        for missing_message in missing_messages:
+            with self.subTest(missing_message=missing_message), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                node_executable, playwright_cli, playwright_config, user_config, backup = (
+                    self.paths(root)
                 )
-            )
-            def runner(_executable, _prefix, arguments, **_kwargs):
-                result = next(results)
-                if arguments[1] == "add" and result.returncode == 0:
-                    self.write_registration(
-                        user_config,
-                        node_executable,
-                        playwright_cli,
-                        playwright_config,
+                results = iter(
+                    (
+                        subprocess.CompletedProcess([], 1, "", missing_message),
+                        subprocess.CompletedProcess([], 0, "", "non-fatal warning"),
+                        subprocess.CompletedProcess([], 0, "server", ""),
                     )
-                return result
-
-            with mock.patch.object(registration, "_run_claude", side_effect=runner):
-                registration.register_user_mcp(
-                    claude_executable="claude.exe",
-                    claude_prefix=(),
-                    server_name="intranet-browser-agent",
-                    node_executable=node_executable,
-                    playwright_cli=playwright_cli,
-                    playwright_config=playwright_config,
-                    user_config=user_config,
-                    backup=backup,
-                    reporter=lambda _message: None,
                 )
-            self.assertFalse(backup.exists())
+
+                def runner(_executable, _prefix, arguments, **_kwargs):
+                    result = next(results)
+                    if arguments[1] == "add" and result.returncode == 0:
+                        self.write_registration(
+                            user_config,
+                            node_executable,
+                            playwright_cli,
+                            playwright_config,
+                        )
+                    return result
+
+                with mock.patch.object(
+                    registration, "_run_claude", side_effect=runner
+                ):
+                    registration.register_user_mcp(
+                        claude_executable="claude.exe",
+                        claude_prefix=(),
+                        server_name="intranet-browser-agent",
+                        node_executable=node_executable,
+                        playwright_cli=playwright_cli,
+                        playwright_config=playwright_config,
+                        user_config=user_config,
+                        backup=backup,
+                        reporter=lambda _message: None,
+                    )
+                self.assertFalse(backup.exists())
 
     def test_unexpected_remove_failure_stops_and_restores_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

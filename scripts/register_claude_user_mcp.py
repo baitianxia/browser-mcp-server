@@ -242,11 +242,17 @@ def _failure(
 
 def _remove_result_is_missing(result: subprocess.CompletedProcess[str]) -> bool:
     output = f"{result.stdout}\n{result.stderr}"
-    return re.search(
+    # Claude Code has used both of these messages for the same benign
+    # first-install state. Keep the match tied to an MCP server and user scope
+    # so permission and transport failures remain fatal.
+    missing_patterns = (
         r"\bno\s+(?:user-scoped\s+)?mcp\s+server\s+found\s+with\s+name\s*:",
-        output,
-        flags=re.IGNORECASE,
-    ) is not None
+        r"\bno\s+mcp\s+server\s+named\s+[\"']?[^\"'\r\n]+[\"']?(?:\s+found)?\s+in\s+user\s+scope\b",
+    )
+    return any(
+        re.search(pattern, output, flags=re.IGNORECASE) is not None
+        for pattern in missing_patterns
+    )
 
 
 def _restore_user_config(
