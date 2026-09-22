@@ -61,6 +61,6 @@ python3 -m unittest discover -s tests -v
 python3 scripts/verify-bundle.py <bundle-or-extracted-directory>
 ```
 
-跨项目 MCP 的 Claude Code 探测、user-scope 注册事务和 stdio 冒烟实现位于 [`standards/mcp_standards`](standards/mcp_standards)，公共规范和邮件/数据库/workspace 工程的盘点见 [`docs/mcp-engineering-standard.md`](docs/mcp-engineering-standard.md)。其他 MCP 工程应固定引用这套实现并补自己的 server name、配置路径、参数和 required tools，不要复制出一套独立 resolver。
+跨项目 MCP 的 Claude Code 探测、user-scope 注册事务和 stdio 冒烟实现位于独立公共包 [`mcp-engineering-standards`](https://github.com/baitianxia/mcp-engineering-standards)。本仓库的公共规范和邮件/数据库/workspace 工程盘点见 [`docs/mcp-engineering-standard.md`](docs/mcp-engineering-standard.md)；browser 工程只维护自己的 `browser-mcp` server name、配置路径、参数和 required tools。
 
 Windows 正式包必须在原生 Windows x64 构建机生成，并由 `scripts/validate_windows_release_metadata.py`、`scripts/verify-bundle.py` 和发布流水线复验。当前开发主机未执行真实 Windows x64 安装验收时，不能把本地结果描述为 Windows 已验收。

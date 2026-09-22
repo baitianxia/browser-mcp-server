@@ -42,7 +42,7 @@ GitHub Actions 的 `.github/workflows/windows-release.yml` 在 `windows-2022` �
 
 ## 用户安装边界
 
-用户解压 ZIP 后只双击顶层 `INSTALL.cmd`。安装器复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，并只读取该 npm 安装的包元数据：JavaScript bin 直接使用现有 `node.exe`，Windows 原生 bin（例如 `bin\claude.exe`）直接执行；它不把 `.exe` 交给 Node，也不运行 npm、pnpm、npx，不下载依赖或修改系统 Node.js。候选发现和探针遵循[公共 Windows Claude Code 探测与调用标准](../../docs/windows-claude-code-discovery.md)，缺少可验证 Claude Code 时，在任何真实配置变更前停止。
+用户解压 ZIP 后只双击顶层 `INSTALL.cmd`。安装器复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，并只读取该 npm 安装的包元数据：JavaScript bin 直接使用现有 `node.exe`，Windows 原生 bin（例如 `bin\claude.exe`）直接执行；它不把 `.exe` 交给 Node，也不运行 npm、pnpm、npx，不下载依赖或修改系统 Node.js。候选发现和探针遵循[公共 Windows Claude Code 探测与调用标准](https://github.com/baitianxia/mcp-engineering-standards/blob/v1.0.0/docs/windows-claude-code-discovery.md)，缺少可验证 Claude Code 时，在任何真实配置变更前停止。
 
 安装根目录固定为 `%USERPROFILE%\browser-mcp-server`，配置根目录为 `%USERPROFILE%\browser-mcp-server\config`，设置文件为 `settings.json`。运行时版本放在该根目录的版本子目录，发布和回滚使用同卷暂存、清单校验、原子目录移动和有界退避；外部锁定时保留旧目录，不强行删除或请求 UAC。安装、升级、配置和卸载只读取或修改本工程根目录以及 Claude Code 当前用户的 `browser-mcp` 条目。
 

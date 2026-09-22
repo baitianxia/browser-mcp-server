@@ -2,7 +2,8 @@
 
 - 状态：当前、规范性文档
 - 版本：`1.0.0`
-- 参考实现：[`standards/mcp_standards`](../standards/mcp_standards)
+- 参考实现：[`mcp-engineering-standards`](https://github.com/baitianxia/mcp-engineering-standards/tree/v1.0.0)
+- Python import：`mcp_engineering_standards`
 - 适用范围：本地 MCP 服务、安装器、配置工具、升级/卸载脚本和发布门禁
 
 这份标准把多个 MCP 工程已经遇到的边界收敛成一个可复用契约。浏览器、邮件、数据库和 workspace 工程可以有不同的业务工具，但 Claude Code 入口发现、用户级注册、stdio 握手、回滚和 Windows 发布证据必须遵循同一套规则。项目专属的产品名、MCP 名称、配置目录、浏览器参数和工具白名单仍由项目自己的架构文档声明。
@@ -54,7 +55,7 @@ Windows 候选必须：
 - `.cmd`、`.bat`、`.ps1` 只能用于发现或解析，不能作为 MCP 子进程 executable；
 - 探测成功还必须通过有界 `--version` 和 `mcp --help`，stderr 警告不能单独判失败，真实非零退出码、超时和空能力必须保留在诊断中。
 
-这部分细则的公共所有者是 [`windows-claude-code-discovery.md`](../../docs/windows-claude-code-discovery.md)。参考实现不会运行 npm、pnpm、npx、WSL，也不会联网安装 Claude Code 或 Node。官方 Claude Code 文档说明了 `claude mcp add/list/get/remove` 和 user scope 的命令边界，可参阅 [Claude Code MCP 文档](https://code.claude.com/docs/en/mcp)。
+这部分细则的公共所有者是 [`windows-claude-code-discovery.md`](https://github.com/baitianxia/mcp-engineering-standards/blob/v1.0.0/docs/windows-claude-code-discovery.md)。参考实现不会运行 npm、pnpm、npx、WSL，也不会联网安装 Claude Code 或 Node。官方 Claude Code 文档说明了 `claude mcp add/list/get/remove` 和 user scope 的命令边界，可参阅 [Claude Code MCP 文档](https://code.claude.com/docs/en/mcp)。
 
 ## 3. 用户级注册和卸载
 
@@ -93,7 +94,7 @@ Windows 发布 gate 至少覆盖：原生 PowerShell/系统版本、x64 PE、Win
 后续工程用以下等级记录迁移状态：
 
 - **L0 文档**：项目已声明身份、scope、路径、transport 和 Windows 支持边界，并引用本标准；
-- **L1 公共实现**：接入 `mcp_standards` 的 discovery、registration、stdio，并补项目 required tools 测试；
+- **L1 公共实现**：接入 `mcp_engineering_standards` 的 discovery、registration、stdio，并补项目 required tools 测试；
 - **L2 Windows gate**：完成 native/npm/link/WindowsApps/PE/注册回滚矩阵和真实 Windows gate；
 - **L3 发布阻断**：发布流程在 L2 通过前阻止正式包，保留日志、清单、哈希和可复现证据。
 

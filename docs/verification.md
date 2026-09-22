@@ -8,11 +8,17 @@
 
 该阶段工作树已由原生 Windows x64 发布门禁放行。macOS 本地检查仍只覆盖 Python 回归、静态结构和可在当前主机运行的打包校验；Windows PowerShell 5.1、Windows x64 运行包构建、目标安装/升级/卸载、Chrome/Edge 扩展和真实 Claude user-scope 门禁以 Actions 证据为准。
 
+## 2026-09-22 公共标准迁移
+
+公共 Claude Code 探测、user-scope 注册事务和 MCP stdio 冒烟已从本仓库的临时参考目录迁移到独立工程 [`mcp-engineering-standards`](https://github.com/baitianxia/mcp-engineering-standards)。browser 工程删除了重复实现和重复测试，只保留自己的产品契约；公共包在提交 `76d80f3` 的 GitHub Actions run `35722575075` 中由 `windows-2022`、`windows-latest`、Ubuntu Python 3.10/3.13 和 package job 全部通过，并上传 wheel/sdist 制品。
+
+本仓库后续只验证 browser 专属行为。公共包的 Windows 句柄、PE、WindowsApps、npm bin、注册事务和 stdio 契约不得在这里重新复制；browser 的 L2/L3 gate 仍需用真实 Claude Code、配置和 Windows 发布包证明项目集成。
+
 ## 2026-09-22 MCP 公共标准实现
 
-本次新增 `standards/mcp_standards` 1.0.0，统一 Claude Code 候选发现、npm native/JavaScript bin 分流、版本/`mcp --help` 探针、用户级 `remove → add → 配置核对 → get` 注册事务、按字节回滚和 MCP stdio `initialize → tools/list` 冒烟。规范记录了对 mail、database 和 workspace 工程的审计结果，以及后续 L0-L3 迁移等级。
+历史提交 `3af410c` 曾在本仓库临时新增 `standards/mcp_standards` 1.0.0，随后按公共工程决策迁移为独立包 `mcp_engineering_standards`。该段记录保留当时的审计和测试证据，不代表 browser 继续拥有公共实现。
 
-本机执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v`：183 项通过、55 项按设计跳过。新增 11 项测试覆盖公共实现，包括 WindowsApps 拒绝、native/JavaScript bin 分流、npm 包身份和注册/卸载核对；其中 POSIX resolver fixture 只证明跨平台代码路径，不能替代 Windows PowerShell 5.1、Windows 链接/PE 或真实 Claude Code gate。本次没有声称 Windows 已验证，也没有运行 npm、pnpm 或 npx。
+当时本机执行 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v` 为 183 项通过、55 项按设计跳过；新增 11 项测试覆盖公共实现，包括 WindowsApps 拒绝、native/JavaScript bin 分流、npm 包身份和注册/卸载核对。公共实现已迁出后，当前 browser 专属 suite 为 172 项通过、55 项按设计跳过；公共包的 POSIX fixture 和 Windows Actions 证据以独立工程为准。本段历史记录不能替代 Windows PowerShell 5.1、Windows 链接/PE 或真实 Claude Code gate，也不表示目标机运行过 npm、pnpm 或 npx。
 
 ## 2026-09-21 npm Claude 原生 bin 回归修复
 

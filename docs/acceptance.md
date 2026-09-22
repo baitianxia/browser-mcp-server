@@ -6,7 +6,7 @@
 
 ## 自动验收
 
-- `python3 -m unittest discover -s tests -v` 全部通过；测试覆盖兼容层 JSON-RPC、配置状态/写入/重载、动态页面回退、artifact containment、注册事务和失败回滚，并覆盖 `standards/mcp_standards` 的 Claude Code 探测、精确 missing-entry 诊断、注册回滚和 stdio `initialize/tools/list`。
+- `python3 -m unittest discover -s tests -v` 全部通过；测试覆盖兼容层 JSON-RPC、配置状态/写入/重载、动态页面回退、artifact containment、注册事务和失败回滚。公共包 `mcp_engineering_standards` 的 Claude Code 探测、精确 missing-entry 诊断、注册回滚和 stdio `initialize/tools/list` 由其独立仓库和 Actions gate 验收；browser 工程补自己的 `browser-mcp` required tools 和发布包测试。
 - `scripts/verify-bundle.py` 对运行包、公共 ZIP 和各自解压目录均返回 `VALID`。包内 `SHA256SUMS.txt` 和 ZIP 相邻 `.sha256` 使用规范小写 SHA-256、两个空格、文件名和 LF，无 BOM/CRLF。
 - `validate_windows_release_metadata.py` 证明 `product=browser-mcp-server`、`displayName=浏览器助手`、`mcpServerName=browser-mcp`、`target=windows/x64`、`buildHost=windows/x64`、`crossBuilt=false`、`targetCliSmokeTested=true` 和 `bundledNode=true`。版本、运行包哈希/大小、Node 来源和扩展 ID/版本必须可追溯。
 - 公共 ZIP 只有一个顶层目录，并在顶层包含 `README.md`、`START-HERE.html`、`INSTALL.cmd`、`CONFIGURE.cmd`、`OPEN-CONFIG.cmd`、`UNINSTALL.cmd`、`config/settings.example.json`、`payload/`、`release-manifest.json`、`SHA256SUMS.txt` 和 `NOTICE.md`。用户 artifact 直接上传该 ZIP 和相邻 checksum，不能再由流水线重新压缩。
@@ -16,7 +16,7 @@
 - 配置和路径契约固定为 `%USERPROFILE%\browser-mcp-server\config\settings.json` 与 `%USERPROFILE%\browser-mcp-server`。运行时、扩展、输出、维护和备份不得写入共享 `ClaudeTools` 或其他工程目录；Chrome/Edge 的 `LOCALAPPDATA` 仅用于浏览器 Profile/扩展发现。
 - Windows CI 在 `windows-2022` 与 `windows-latest` 的 Windows PowerShell 5.1 上解析全部 `.ps1` 并运行完整 Python suite；原生 package job 运行 `scripts/verify-windows-release.ps1`，再执行一次顶层 `INSTALL.cmd` 和设置工具 smoke。目标 launcher 日志不得包含测试发现器、AST 扫描或注册器 `self-test`。
 - 发布门禁必须先验证 ZIP/解压目录，再执行 PowerShell AST、完整测试、注册器自测、内层运行包和包内 Node `--version`、MCP `initialize/tools/list`，并用临时 `CLAUDE_CONFIG_DIR` 对真实现有 Claude CLI 做隔离 `remove/add/get`。门禁执行前后复验包未改变，且不能由目标 launcher 调用。
-- 安装器必须在真实写入前验证现有 Claude Code；原生 `claude.exe` 和可验证的 npm `claude.cmd` 均支持。npm 入口必须核对包内 `claude` bin：JavaScript bin 使用现有 Node，Windows `.exe` bin 直接执行，不能让 Node 加载 PE 文件；缺少入口时停止且不安装 Claude。注册失败必须逐字节恢复 Claude 用户配置和旧部署配置。候选、链接、WindowsApps、PE/身份/能力探针和失败原因按[公共 Windows Claude Code 探测与调用标准](../../docs/windows-claude-code-discovery.md)验收。
+- 安装器必须在真实写入前验证现有 Claude Code；原生 `claude.exe` 和可验证的 npm `claude.cmd` 均支持。npm 入口必须核对包内 `claude` bin：JavaScript bin 使用现有 Node，Windows `.exe` bin 直接执行，不能让 Node 加载 PE 文件；缺少入口时停止且不安装 Claude。注册失败必须逐字节恢复 Claude 用户配置和旧部署配置。候选、链接、WindowsApps、PE/身份/能力探针和失败原因按[公共 Windows Claude Code 探测与调用标准](https://github.com/baitianxia/mcp-engineering-standards/blob/v1.0.0/docs/windows-claude-code-discovery.md)验收。
 - Windows PowerShell 5.1 读取包内和本工程配置 JSON 时必须使用显式严格 UTF-8 解码；不得依赖 `Get-Content` 的系统 ANSI 默认值。验收环境应至少覆盖含中文 `displayName` 的发布清单。
 - 安装、升级、设置和卸载只影响当前工程。升级从当前受管清单提取浏览器模式、channel、授权、无头和交互设置，不复制旧运行路径、未知字段或历史身份；新版本验证完成后才原子切换。`UNINSTALL.cmd` 只移除 `browser-mcp` 和本工程活动目录，默认保留配置备份。
 - 跨项目 Claude Code 探测、user-scope 注册和 stdio 契约遵循 [`docs/mcp-engineering-standard.md`](mcp-engineering-standard.md)；本工程按 L1 公共实现维护，Windows 原生路径、链接、PE 和真实 Claude Code 证据仍以 L2 Windows gate 为准。

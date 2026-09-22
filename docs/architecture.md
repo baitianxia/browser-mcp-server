@@ -48,7 +48,7 @@ V1 只允许 loopback 的受控调试端点或官方 channel；禁止 `0.0.0.0`�
 
 Windows MCP 条目必须是 user-scope stdio，命令直接执行清单中已验证的 `node.exe`，首个脚本参数为固定运行包内的兼容层（当前文件名仍为内部实现 `bin\intranet-browser-agent-mcp.js`），随后由兼容层启动同包上游 CLI。不得把 `.cmd`、`.bat` 或 `npx` 作为 MCP `command`，不得在线解析或下载依赖。
 
-安装器、设置工具、卸载工具和发布门禁复用当前用户已有的 npm Claude Code 时，必须先读取同级 `node_modules\@anthropic-ai\claude-code\package.json` 的 `claude` bin，并确认目标仍在该包目录内。JavaScript bin（`.js`、`.cjs` 或 `.mjs`）通过该 npm 安装本来使用的 `node.exe` 直接执行；Windows 原生 bin（`.exe`，例如 `bin\claude.exe`）直接执行，不得把 PE 文件交给 Node。`.cmd` 只用于发现入口，不能作为子进程 executable。候选收集、WindowsApps 排除、NVM/npm 链接解析、PE/身份/能力探针和诊断字段遵循[公共 Windows Claude Code 探测与调用标准](../../docs/windows-claude-code-discovery.md)；本工程若尚未覆盖其中某项，必须在验证记录中标为未验证。
+安装器、设置工具、卸载工具和发布门禁复用当前用户已有的 npm Claude Code 时，必须先读取同级 `node_modules\@anthropic-ai\claude-code\package.json` 的 `claude` bin，并确认目标仍在该包目录内。JavaScript bin（`.js`、`.cjs` 或 `.mjs`）通过该 npm 安装本来使用的 `node.exe` 直接执行；Windows 原生 bin（`.exe`，例如 `bin\claude.exe`）直接执行，不得把 PE 文件交给 Node。`.cmd` 只用于发现入口，不能作为子进程 executable。候选收集、WindowsApps 排除、NVM/npm 链接解析、PE/身份/能力探针和诊断字段遵循[公共 Windows Claude Code 探测与调用标准](https://github.com/baitianxia/mcp-engineering-standards/blob/v1.0.0/docs/windows-claude-code-discovery.md)；本工程若尚未覆盖其中某项，必须在验证记录中标为未验证。
 
 部署清单固定声明 `target.os=windows`、`target.arch=x64`、`mcpScope=user` 和空 `workspaceRoots`。Extension 和 persistent 条目都绑定安装器实际识别的 Chrome/Edge `.exe`；渲染、握手、注册和最终核对必须使用同一 `--browser` 与 `--executable-path`。MCP 环境严格来自 `config/windows-mcp-environment.json`，只允许固定的空覆盖变量和心跳超时；当前用户令牌是唯一可选额外值。
 
@@ -88,4 +88,4 @@ Extension 模式的同一活动连接会复用一个 Playwright 分组，任务�
 
 改变运行模式、信任边界、默认权限、版本、配置字段、路径、MCP 身份或放行条件时，必须同步更新本文件、部署 Schema、校验器、测试和用户文档。共享 Windows 基线见 `/Users/baitianxia/project/docs/windows-development.md`；本项目的 `browser-mcp-server` 路径和不迁移历史身份规则优先。
 
-跨项目的 Claude Code 探测、用户级 MCP 注册事务和 stdio 握手使用仓库内的 [`standards/mcp_standards`](../standards/mcp_standards) 参考实现，规范和其他 MCP 工程的迁移清单见 [`mcp-engineering-standard.md`](mcp-engineering-standard.md)，决策记录见 [`ADR 0011`](adr/0011-cross-project-mcp-engineering-standard.md)。本项目的 `browser-mcp` 参数、固定运行包路径和 required tools 仍由本文件与验收文档定义；公共实现不能替代这些项目专属约束。
+跨项目的 Claude Code 探测、用户级 MCP 注册事务和 stdio 握手使用独立公共 Python 包 [`mcp-engineering-standards`](https://github.com/baitianxia/mcp-engineering-standards/tree/v1.0.0)，规范和其他 MCP 工程的迁移清单见 [`mcp-engineering-standard.md`](mcp-engineering-standard.md)，决策记录见 [`ADR 0011`](adr/0011-cross-project-mcp-engineering-standard.md)。本项目的 `browser-mcp` 参数、固定运行包路径和 required tools 仍由本文件与验收文档定义；公共实现不能替代这些项目专属约束。

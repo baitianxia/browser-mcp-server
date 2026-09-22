@@ -8,7 +8,7 @@
 
 ## 决定
 
-- 在 `standards/mcp_standards` 提供无第三方依赖的参考实现，版本化发布 `discover_claude`、`register_user_mcp`/`unregister_user_mcp` 和 `smoke_stdio`；
+- 在独立公共工程 [`mcp-engineering-standards`](https://github.com/baitianxia/mcp-engineering-standards) 提供无运行时第三方依赖的 Python 包，版本化发布 `discover_claude`、`register_user_mcp`/`unregister_user_mcp` 和 `smoke_stdio`；
 - 在 `docs/mcp-engineering-standard.md` 维护项目接入契约、Claude Code 探测、注册事务、stdio 生命周期、Windows gate 和 L0-L3 迁移等级；
 - 其他 MCP 工程固定引用该实现版本或 Git commit，声明自己的 server name、命令、配置路径和 required tools，不复制出独立 resolver；
 - 项目专属的运行时、浏览器、权限和发布布局仍由项目架构文档负责，公共标准不能替代项目验收；
