@@ -431,7 +431,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn("$ConfigBackedUp = $true", settings)
         self.assertIn("$RemoveOutput = @(& $ClaudeInvocation.Executable", uninstall)
         self.assertIn(
-            "no\\s+(?:user-scoped\\s+)?mcp\\s+server\\s+found\\s+with\\s+name",
+            "No\\s+(?:user-scoped\\s+)?MCP\\s+server\\s+found\\s+with\\s+name",
             uninstall,
         )
         self.assertNotIn("$LASTEXITCODE -notin @(0, 1)", uninstall)

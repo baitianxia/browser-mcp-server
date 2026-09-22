@@ -240,17 +240,20 @@ def _failure(
     return "; ".join(details)
 
 
-def _remove_result_is_missing(result: subprocess.CompletedProcess[str]) -> bool:
-    output = f"{result.stdout}\n{result.stderr}"
+def _remove_result_is_missing(
+    result: subprocess.CompletedProcess[str], server_name: str
+) -> bool:
+    output = f"{result.stdout}\n{result.stderr}".strip()
     # Claude Code has used both of these messages for the same benign
-    # first-install state. Keep the match tied to an MCP server and user scope
-    # so permission and transport failures remain fatal.
+    # first-install state. Require the exact requested name and whole diagnostic
+    # so another scope/server or a message accompanied by an error stays fatal.
+    name = re.escape(server_name)
     missing_patterns = (
-        r"\bno\s+(?:user-scoped\s+)?mcp\s+server\s+found\s+with\s+name\s*:",
-        r"\bno\s+mcp\s+server\s+named\s+[\"']?[^\"'\r\n]+[\"']?(?:\s+found)?\s+in\s+user\s+scope\b",
+        rf"(?i:No\s+(?:user-scoped\s+)?MCP\s+server\s+found\s+with\s+name\s*:)\s*{name}",
+        rf'(?i:No\s+MCP\s+server\s+named)\s+"{name}"\s+(?i:in\s+user\s+scope)',
     )
     return any(
-        re.search(pattern, output, flags=re.IGNORECASE) is not None
+        re.fullmatch(pattern, output) is not None
         for pattern in missing_patterns
     )
 
@@ -425,7 +428,9 @@ def register_user_mcp(
         )
         if remove_result.returncode == 0:
             reporter("已清理旧的用户级 MCP 条目，正在注册新版本。")
-        elif remove_result.returncode == 1 and _remove_result_is_missing(remove_result):
+        elif remove_result.returncode == 1 and _remove_result_is_missing(
+            remove_result, server_name
+        ):
             reporter("未发现可清理的当前 MCP 条目（首次安装时正常），继续注册。")
         else:
             raise RegistrationError(
@@ -536,7 +541,10 @@ _FAKE_CLAUDE_SOURCE = textwrap.dedent(
         payload = load()
         servers = payload.setdefault("mcpServers", {})
         if name not in servers:
-            print(f"No user-scoped MCP server found with name: {name}", file=sys.stderr)
+            if os.environ.get("FAKE_CLAUDE_MISSING_STYLE") == "named":
+                print(f'No MCP server named "{name}" in user scope', file=sys.stderr)
+            else:
+                print(f"No user-scoped MCP server found with name: {name}", file=sys.stderr)
             raise SystemExit(1)
         del servers[name]
         save(payload)
@@ -620,6 +628,7 @@ def self_test() -> None:
                 "FAKE_CLAUDE_CONFIG": str(user_config),
                 "FAKE_CLAUDE_EVENTS": str(events),
                 "FAKE_CLAUDE_ADD_STDERR": "1",
+                "FAKE_CLAUDE_MISSING_STYLE": "named",
             }
         )
         quiet: Reporter = lambda _message: None

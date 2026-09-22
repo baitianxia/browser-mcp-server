@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -150,7 +151,10 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
             'No MCP server named "intranet-browser-agent" in user scope',
         )
         for missing_message in missing_messages:
-            with self.subTest(missing_message=missing_message), tempfile.TemporaryDirectory() as temporary:
+            with (
+                self.subTest(missing_message=missing_message),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
                 root = Path(temporary)
                 node_executable, playwright_cli, playwright_config, user_config, backup = (
                     self.paths(root)
@@ -189,6 +193,149 @@ class ClaudeMcpRegistrationTests(unittest.TestCase):
                         reporter=lambda _message: None,
                     )
                 self.assertFalse(backup.exists())
+
+    def test_missing_diagnostic_requires_exact_server_scope_and_whole_message(self) -> None:
+        messages = (
+            ('No MCP server named "browser-mcp" in user scope', True),
+            ('No user-scoped MCP server found with name: browser-mcp', True),
+            ('No MCP server found with name: browser-mcp', True),
+            ('No MCP server named "other-mcp" in user scope', False),
+            ('No MCP server named "browser-mcp" in project scope', False),
+            ('No MCP server named "browser-mcp" in local scope', False),
+            ('No user-scoped MCP server found with name: browser-mcp-extra', False),
+            ('No MCP server named "browser-mcp" in user scope; permission denied', False),
+            ('permission denied\nNo MCP server named "browser-mcp" in user scope', False),
+            ('permission denied', False),
+            ('not found', False),
+            ('', False),
+        )
+        for message, expected in messages:
+            for stdout, stderr in ((message, ''), ('', message)):
+                with self.subTest(stdout=stdout, stderr=stderr):
+                    self.assertEqual(
+                        expected,
+                        registration._remove_result_is_missing(
+                            subprocess.CompletedProcess([], 1, stdout, stderr),
+                            'browser-mcp',
+                        ),
+                    )
+
+    def test_reported_missing_message_reaches_add_get_and_preserves_rollback(self) -> None:
+        for was_present in (False, True):
+            for failure in (None, 'ADD', 'GET'):
+                with (
+                    self.subTest(was_present=was_present, failure=failure),
+                    tempfile.TemporaryDirectory() as temporary,
+                ):
+                    root = Path(temporary)
+                    node, cli, config, user, backup = self.paths(root)
+                    original = b'{"unrelated":{"keep":true}}\r\n'
+                    if was_present:
+                        user.write_bytes(original)
+                    fake = root / 'fake_claude.py'
+                    fake.write_bytes(registration._FAKE_CLAUDE_SOURCE.encode('utf-8'))
+                    events = root / 'events.jsonl'
+                    environment = dict(os.environ)
+                    environment.update({
+                        'FAKE_CLAUDE_CONFIG': str(user),
+                        'FAKE_CLAUDE_EVENTS': str(events),
+                        'FAKE_CLAUDE_MISSING_STYLE': 'named',
+                    })
+                    if failure:
+                        environment[f'FAKE_CLAUDE_FAIL_{failure}'] = '1'
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            str(ROOT / 'scripts/register_claude_user_mcp.py'),
+                            'register', '--claude-executable', sys.executable,
+                            '--claude-prefix', str(fake), '--server-name', 'browser-mcp',
+                            '--node-executable', str(node), '--playwright-cli', str(cli),
+                            '--playwright-config', str(config), '--user-config', str(user),
+                            '--backup', str(backup),
+                        ],
+                        capture_output=True, text=True, env=environment, timeout=30,
+                    )
+                    self.assertEqual(2 if failure else 0, result.returncode, result.stderr)
+                    calls = [json.loads(line) for line in events.read_text().splitlines()]
+                    self.assertEqual(
+                        ['remove', 'add'] if failure == 'ADD' else ['remove', 'add', 'get'],
+                        [call[1] for call in calls],
+                    )
+                    self.assertEqual(['mcp', 'remove', 'browser-mcp', '--scope', 'user'], calls[0])
+                    if was_present:
+                        self.assertEqual(original, backup.read_bytes())
+                    else:
+                        self.assertFalse(backup.exists())
+                    if failure:
+                        if was_present:
+                            self.assertEqual(original, user.read_bytes())
+                        else:
+                            self.assertFalse(user.exists())
+                    else:
+                        payload = json.loads(user.read_text(encoding='utf-8'))
+                        self.assertEqual(str(node), payload['mcpServers']['browser-mcp']['command'])
+                        if was_present:
+                            self.assertEqual({'keep': True}, payload['unrelated'])
+
+    @unittest.skipUnless(os.name == 'nt', 'requires Windows PowerShell 5.1')
+    def test_uninstaller_handles_native_stderr_and_missing_entry_formats(self) -> None:
+        cases = (
+            (0, 'warning', 'stderr', True),
+            (1, 'No user-scoped MCP server found with name: browser-mcp', 'stderr', True),
+            (1, 'No MCP server named "browser-mcp" in user scope', 'stderr', True),
+            (1, 'No MCP server named "browser-mcp" in user scope', 'stdout', True),
+            (1, 'No MCP server named "other-mcp" in user scope', 'stderr', False),
+            (1, 'No MCP server named "browser-mcp" in project scope', 'stderr', False),
+            (1, 'permission denied', 'stderr', False),
+            (5, 'No MCP server named "browser-mcp" in user scope', 'stderr', False),
+        )
+        for exit_code, message, stream, succeeds in cases:
+            with (
+                self.subTest(exit_code=exit_code, message=message, stream=stream),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                profile = root / 'profile'
+                server = profile / 'browser-mcp-server'
+                server.mkdir(parents=True)
+                marker = server / 'keep.txt'
+                marker.write_bytes(b'preserve installed data')
+                user = profile / '.claude.json'
+                original = b'{"unrelated":true}\r\n'
+                user.write_bytes(original)
+                script = root / 'UNINSTALL.ps1'
+                shutil.copyfile(ROOT / 'scripts/UNINSTALL.ps1', script)
+                (root / 'windows-tool-discovery.ps1').write_text(
+                    'function Resolve-ClaudeCodeInvocation {\n'
+                    '    [pscustomobject]@{ Executable = $env:MCP_TEST_PYTHON; '
+                    'Prefix = @($env:MCP_TEST_CLI) }\n}\n', encoding='utf-8',
+                )
+                fake = root / 'fake.py'
+                fake.write_text(
+                    'import sys\n'
+                    'assert sys.argv[1:] == ["mcp", "remove", "browser-mcp", "--scope", "user"]\n'
+                    f'print({message!r}, file=sys.{stream})\n'
+                    f'raise SystemExit({exit_code})\n', encoding='utf-8',
+                )
+                environment = dict(os.environ)
+                environment.update({
+                    'USERPROFILE': str(profile), 'CLAUDE_CONFIG_DIR': str(profile),
+                    'MCP_TEST_PYTHON': sys.executable, 'MCP_TEST_CLI': str(fake),
+                })
+                result = subprocess.run(
+                    ['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
+                     '-ExecutionPolicy', 'Bypass', '-File', str(script)],
+                    capture_output=True, text=True, env=environment, timeout=30,
+                )
+                self.assertEqual(succeeds, result.returncode == 0, result.stdout + result.stderr)
+                self.assertEqual(original, user.read_bytes())
+                if succeeds:
+                    self.assertFalse(server.exists())
+                    backups = list((profile / 'browser-mcp-server-backups').glob('*/browser-mcp-server/keep.txt'))
+                    self.assertEqual(1, len(backups))
+                    self.assertEqual(b'preserve installed data', backups[0].read_bytes())
+                else:
+                    self.assertEqual(b'preserve installed data', marker.read_bytes())
 
     def test_unexpected_remove_failure_stops_and_restores_config(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
