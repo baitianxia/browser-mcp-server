@@ -90,23 +90,12 @@ try {
         $RemoveArguments = @($ClaudeInvocation.Prefix) + @(
             "mcp", "remove", "browser-mcp", "--scope", "user"
         )
-        $PreviousErrorActionPreference = $ErrorActionPreference
-        $RemoveExitCode = $null
-        try {
-            # Windows PowerShell 5.1 wraps native stderr in ErrorRecord. Capture
-            # it first; decide from the exit code and exact diagnostic below.
-            $ErrorActionPreference = "Continue"
-            $RemoveOutput = @(& $ClaudeInvocation.Executable @RemoveArguments 2>&1)
-            $RemoveExitCode = $LASTEXITCODE
-        } finally {
-            $ErrorActionPreference = $PreviousErrorActionPreference
-        }
+        $RemoveOutput = @(& $ClaudeInvocation.Executable @RemoveArguments 2>&1)
+        $RemoveExitCode = $LASTEXITCODE
         $RemoveText = (@($RemoveOutput) | ForEach-Object { [string]$_ }) -join `
             [Environment]::NewLine
-        $MissingEntry = ($RemoveText.Trim() -cmatch `
-            '^(?i:No\s+(?:user-scoped\s+)?MCP\s+server\s+found\s+with\s+name\s*:)\s*browser-mcp$') -or `
-            ($RemoveText.Trim() -cmatch `
-            '^(?i:No\s+MCP\s+server\s+named)\s+"browser-mcp"\s+(?i:in\s+user\s+scope)$')
+        $MissingEntry = $RemoveText -match `
+            '(?i)\bno\s+(?:user-scoped\s+)?mcp\s+server\s+found\s+with\s+name\s*:'
         if ($RemoveExitCode -ne 0 -and
             -not ($RemoveExitCode -eq 1 -and $MissingEntry)) {
             # The captured output is used only to recognize the documented
