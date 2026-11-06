@@ -4,9 +4,9 @@
 #   shell: powershell -NoLogo -NoProfile -File .github\scripts\run-step.ps1 {0}
 #
 # Actions logs of this public repository need a signed-in GitHub account, but
-# check-run annotations do not.  The step script is dot-sourced, exactly like
-# the default `powershell -command ". '{0}'"` shell (the runner still prepends
-# $ErrorActionPreference = 'stop' and appends the LASTEXITCODE check).  When it
+# check-run annotations do not.  The step script is dot-sourced like the
+# default `powershell -command ". '{0}'"` shell; every step that uses this
+# wrapper sets $ErrorActionPreference = "Stop" itself.  When it
 # throws, this wrapper prints the error, its position, the newest installer and
 # settings log tails, and the tails of any *Stdout/*Stderr files the step
 # defined, then exits 1.  Non-ASCII text is written as \uXXXX so it survives
