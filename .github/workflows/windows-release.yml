@@ -161,16 +161,34 @@ jobs:
           }
           Write-Host "Online build tools: Node.js $ActualNode / pnpm $ActualPnpm"
 
-      - name: Download and verify the approved Playwright Extension CRX
+      - name: Verify the approved Playwright Extension CRX
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
           $Approval = Get-Content -LiteralPath `
               .\config\playwright-extension-source.json -Raw | ConvertFrom-Json
+          # The Chrome Web Store only serves the newest extension version, so
+          # the approved CRX is pinned in the repository and must still match
+          # every field of the approval below.
+          $PinnedCrx = Join-Path .\vendor\playwright-extension $Approval.filename
           $ExtensionCrx = Join-Path $env:RUNNER_TEMP $Approval.filename
-          Invoke-WebRequest -UseBasicParsing `
-              -Uri $Approval.downloadUrl `
-              -OutFile $ExtensionCrx
+          Copy-Item -LiteralPath $PinnedCrx -Destination $ExtensionCrx
+          # Informational only: report when the store has moved past the
+          # approved version, which then needs a new approval and review.
+          try {
+              $StoreResponse = Invoke-WebRequest -UseBasicParsing -Method Head `
+                  -Uri $Approval.downloadUrl -MaximumRedirection 5
+              $StoreName = [IO.Path]::GetFileName(
+                  $StoreResponse.BaseResponse.ResponseUri.AbsolutePath)
+              $ApprovedToken = "_" + ($Approval.version -replace '\.', '_')
+              if ($StoreName -notmatch ([regex]::Escape($ApprovedToken) + '(_0)?\.crx$')) {
+                  Write-Host "::warning::Chrome Web Store now serves $StoreName; the package keeps the approved Playwright Extension $($Approval.version)."
+              } else {
+                  Write-Host "Chrome Web Store still serves the approved version: $StoreName"
+              }
+          } catch {
+              Write-Host "Chrome Web Store version check skipped: $($_.Exception.Message)"
+          }
           python .\scripts\validate_playwright_extension.py `
               $ExtensionCrx `
               --approval-file .\config\playwright-extension-source.json

@@ -15,7 +15,7 @@ ZIP 外附 `<ZIP>.sha256`，解压后只有一个顶层目录。`tar.gz` 运行�
 在可联网的隔离 Windows x64 构建机使用 Windows PowerShell 5.1：
 
 1. 固定构建用 Node.js 24.19.0、pnpm 11.19.0 和 Python 3.10+。构建用 Node 只负责安装和冒烟 JavaScript 运行时，不进入发布包；Windows 包不携带任何 EXE/DLL（ADR-0012）。另准备与目标同版本的 Node.js 20.18.3 供发布门禁使用；发布 CI 还在支持下限 Node.js 20.12.0 上运行兼容层协议测试和真实浏览器 E2E。
-2. 从 `config/playwright-extension-source.json` 下载精确批准的 Playwright Extension CRX，用 `validate_playwright_extension.py` 校验 ID、版本、哈希和清单。
+2. 使用仓库中固定的 `vendor/playwright-extension/<filename>`（Chrome 应用商店只提供最新版本，2026-11-06 核实时已是 0.5.0，无法再下载批准的 0.4.0），用 `validate_playwright_extension.py` 按 `config/playwright-extension-source.json` 校验 ID、版本、大小、哈希和清单；商店版本与批准版本不一致时 CI 只给出 warning，更换版本需要新的批准和兼容验证。
 3. 在原生 Windows 上运行：
 
    ```powershell
