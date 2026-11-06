@@ -73,7 +73,12 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          python -m unittest discover -s tests -v
+          # Same suite as `python -m unittest discover -s tests -v`; failures
+          # are also emitted as annotations, which need no GitHub sign-in.
+          python .\.github\scripts\run-unittests.py -s tests
+          if ($LASTEXITCODE -ne 0) {
+              throw "Python regression suite failed; see the annotations."
+          }
 
       - name: Parse every PowerShell script with Windows PowerShell 5.1
         shell: powershell
@@ -298,7 +303,7 @@ jobs:
               # unittest reports on stderr; Windows PowerShell 5.1 wraps it
               # as ErrorRecords, so the exit code stays the source of truth.
               $ErrorActionPreference = "Continue"
-              $SuiteOutput = & python -m unittest discover -s tests -p test_mcp_compatibility.py -v 2>&1
+              $SuiteOutput = & python .\.github\scripts\run-unittests.py -s tests -p test_mcp_compatibility.py 2>&1
               $SuiteExitCode = $LASTEXITCODE
           } finally {
               $ErrorActionPreference = $PreviousPreference
