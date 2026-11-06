@@ -36,7 +36,7 @@ browser-mcp-server-<版本>-windows-x64.zip.sha256
 Get-Content .\browser-mcp-server-<版本>-windows-x64.zip.sha256
 ```
 
-两个哈希不一致时不要运行任何文件（逐字节校验脚本见 [`docs/windows-quickstart.md`](docs/windows-quickstart.md)）。解压后只有一个顶层目录 `browser-mcp-server-<版本>-windows-x64`，里面是 `README.md`、`START-HERE.html`、`INSTALL.cmd`、`CONFIGURE.cmd`、`OPEN-CONFIG.cmd`、`UNINSTALL.cmd`、`config/settings.example.json`、`payload/`、`release-manifest.json`、`SHA256SUMS.txt` 和 `NOTICE.md`。不要从 ZIP 预览窗口直接运行文件。
+两个哈希不一致时不要运行任何文件。逐字节校验脚本见 [`docs/windows-quickstart.md`](docs/windows-quickstart.md)（解压后位于 `payload/toolkit/docs/windows-quickstart.md`）。解压后只有一个顶层目录 `browser-mcp-server-<版本>-windows-x64`，里面是 `README.md`、`START-HERE.html`、`INSTALL.cmd`、`CONFIGURE.cmd`、`OPEN-CONFIG.cmd`、`UNINSTALL.cmd`、`config/settings.example.json`、`payload/`、`release-manifest.json`、`SHA256SUMS.txt` 和 `NOTICE.md`。不要从 ZIP 预览窗口直接运行文件。
 
 ### 3. 双击 `INSTALL.cmd`
 
@@ -75,7 +75,7 @@ Get-Content .\browser-mcp-server-<版本>-windows-x64.zip.sha256
 ### 常见问题
 
 - **安装器提示“未找到可用的 Node.js”**：查看提示中列出的候选和原因（版本过低、不是 x64、WindowsApps 别名、文件不存在等），请管理员安装组织批准的 Windows x64 Node.js 20.12.0+，或确认当前用户在新开的 PowerShell 中能运行 `node --version`，然后重新双击 `INSTALL.cmd`。
-- **之后卸载、降级或移动了 Node.js**：`browser-mcp` 会启动失败，并在错误中写明所需版本。恢复 Node.js，或重新双击 `INSTALL.cmd` 重新选择。使用 nvm 时登记的是 nvm 的链接路径（例如 `C:\nvm4w\nodejs\node.exe`），切换到 20.12.0 以上的版本不需要重装。
+- **之后卸载、降级或移动了 Node.js**：降级到 20.12.0 以下时，`browser-mcp` 启动会失败并写明所需版本；卸载或移动后，Claude Code 的 `/mcp` 会显示 `browser-mcp` 连接失败。恢复 Node.js，或重新双击 `INSTALL.cmd` 重新选择。使用 nvm 时登记的是 nvm 的链接路径（例如 `C:\nvm4w\nodejs\node.exe`），切换到 20.12.0 以上的版本不需要重装。
 - **双击后立即出现“此系统上禁止运行脚本”、`SecurityError` 或 `UnauthorizedAccess`，且没有生成日志**：通常是企业执行策略在 PowerShell 读取脚本前阻止了启动。入口只以进程级 `-ExecutionPolicy Bypass` 启动，不修改系统策略。请运行 `Get-ExecutionPolicy -List` 并把输出交给企业管理员；`MachinePolicy` 或 `UserPolicy` 已锁定时必须按企业签名或策略流程处理，不能通过本工具绕过。
 - **日志位置**：安装日志为 `%TEMP%\browser-mcp-server\INSTALL-*.log`，设置日志为同目录下的 `CONFIGURE-*.log`。报告问题时提供日志尾部、Windows/PowerShell/Python/Node.js 版本和复现步骤，并删除令牌、Cookie 和个人路径。
 
