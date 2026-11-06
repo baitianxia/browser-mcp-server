@@ -442,7 +442,7 @@ jobs:
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run the exact one-click package launcher
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -File .github\scripts\run-step.ps1 {0}
         run: |
           $ErrorActionPreference = "Stop"
           $ExpectedClaudeFallback = Join-Path $env:USERPROFILE `
@@ -1225,7 +1225,7 @@ jobs:
           }
 
       - name: Verify publisher-gate and installed-state evidence
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -File .github\scripts\run-step.ps1 {0}
         run: |
           $ErrorActionPreference = "Stop"
           $ChromeExe = [string]$env:CHROME_EXE
@@ -1429,7 +1429,7 @@ jobs:
           Write-Host "Windows publisher gate and single-pass one-click install both passed."
 
       - name: Exercise post-install authorization, headless, and Profile settings
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -File .github\scripts\run-step.ps1 {0}
         run: |
           $ErrorActionPreference = "Stop"
           # The installer intentionally runs under an isolated USERPROFILE.
@@ -2075,7 +2075,7 @@ jobs:
 
       - name: Re-verify the exact public Windows ZIP for delivery
         if: success()
-        shell: powershell
+        shell: powershell -NoLogo -NoProfile -File .github\scripts\run-step.ps1 {0}
         run: |
           $ErrorActionPreference = "Stop"
           $ReadyArchive = [IO.Path]::GetFullPath($env:TRANSFER_ARCHIVE)
