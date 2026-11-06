@@ -171,6 +171,8 @@ class WindowsReleaseMetadataTests(unittest.TestCase):
         script = ROOT / "scripts" / "write_build_metadata.py"
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "BUILD-METADATA.json"
+            # No --cross-built: on the Windows x64 release runners the target
+            # equals the build host, and the script rejects that combination.
             base = [
                 sys.executable,
                 str(script),
@@ -184,7 +186,6 @@ class WindowsReleaseMetadataTests(unittest.TestCase):
                 "windows",
                 "--target-machine",
                 "x64",
-                "--cross-built",
             ]
             core = subprocess.run(
                 base + ["--profile", "core"], check=False, capture_output=True, text=True
