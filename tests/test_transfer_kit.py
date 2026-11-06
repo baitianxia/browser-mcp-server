@@ -65,8 +65,9 @@ class TransferKitTests(unittest.TestCase):
         root: Path,
         target_system: str = "linux",
         target_machine: str = "x64",
-        bundled_node: bool | None = None,
+        bundled_node: bool = False,
         cross_built: bool | None = None,
+        extra_files: dict[str, bytes] | None = None,
     ) -> Path:
         runtime_name = (
             f"browser-agent-runtime-{RUNTIME_VERSION}-core-{target_system}-{target_machine}"
@@ -94,17 +95,21 @@ class TransferKitTests(unittest.TestCase):
                     "crossBuilt": is_cross_built,
                     "targetCliSmokeTested": not is_cross_built,
                     "tools": {"node": "v24.0.0", "pnpm": "11.19.0"},
-                    "bundledNode": (
-                        target_system.lower() == "windows"
-                        if bundled_node is None
-                        else bundled_node
-                    ),
+                    "bundledNode": bundled_node,
+                    "nodeRuntime": {
+                        "source": "bundled" if bundled_node else "system",
+                        "minimumVersion": "20.12.0",
+                    },
                     "sourceDateEpoch": None,
                 }
             ),
             encoding="utf-8",
         )
         (runtime_root / "payload.txt").write_text("fixture\n", encoding="utf-8")
+        for relative, content in (extra_files or {}).items():
+            target = runtime_root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
         subprocess.run(
             [
                 sys.executable,
@@ -146,6 +151,9 @@ class TransferKitTests(unittest.TestCase):
             self.assertTrue(archive.is_file())
             self.assertTrue(Path(f"{archive}.sha256").is_file())
             self.assertEqual([], verify_bundle.verify_archive(archive))
+            self.assertEqual(
+                [], verify_bundle.verify_archive(archive, reject_native_binaries=True)
+            )
 
             prefix = f"browser-mcp-server-{RUNTIME_VERSION}-windows-x64"
             with zipfile.ZipFile(archive, "r") as bundle:
@@ -155,6 +163,19 @@ class TransferKitTests(unittest.TestCase):
                 release_manifest = json.loads(bundle.read(f"{prefix}/release-manifest.json"))
             self.assertIn("INSTALL.cmd", start_here)
             self.assertIn("双击下面", start_here)
+            self.assertIn("本包不含 EXE/DLL", start_here)
+            self.assertIn("20.12.0", start_here)
+            self.assertFalse(
+                any(
+                    name.lower().endswith((".exe", ".dll", ".pdb", ".node"))
+                    for name in names
+                )
+            )
+            self.assertIs(False, kit_metadata["runtime"]["buildMetadata"]["bundledNode"])
+            self.assertEqual(
+                {"source": "system", "minimumVersion": "20.12.0"},
+                kit_metadata["runtime"]["buildMetadata"]["nodeRuntime"],
+            )
             self.assertIn("CONFIGURE.cmd", start_here)
             self.assertIn(f"{prefix}/START-HERE.html", names)
             self.assertIn(f"{prefix}/INSTALL.cmd", names)
@@ -193,7 +214,7 @@ class TransferKitTests(unittest.TestCase):
                 release_manifest["browserExtension"]["compatibleVersions"],
             )
             self.assertIn(f"{prefix}/payload/toolkit/config/windows-mcp-environment.json", names)
-            self.assertIn(f"{prefix}/payload/toolkit/config/windows-node-sources.json", names)
+            self.assertNotIn(f"{prefix}/payload/toolkit/config/windows-node-sources.json", names)
             self.assertIn(f"{prefix}/payload/toolkit/docs/windows-quickstart.md", names)
             self.assertIn(
                 f"{prefix}/payload/toolkit/scripts/configure_windows_pilot.py", names
@@ -220,7 +241,7 @@ class TransferKitTests(unittest.TestCase):
                 f"{prefix}/payload/toolkit/scripts/windows-tool-discovery.ps1", names
             )
             self.assertIn(f"{prefix}/payload/toolkit/scripts/verify-bundle.py", names)
-            self.assertIn(
+            self.assertNotIn(
                 f"{prefix}/payload/toolkit/scripts/validate_node_distribution.py", names
             )
             self.assertIn(
@@ -242,7 +263,8 @@ class TransferKitTests(unittest.TestCase):
                 "target": {"system": "windows", "machine": "x64"},
                 "crossBuilt": True,
                 "targetCliSmokeTested": False,
-                "bundledNode": True,
+                "bundledNode": False,
+                "nodeRuntime": {"source": "system", "minimumVersion": "20.12.0"},
             },
         )
         self.assertIn("仅供发布侧结构审查", start_here)
@@ -254,7 +276,7 @@ class TransferKitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             runtime = self.make_runtime(
-                root, target_system="windows", target_machine="x64"
+                root, target_system="windows", target_machine="x64", cross_built=False
             )
             result = subprocess.run(
                 [
@@ -290,14 +312,14 @@ class TransferKitTests(unittest.TestCase):
             self.assertEqual(2, result.returncode)
             self.assertIn("refusing to overwrite", result.stderr)
 
-    def test_rejects_windows_transfer_without_bundled_node(self) -> None:
+    def test_rejects_windows_transfer_with_bundled_node(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             runtime = self.make_runtime(
                 root,
                 target_system="windows",
                 target_machine="x64",
-                bundled_node=False,
+                bundled_node=True,
             )
             result = subprocess.run(
                 [
@@ -313,7 +335,33 @@ class TransferKitTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(2, result.returncode)
-            self.assertIn("bundledNode=true", result.stderr)
+            self.assertIn("bundledNode=false", result.stderr)
+
+    def test_rejects_windows_runtime_that_carries_an_executable(self) -> None:
+        # Metadata can claim a system Node.js while the archive still carries
+        # node.exe; the builder must reject by content before packaging.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = self.make_runtime(
+                root,
+                target_system="windows",
+                target_machine="x64",
+                cross_built=False,
+                extra_files={"node/node.exe": b"MZ" + b"\0" * 126},
+            )
+            extension, extension_approval = self.make_extension(root)
+            with self.assertRaises(build_transfer.TransferKitError):
+                build_transfer.build_transfer_kit(
+                    ROOT,
+                    runtime,
+                    root / "output",
+                    False,
+                    extension,
+                    extension_approval=extension_approval,
+                )
+            self.assertFalse(
+                (root / "output" / f"browser-mcp-server-{RUNTIME_VERSION}-windows-x64.zip").exists()
+            )
 
     def test_rejects_cross_built_windows_public_zip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

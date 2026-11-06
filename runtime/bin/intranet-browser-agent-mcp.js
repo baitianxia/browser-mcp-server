@@ -1,6 +1,31 @@
 #!/usr/bin/env node
 "use strict";
 
+// Windows packages carry no node.exe: Claude Code launches this file with the
+// target's existing Node.js.  Fail fast with an actionable message when that
+// Node.js is older than the release floor (for example after a downgrade).
+// Keep this guard syntax-compatible with old Node.js releases.
+var MINIMUM_NODE_VERSION = [20, 12, 0];
+(function assertSupportedNode() {
+  var current = String(process.versions.node).split(".").map(function (part) {
+    return parseInt(part, 10) || 0;
+  });
+  for (var index = 0; index < MINIMUM_NODE_VERSION.length; index += 1) {
+    if (current[index] > MINIMUM_NODE_VERSION[index]) {
+      return;
+    }
+    if (current[index] < MINIMUM_NODE_VERSION[index]) {
+      process.stderr.write(
+        "browser-mcp: Node.js " + MINIMUM_NODE_VERSION.join(".") +
+        " or newer is required, but " + process.execPath + " is v" +
+        process.versions.node + ". Install an organization-approved Node.js " +
+        "and re-run INSTALL.cmd.\n"
+      );
+      process.exit(1);
+    }
+  }
+})();
+
 // Offline stdio compatibility layer for the pinned @playwright/mcp runtime.
 // It deliberately uses Node.js built-ins only so the target host never needs a
 // package-manager repair step.

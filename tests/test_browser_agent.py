@@ -72,9 +72,8 @@ class BrowserAgentManifestTests(unittest.TestCase):
         )
         user_root = r"C:\Users\pilot\browser-mcp-server"
         manifest["installRoot"] = user_root + r"\releases\runtime-1"
-        manifest["nodeExecutable"] = (
-            user_root + r"\releases\runtime-1\node\node.exe"
-        )
+        # Windows packages carry no node.exe; the target's existing one runs MCP.
+        manifest["nodeExecutable"] = r"C:\Program Files\nodejs\node.exe"
         manifest["configRoot"] = user_root + r"\config"
         manifest["output"]["directory"] = user_root + r"\output"
         manifest["browser"]["executablePath"] = (
@@ -109,10 +108,7 @@ class BrowserAgentManifestTests(unittest.TestCase):
             browser_agent.render(manifest_path, root / "rendered", force=False)
             mcp = json.loads((root / "rendered" / ".mcp.json").read_text(encoding="utf-8"))
             server = mcp["mcpServers"]["browser-mcp"]
-            self.assertEqual(
-                r"C:\Users\pilot\browser-mcp-server\releases\runtime-1\node\node.exe",
-                server["command"],
-            )
+            self.assertEqual(r"C:\Program Files\nodejs\node.exe", server["command"])
             self.assertEqual(
                 r"C:\Users\pilot\browser-mcp-server\releases\runtime-1\bin\intranet-browser-agent-mcp.js",
                 server["args"][0],
@@ -149,6 +145,48 @@ class BrowserAgentManifestTests(unittest.TestCase):
         manifest["installRoot"] = "/opt/intranet-browser-agent"
         errors = browser_agent.validate_manifest(manifest)
         self.assertTrue(any("absolute local Windows" in error for error in errors))
+
+    def test_windows_node_executable_must_be_node_exe(self) -> None:
+        manifest = self.valid_windows_manifest()
+        manifest["nodeExecutable"] = r"C:\Program Files\nodejs\node.cmd"
+        errors = browser_agent.validate_manifest(manifest)
+        self.assertTrue(any("existing node.exe" in error for error in errors))
+        manifest["nodeExecutable"] = r"C:\nvm4w\nodejs\NODE.EXE"
+        self.assertEqual([], browser_agent.validate_manifest(manifest))
+
+    def test_minimum_node_version_follows_runtime_profile(self) -> None:
+        manifest = self.valid_windows_manifest()
+        self.assertEqual((20, 12, 0), browser_agent.minimum_node_version(manifest))
+        manifest["controls"]["devtools"] = True
+        self.assertEqual((20, 19, 0), browser_agent.minimum_node_version(manifest))
+
+    def test_windows_preflight_requires_existing_node_outside_runtime(self) -> None:
+        def binding_status(node_executable: str) -> dict[str, str]:
+            manifest = self.valid_windows_manifest()
+            manifest["nodeExecutable"] = node_executable
+            with tempfile.TemporaryDirectory() as temporary:
+                manifest_path = Path(temporary) / "windows.json"
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                with mock.patch.object(
+                    browser_agent, "_host_system", return_value="windows"
+                ), mock.patch.object(browser_agent, "_host_machine", return_value="x64"):
+                    checks = browser_agent.preflight(
+                        manifest_path,
+                        Path(temporary) / "runtime",
+                        Path(temporary) / "config",
+                        run_cli_help=False,
+                    )
+            return next(
+                check for check in checks if check["name"] == "windows-mcp-node-binding"
+            )
+
+        existing = binding_status(r"C:\Program Files\nodejs\node.exe")
+        self.assertEqual("pass", existing["status"], existing["detail"])
+        bundled = binding_status(
+            r"C:\Users\pilot\browser-mcp-server\releases\runtime-1\node\node.exe"
+        )
+        self.assertEqual("fail", bundled["status"])
+        self.assertIn("inside the runtime", bundled["detail"])
 
     def test_manifest_strings_reject_surrounding_whitespace(self) -> None:
         manifest = self.valid_windows_manifest()

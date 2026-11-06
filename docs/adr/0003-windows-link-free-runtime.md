@@ -1,6 +1,6 @@
 # ADR-0003：Windows x64 与无链接运行时
 
-状态：已接受；“交叉包不携带 Node”的限制已由 ADR-0004 取代，“`.cmd` 作为 MCP 命令”的部分已由 ADR-0007 取代。
+状态：已接受；“交叉包不携带 Node”的限制曾由 ADR-0004 取代，现按 ADR-0012 恢复为所有 Windows 包都不携带 Node；“`.cmd` 作为 MCP 命令”的部分已由 ADR-0007 取代。
 
 ## 背景
 
@@ -10,7 +10,7 @@
 
 V1 明确支持 Windows x64。部署清单必须声明 `target.os` 与 `target.arch`，Windows 路径只允许本机盘符绝对路径，不接受 UNC。运行包保留 `.cmd` 诊断入口；ADR-0007 将实际 MCP 命令收紧为直接 `node.exe + 固定 JavaScript 入口`，ADR-0010 将该入口更新为同包兼容层。依赖安装固定采用 `nodeLinker: hoisted` 和 `packageImportMethod: copy`，删除 pnpm 元数据并拒绝 symlink、junction、reparse point 和原生二进制后再归档。
 
-Windows 原生受控构建使用 `scripts/build-offline-bundle.ps1`。非 Windows 主机只可交叉组装 `core` 试点候选包，构建元数据必须标记 `crossBuilt=true` 和 `targetCliSmokeTested=false`；完成 Windows 目标 `node.exe + bin\intranet-browser-agent-mcp.js + 同包上游 CLI`、Claude CLI、Chrome、路径/ACL 和 preflight 验收前不得作为生产制品。目标 Windows Node 的最小化携带规则见 ADR-0004。
+Windows 原生受控构建使用 `scripts/build-offline-bundle.ps1`。非 Windows 主机只可交叉组装 `core` 试点候选包，构建元数据必须标记 `crossBuilt=true` 和 `targetCliSmokeTested=false`；完成 Windows 目标 `node.exe + bin\intranet-browser-agent-mcp.js + 同包上游 CLI`、Claude CLI、Chrome、路径/ACL 和 preflight 验收前不得作为生产制品。Windows 包自 1.0.22 起不携带 Node，改用目标机已有的 Node.js，见 ADR-0012（取代 ADR-0004）。
 
 ## 结果
 

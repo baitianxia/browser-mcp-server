@@ -62,7 +62,7 @@ Playwright MCP 官方明确说明 origin allow/block 规则不构成安全边界
 - `@playwright/mcp`：`0.0.79`
 - `chrome-devtools-mcp`：`1.8.0`（仅 diagnostic 包）
 - 构建工具：pnpm `11.19.0`
-- 运行 Node.js：`>=20.19.0`
+- 运行 Node.js：核心包 `>=20.12.0`（Windows 使用目标机已有的 Node.js，见 ADR-0012）；diagnostic 包 `>=20.19.0`
 
 版本依据是 2026-08-29 读取的上游包清单。每次升级必须重新运行本文列出的安全和兼容性验收，不能只改版本字符串。
 

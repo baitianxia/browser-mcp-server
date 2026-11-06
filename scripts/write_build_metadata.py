@@ -7,7 +7,22 @@ import argparse
 import json
 import os
 import platform
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+import browser_agent  # noqa: E402
+
+
+def minimum_node_version(profile: str) -> str:
+    """Lowest Node.js the runtime profile supports on the target."""
+    floor = (
+        browser_agent.MIN_DEVTOOLS_NODE_VERSION
+        if profile == "diagnostic"
+        else browser_agent.MIN_NODE_VERSION
+    )
+    return ".".join(map(str, floor))
 
 
 def normalized_system(value: str) -> str:
@@ -52,9 +67,13 @@ def main() -> int:
     )
     if args.cross_built and target == build_host:
         parser.error("--cross-built requires a target different from the build host")
+    if args.bundled_node and target["system"] == "windows":
+        # Windows packages must not carry node.exe or any other executable;
+        # they run on the target's existing, organization-approved Node.js.
+        parser.error("Windows runtimes use the target's existing Node.js; --bundled-node is not allowed")
     payload = {
         "schemaVersion": 1,
-        "runtimeVersion": "1.0.21",
+        "runtimeVersion": "1.0.22",
         "profile": args.profile,
         "buildHost": build_host,
         "target": target,
@@ -62,6 +81,10 @@ def main() -> int:
         "targetCliSmokeTested": not args.cross_built,
         "tools": {"node": args.node_version, "pnpm": args.pnpm_version},
         "bundledNode": args.bundled_node,
+        "nodeRuntime": {
+            "source": "bundled" if args.bundled_node else "system",
+            "minimumVersion": minimum_node_version(args.profile),
+        },
         "sourceDateEpoch": os.environ.get("SOURCE_DATE_EPOCH"),
     }
     args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

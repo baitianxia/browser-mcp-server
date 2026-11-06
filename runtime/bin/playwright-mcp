@@ -11,7 +11,7 @@ elif [ -n "${BROWSER_AGENT_NODE:-}" ] && [ -x "$BROWSER_AGENT_NODE" ]; then
 elif command -v node >/dev/null 2>&1; then
   NODE_EXECUTABLE=$(command -v node)
 else
-  echo "Node.js was not found; install Node.js 20.19+ or set BROWSER_AGENT_NODE" >&2
+  echo "Node.js was not found; install Node.js 20.12.0+ or set BROWSER_AGENT_NODE" >&2
   exit 127
 fi
 

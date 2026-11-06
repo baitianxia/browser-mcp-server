@@ -26,7 +26,9 @@ ZIP 只有一个顶层目录，目录内包含 `README.md`、`START-HERE.html`�
 %USERPROFILE%\browser-mcp-server\config\settings.json
 ```
 
-不需要管理员权限、项目目录、网址白名单或系统 Node.js。包内携带经过批准的 Windows x64 Node.js 和 Playwright 运行时。浏览器扩展如果不能由当前用户策略自动安装，安装器会打开扩展页并等待用户加载包内的已解压目录；同一个安装进程会自动继续。
+不需要管理员权限、项目目录或网址白名单。**包内不含任何 EXE/DLL**（包括 `node.exe`）：浏览器助手使用这台电脑已有的 Windows x64 Node.js **20.12.0 或更高版本**运行固定版本的 Playwright 运行时。安装器按 PATH、`%NVM_SYMLINK%`、`%ProgramFiles%\nodejs` 的顺序自动查找并校验版本和架构，把找到的 `node.exe` 绝对路径登记为 MCP 命令；它不会安装、升级、下载或修复 Node.js。找不到可用 Node.js 时，安装器会在改动任何文件之前停止，并列出检查过的每个候选及拒绝原因。其他前置条件：Python 3.10+、Chrome 或 Edge，以及当前用户已能运行的 Claude Code。
+
+如果之后卸载、降级或移动了这台电脑的 Node.js，Claude Code 中的 `browser-mcp` 会启动失败并提示所需版本；恢复 Node.js 或重新双击 `INSTALL.cmd` 即可重新选择。浏览器扩展如果不能由当前用户策略自动安装，安装器会打开扩展页并等待用户加载包内的已解压目录；同一个安装进程会自动继续。
 
 如果双击入口后立即看到“此系统上禁止运行脚本”、`SecurityError` 或 `UnauthorizedAccess`，且没有生成安装/设置日志，通常是企业执行策略在 PowerShell 读取脚本前阻止了启动。入口会以进程级 `-ExecutionPolicy Bypass` 启动，不会修改系统策略；请在 PowerShell 中运行 `Get-ExecutionPolicy -List`，把输出交给企业管理员。若 `MachinePolicy` 或 `UserPolicy` 已锁定，必须按企业签名或策略流程处理，不能通过本工具绕过。
 

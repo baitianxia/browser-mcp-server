@@ -567,34 +567,6 @@ function Install-BrowserAgentSettingsTool {
     Write-InstallLog "SETTINGS TOOL INSTALLED: $LauncherDestination"
 }
 
-function Get-NodeInfo {
-    param([string]$Executable)
-    $Output = @()
-    $ExitCode = 1
-    $PreviousErrorActionPreference = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = "Continue"
-        $Output = & $Executable --version 2>&1
-        $ExitCode = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $PreviousErrorActionPreference
-    }
-    $Text = ((@($Output) | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
-    if ($ExitCode -ne 0) {
-        throw "$Executable --version failed with exit code ${ExitCode}: $Text"
-    }
-    $Match = [regex]::Match($Text, '^v?(\d+)\.(\d+)\.(\d+)$')
-    if (-not $Match.Success) {
-        throw "无法读取 Node.js 版本：$Text"
-    }
-    return [pscustomobject]@{
-        Executable = $Executable
-        Text = $Text
-        Version = [version]("{0}.{1}.{2}" -f `
-            $Match.Groups[1].Value, $Match.Groups[2].Value, $Match.Groups[3].Value)
-    }
-}
-
 function Get-BrowserExecutable {
     param([ValidateSet("chrome", "msedge")][string]$Channel)
     $Executable = if ($Channel -eq "chrome") { "chrome.exe" } else { "msedge.exe" }
@@ -967,8 +939,6 @@ try {
     $Verifier = Join-Path $ToolkitRoot "scripts\verify-bundle.py"
     $ReleaseMetadataVerifier = Join-Path $ToolkitRoot `
         "scripts\validate_windows_release_metadata.py"
-    $NodeDistributionVerifier = Join-Path $ToolkitRoot "scripts\validate_node_distribution.py"
-    $NodeSourceApprovals = Join-Path $ToolkitRoot "config\windows-node-sources.json"
     $Configurator = Join-Path $ToolkitRoot "scripts\configure_windows_pilot.py"
     $ExtensionChecker = Join-Path $ToolkitRoot "scripts\check_playwright_extension.py"
     $ExtensionVerifier = Join-Path $ToolkitRoot "scripts\validate_playwright_extension.py"
@@ -984,8 +954,6 @@ try {
     foreach ($RequiredPath in @(
         $Verifier,
         $ReleaseMetadataVerifier,
-        $NodeDistributionVerifier,
-        $NodeSourceApprovals,
         $Configurator,
         $ExtensionChecker,
         $ExtensionVerifier,
@@ -1002,7 +970,10 @@ try {
             throw "迁移包不完整，缺少：$RequiredPath"
         }
     }
-    Invoke-Python @($Verifier, $PackageRoot)
+    # The package must not carry node.exe or any other EXE/DLL: locked-down
+    # targets may block unapproved executables, so the runtime uses the
+    # target's existing Node.js instead.
+    Invoke-Python @($Verifier, "--reject-native-binaries", $PackageRoot)
     Invoke-Python @($ReleaseMetadataVerifier, $ReleaseManifestPath)
     Invoke-Python @($ReleaseMetadataVerifier, $KitMetadataPath)
 
@@ -1088,17 +1059,42 @@ try {
         throw "运行包文件名不合法：$RuntimeArchiveName"
     }
     $RuntimeArchive = Join-Path (Join-Path $PSScriptRoot "runtime") $RuntimeArchiveName
-    Invoke-Python @($Verifier, $RuntimeArchive)
-    $BundledNode = $BuildMetadata.bundledNode -eq $true
-    $ExpectedNodeVersion = [string]$BuildMetadata.tools.node
-    if (-not $BundledNode) {
-        throw "Windows 一键试点包必须携带已校验的 Node.js；当前运行包未携带。"
+    Invoke-Python @($Verifier, "--reject-native-binaries", $RuntimeArchive)
+    $NodeRuntimeProperty = $BuildMetadata.PSObject.Properties["nodeRuntime"]
+    if ($BuildMetadata.bundledNode -ne $false -or
+        $null -eq $NodeRuntimeProperty -or
+        $null -eq $NodeRuntimeProperty.Value -or
+        [string]$NodeRuntimeProperty.Value.source -ne "system") {
+        throw "运行包不是不含 EXE 的 Windows 版本：必须声明 bundledNode=false 和 nodeRuntime.source=system。"
     }
-    if ($ExpectedNodeVersion -notmatch '^v\d+\.\d+\.\d+$') {
-        throw "运行包记录的 Node.js 版本不合法：$ExpectedNodeVersion"
+    $MinimumNodeVersion = [string]$NodeRuntimeProperty.Value.minimumVersion
+    if ($MinimumNodeVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw "运行包记录的最低 Node.js 版本不合法：$MinimumNodeVersion"
     }
-    $NodeExe = ""
-    Write-Host "系统 Node.js 不参与安装；将使用迁移包内的 $ExpectedNodeVersion。"
+    $SystemNode = Resolve-SystemNodeRuntime `
+        -MinimumVersion $MinimumNodeVersion `
+        -ExcludedRoots @((Join-Path $env:USERPROFILE "browser-mcp-server"))
+    foreach ($NodeRejection in @($SystemNode.Rejected)) {
+        Write-InstallLog "SYSTEM NODE REJECTED: $NodeRejection"
+    }
+    if (-not $SystemNode.Executable) {
+        $CheckedNodes = if (@($SystemNode.Rejected).Count -gt 0) {
+            [Environment]::NewLine + "已检查：" + [Environment]::NewLine + "  " + (
+                @($SystemNode.Rejected) -join ([Environment]::NewLine + "  ")
+            )
+        } else {
+            [Environment]::NewLine + "PATH、NVM_SYMLINK 和 Program Files\nodejs 中都没有 node.exe。"
+        }
+        throw ("未找到可用的 Node.js。浏览器助手的 Windows 包不携带 node.exe 或其他 EXE，" +
+            "需要使用这台电脑已有的 Windows x64 Node.js $MinimumNodeVersion 或更高版本；" +
+            "安装器不会安装、升级或下载 Node.js。请由管理员安装组织批准的版本，" +
+            "或确认当前用户运行 node --version 可用后重新双击 INSTALL.cmd。" + $CheckedNodes)
+    }
+    $NodeExe = [string]$SystemNode.Executable
+    Write-Host ("将使用这台电脑已有的 Node.js {0}（{1}）：{2}" -f `
+        $SystemNode.Text, $SystemNode.Arch, $NodeExe) -ForegroundColor Green
+    Write-InstallLog ("SYSTEM NODE SELECTED: {0} ({1}, {2}; minimum {3})" -f `
+        $NodeExe, $SystemNode.Text, $SystemNode.Arch, $MinimumNodeVersion)
 
     Write-Step 2 "识别已有设置、浏览器并准备当前用户目录"
     $RequestedBrowserChannel = $BrowserChannel
@@ -1302,7 +1298,7 @@ try {
     Write-Step 3 "安装并验证固定运行时"
     if (Test-Path -LiteralPath $RuntimeRoot) {
         Write-Host "运行版本已存在，验证后复用：$RuntimeRoot"
-        Invoke-Python @($Verifier, $RuntimeRoot)
+        Invoke-Python @($Verifier, "--reject-native-binaries", $RuntimeRoot)
     } else {
         $TarCommand = Get-Command "tar.exe" -ErrorAction SilentlyContinue
         if (-not $TarCommand) {
@@ -1315,21 +1311,7 @@ try {
             "-xzf", $RuntimeArchive, "-C", $RuntimeExtractionRoot
         )
         $StagedRuntimeRoot = Join-Path $RuntimeExtractionRoot $RuntimeName
-        Invoke-Python @($Verifier, $StagedRuntimeRoot)
-        $StagedBundledNodeRoot = Join-Path $StagedRuntimeRoot "node"
-        Invoke-Python @(
-            $NodeDistributionVerifier,
-            $StagedBundledNodeRoot,
-            "--expected-version", $ExpectedNodeVersion,
-            "--approval-file", $NodeSourceApprovals
-        )
-        $StagedBundledNodeInfo = Get-NodeInfo (
-            Join-Path $StagedBundledNodeRoot "node.exe"
-        )
-        if ($StagedBundledNodeInfo.Version -lt [version]"20.19.0" -or
-            $StagedBundledNodeInfo.Text -ne $ExpectedNodeVersion) {
-            throw "暂存 Node.js 版本不符合运行包记录：$($StagedBundledNodeInfo.Text) / $ExpectedNodeVersion"
-        }
+        Invoke-Python @($Verifier, "--reject-native-binaries", $StagedRuntimeRoot)
         if (Test-Path -LiteralPath $RuntimeRoot) {
             throw "运行版本目录在安装期间被其他进程创建：$RuntimeRoot"
         }
@@ -1337,25 +1319,20 @@ try {
         Publish-StagedRuntime -Source $StagedRuntimeRoot -Destination $RuntimeRoot
         Remove-Item -LiteralPath $RuntimeExtractionRoot -Recurse -Force
         $RuntimeExtractionRoot = $null
-        Invoke-Python @($Verifier, $RuntimeRoot)
+        Invoke-Python @($Verifier, "--reject-native-binaries", $RuntimeRoot)
     }
 
-    $BundledNodeRoot = Join-Path $RuntimeRoot "node"
-    Invoke-Python @(
-        $NodeDistributionVerifier,
-        $BundledNodeRoot,
-        "--expected-version", $ExpectedNodeVersion,
-        "--approval-file", $NodeSourceApprovals
-    )
-    $BundledNodeExe = Join-Path $BundledNodeRoot "node.exe"
-    $BundledNodeInfo = Get-NodeInfo $BundledNodeExe
-    if ($BundledNodeInfo.Version -lt [version]"20.19.0" -or
-        $BundledNodeInfo.Text -ne $ExpectedNodeVersion) {
-        throw "包内 Node.js 版本不符合运行包记录：$($BundledNodeInfo.Text) / $ExpectedNodeVersion"
+    # Re-probe the selected system Node.js after the runtime is in place: it
+    # is the exact executable Claude Code will launch, and it may have been
+    # changed while the user worked through the browser steps.
+    $SystemNode = Resolve-SystemNodeRuntime `
+        -MinimumVersion $MinimumNodeVersion `
+        -ExplicitPath $NodeExe
+    if (-not $SystemNode.Executable) {
+        throw ("之前选定的 Node.js 已不可用：$NodeExe" + [Environment]::NewLine +
+            (@($SystemNode.Rejected) -join [Environment]::NewLine))
     }
-    $NodeExe = $BundledNodeExe
-    Write-Host "已启用包内 Node.js $($BundledNodeInfo.Text)；未修改系统 Node.js。" -ForegroundColor Green
-    Write-InstallLog "Bundled Node.js selected: $BundledNodeExe ($($BundledNodeInfo.Text))"
+    Write-Host "已确认 Node.js $($SystemNode.Text)；未安装或修改 Node.js。" -ForegroundColor Green
 
     if ($InstallBrowserMode -eq "dedicated") {
         $ExtensionInstallMethod = "not-required-dedicated"
@@ -1914,6 +1891,7 @@ browser-mcp-server（浏览器助手）Windows pilot is installed.
 
 Install type: $InstallTypeSummary
 Runtime: $RuntimeRoot
+Node.js (existing, not packaged): $NodeExe
 Manifest: $InstalledManifest
 Claude MCP scope: user (all projects for the current Windows user)
 Browser mode: $BrowserModeSummary

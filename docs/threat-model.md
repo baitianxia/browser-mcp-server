@@ -18,7 +18,8 @@
 | Agent 误删、付款、发布或代表用户发送 | 风险动作确认、一次只做一步、结果复核、最小业务权限 | 确认后仍可能出现业务语义误解 |
 | 日常浏览身份被过度暴露 | production 使用专用 OS 用户/Profile；Windows pilot 仅用于测试账号/非生产数据，初始保留每次扩展连接批准和 Tab 选择，并可切换到 `%USERPROFILE%\browser-mcp-server\browser-profile\pilot` 下不读取日常登录态的独立 Profile；Chrome/Edge 的 `%LOCALAPPDATA%` 只用于发现既有 Profile 和扩展状态 | Extension 中被允许的浏览器会话能力会暴露给 Agent；用户误选敏感 Tab 或主动保存持久令牌仍会扩大范围；独立 Profile 首次需单独登录 |
 | MCP/依赖/扩展供应链污染 | 固定版本、锁文件、忽略安装脚本、白名单迁移包、分层 SHA-256、CycloneDX、企业扫描/签名；官方 CRX 固定来源/哈希/manifest ID/权限，已解压副本与 CRX payload 逐文件核对 | 上游固定版本本身可能含漏洞；人工加载的 unpacked 模式会显示开发者扩展提示 |
-| 便携 Node 被替换或夹带包管理器 | 官方 ZIP 与 `SHASUMS256.txt` 校验、只提取四个白名单文件、逐文件哈希、AMD64 PE 检查、分层制品完整性 | 官方发布或构建区本身仍可能失陷；企业扫描/签名仍是放行条件 |
+| 发布包夹带可执行文件（含旧版便携 Node） | Windows 包不携带 Node（ADR-0012）；`verify-bundle.py --reject-native-binaries` 按扩展名和 PE 内容在构建、组包、门禁和安装各层拒绝 EXE/DLL 等 | 构建区本身仍可能失陷；企业扫描/签名仍是放行条件 |
+| 目标机已有 Node 被替换、降级或指向非预期程序 | 只接受本机盘符、文件名 `node.exe`、非 WindowsApps、非本工程目录的候选；清空 `NODE_OPTIONS`/`NODE_PATH` 后探测版本与 x64 架构；设置工具复验；兼容层启动守卫 | 本工程不再用固定哈希约束 Node 二进制；其完整性由目标机的组织软件管理和终端防护负责 |
 | 用户遗留环境覆盖已校验的 Playwright 配置或向 Node 注入启动选项 | Windows `.mcp.json`、门禁握手和 user-scope 注册共用固定环境映射，清除固定依赖支持的 `PLAYWRIGHT_MCP_*` 配置覆盖及 `NODE_OPTIONS`/`NODE_PATH`；最终条目逐项核对 | 同一用户权限下的恶意进程仍可在安装后改写配置或运行文件 |
 | 跨平台误标、路径 link/junction 或 Windows reparse point 逸出 | 清单显式目标、构建主机/目标元数据、Windows link-free 归档、写入前真实路径检查、目标 preflight | 交叉构建候选包仍未证明目标 `node.exe + 兼容层 + 上游 CLI`、Claude CLI 与企业 Windows 镜像兼容 |
 | Defender/EDR/索引器短暂占用运行时、扩展或配置目录，或 PowerShell provider 在移动失败后留下半成品 | 所有受管目录切换共用 Win32 原子目录移动和源/目标状态检查，在同一安装进程有界退避；无效扩展与失败配置移动到唯一备份路径而非递归删除；Windows CI 真实拒绝目录移动权限并验证恢复 | 持续占用超过恢复窗口或外部并发创建目标目录时仍必须失败关闭并保留现场 |

@@ -14,35 +14,36 @@ ZIP 外附 `<ZIP>.sha256`，解压后只有一个顶层目录。`tar.gz` 运行�
 
 在可联网的隔离 Windows x64 构建机使用 Windows PowerShell 5.1：
 
-1. 固定 Node.js 24.19.0、pnpm 11.19.0 和 Python 3.10+。从官方 Windows x64 ZIP 与同版本 `SHASUMS256.txt` 生成最小 Node 目录，并用 `config/windows-node-sources.json` 和 `validate_node_distribution.py` 校验来源、哈希、版本和 AMD64 PE。
+1. 固定构建用 Node.js 24.19.0、pnpm 11.19.0 和 Python 3.10+。构建用 Node 只负责安装和冒烟 JavaScript 运行时，不进入发布包；Windows 包不携带任何 EXE/DLL（ADR-0012）。另准备与目标同版本的 Node.js 20.18.3 供发布门禁使用；发布 CI 还在支持下限 Node.js 20.12.0 上运行兼容层协议测试和真实浏览器 E2E。
 2. 从 `config/playwright-extension-source.json` 下载精确批准的 Playwright Extension CRX，用 `validate_playwright_extension.py` 校验 ID、版本、哈希和清单。
 3. 在原生 Windows 上运行：
 
    ```powershell
    powershell.exe -NoLogo -NoProfile -File .\scripts\build-offline-bundle.ps1 `
-     -Profile core -NodeDistribution <批准的 Node 目录> -OutputDir .\dist
+     -Profile core -OutputDir .\dist
    python .\scripts\build-transfer-kit.py `
      --runtime-archive .\dist\browser-agent-runtime-<版本>-core-windows-x64.tar.gz `
      --extension-crx <批准的 CRX> --output-dir .\dist
    ```
 
-4. 用 `verify-bundle.py`、`validate_windows_release_metadata.py` 和企业 SCA/恶意代码扫描复验 ZIP；包内必须包含 `NOTICE.md` 所述的许可证/第三方声明。
+4. 用 `verify-bundle.py --reject-native-binaries`、`validate_windows_release_metadata.py` 和企业 SCA/恶意代码扫描复验 ZIP；包内必须包含 `NOTICE.md` 所述的许可证/第三方声明。
 5. 在同一受控 Windows PowerShell 5.1 环境执行发布门禁：
 
    ```powershell
    powershell.exe -NoLogo -NoProfile -File .\scripts\verify-windows-release.ps1 `
      -TransferPath .\dist\browser-mcp-server-<版本>-windows-x64.zip `
      -ClaudeExecutable <已存在且可用的 claude.exe> `
+     -NodeExecutable <与目标同版本的 node.exe，当前为 20.18.3> `
      -LogPath .\windows-publisher-release-gate.log
    ```
 
-门禁先验证 ZIP 外层和单顶层目录，再解析源代码与包内 PowerShell，运行完整 Python 测试、注册器自检、内层运行时验证、包内 `node.exe --version`、MCP stdio smoke 和隔离 Claude user-scope `remove/add/get`。它从仓库侧脚本运行，不能放进用户包，也不能由目标安装器调用。门禁执行前后都要验证包没有变化。
+门禁先验证 ZIP 外层和单顶层目录，再解析源代码与包内 PowerShell，运行完整 Python 测试、注册器自检、内层运行时验证（含无可执行映像检查）、用 `-NodeExecutable` 指定的现有 Node 完成 MCP stdio smoke 和隔离 Claude user-scope `remove/add/get`。它从仓库侧脚本运行，不能放进用户包，也不能由目标安装器调用。门禁执行前后都要验证包没有变化。
 
 GitHub Actions 的 `.github/workflows/windows-release.yml` 在 `windows-2022` 与 `windows-latest` 上运行脚本解析和完整测试，在原生构建 job 生成并再次验证同一个 ZIP，最后以 `archive: false` 上传 ZIP 和相邻校验文件。发布流水线不得把门禁通过的 ZIP重新压缩成第二个用户包。
 
 ## 用户安装边界
 
-用户解压 ZIP 后只双击顶层 `INSTALL.cmd`。安装器复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，并只读取该 npm 安装的包元数据：JavaScript bin 直接使用现有 `node.exe`，Windows 原生 bin（例如 `bin\claude.exe`）直接执行；它不把 `.exe` 交给 Node，也不运行 npm、pnpm、npx，不下载依赖或修改系统 Node.js。候选发现和探针遵循[公共 Windows Claude Code 探测与调用标准](https://github.com/baitianxia/mcp-engineering-standards/blob/v1.0.0/docs/windows-claude-code-discovery.md)，缺少可验证 Claude Code 时，在任何真实配置变更前停止。
+用户解压 ZIP 后只双击顶层 `INSTALL.cmd`。安装器复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，并只读取该 npm 安装的包元数据：JavaScript bin 直接使用现有 `node.exe`，Windows 原生 bin（例如 `bin\claude.exe`）直接执行；它不把 `.exe` 交给 Node，也不运行 npm、pnpm、npx，不下载依赖或修改系统 Node.js。MCP 本身同样运行在目标机已有的 Windows x64 Node.js（≥ 20.12.0）上：安装器在第 1 步选定并校验它，找不到时在任何改动前停止；包内没有 `node.exe`。系统 Node 之后被卸载、降级或改路径时，兼容层启动守卫和 `CONFIGURE.cmd` 都会给出明确提示，重新运行 `INSTALL.cmd` 会重新选择。候选发现和探针遵循[公共 Windows Claude Code 探测与调用标准](https://github.com/baitianxia/mcp-engineering-standards/blob/v1.0.0/docs/windows-claude-code-discovery.md)，缺少可验证 Claude Code 时，在任何真实配置变更前停止。
 
 安装根目录固定为 `%USERPROFILE%\browser-mcp-server`，配置根目录为 `%USERPROFILE%\browser-mcp-server\config`，设置文件为 `settings.json`。运行时版本放在该根目录的版本子目录，发布和回滚使用同卷暂存、清单校验、原子目录移动和有界退避；外部锁定时保留旧目录，不强行删除或请求 UAC。安装、升级、配置和卸载只读取或修改本工程根目录以及 Claude Code 当前用户的 `browser-mcp` 条目。
 

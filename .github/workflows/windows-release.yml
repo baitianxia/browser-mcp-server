@@ -17,7 +17,14 @@ concurrency:
 
 env:
   CLAUDE_CODE_VERSION: "2.1.84"
+  # The target-like existing Node.js (the known target runs 20.18.3).  It runs
+  # the npm Claude fixture and, because Windows packages carry no node.exe, it
+  # is also the system Node.js the release gate and one-click install select.
   CLAUDE_NPM_NODE_VERSION: "20.18.3"
+  # The supported floor.  It must equal the package's
+  # nodeRuntime.minimumVersion; the compatibility suite and a real browser E2E
+  # run on exactly this version.
+  FLOOR_NODE_VERSION: "20.12.0"
   NODE_VERSION: "24.19.0"
   PNPM_VERSION: "11.19.0"
   PYTHONDONTWRITEBYTECODE: "1"
@@ -149,30 +156,6 @@ jobs:
           }
           Write-Host "Online build tools: Node.js $ActualNode / pnpm $ActualPnpm"
 
-      - name: Prepare the approved minimal Windows Node distribution
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          $SourceRoot = Join-Path $env:RUNNER_TEMP "node-source"
-          $DistributionRoot = Join-Path $env:RUNNER_TEMP "node-minimal"
-          New-Item -ItemType Directory -Path $SourceRoot -Force | Out-Null
-          $ArchiveName = "node-v$env:NODE_VERSION-win-x64.zip"
-          $Archive = Join-Path $SourceRoot $ArchiveName
-          $Checksums = Join-Path $SourceRoot "SHASUMS256.txt"
-          $ReleaseRoot = "https://nodejs.org/download/release/v$env:NODE_VERSION"
-          Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseRoot/$ArchiveName" -OutFile $Archive
-          Invoke-WebRequest -UseBasicParsing -Uri "$ReleaseRoot/SHASUMS256.txt" -OutFile $Checksums
-          python .\scripts\prepare_windows_node_distribution.py `
-              --archive $Archive `
-              --shasums $Checksums `
-              --output $DistributionRoot `
-              --approval-file .\config\windows-node-sources.json
-          if ($LASTEXITCODE -ne 0) {
-              throw "Minimal Windows Node distribution preparation failed."
-          }
-          "WINDOWS_NODE_DISTRIBUTION=$DistributionRoot" |
-              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
       - name: Download and verify the approved Playwright Extension CRX
         shell: powershell
         run: |
@@ -201,7 +184,6 @@ jobs:
           $Python = (Get-Command python.exe -ErrorAction Stop).Source
           & powershell.exe -NoLogo -NoProfile -File .\scripts\build-offline-bundle.ps1 `
               -Profile core `
-              -NodeDistribution $env:WINDOWS_NODE_DISTRIBUTION `
               -NodeBin $Node `
               -PnpmBin $Pnpm `
               -PythonBin $Python `
@@ -210,7 +192,7 @@ jobs:
               throw "Native Windows runtime build failed with exit code $LASTEXITCODE"
           }
           $RuntimeArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-agent-runtime-1.0.21-core-windows-x64.tar.gz")
+              -Filter "browser-agent-runtime-1.0.22-core-windows-x64.tar.gz")
           if ($RuntimeArchives.Count -ne 1) {
               throw "Expected exactly one Windows runtime archive; found $($RuntimeArchives.Count)"
           }
@@ -229,11 +211,12 @@ jobs:
               throw "Transfer-kit build failed."
           }
           $PackageArchives = @(Get-ChildItem -LiteralPath .\dist `
-              -Filter "browser-mcp-server-1.0.21-windows-x64.zip")
+              -Filter "browser-mcp-server-1.0.22-windows-x64.zip")
           if ($PackageArchives.Count -ne 1) {
               throw "Expected exactly one public Windows ZIP; found $($PackageArchives.Count)"
           }
-          python .\scripts\verify-bundle.py $PackageArchives[0].FullName
+          python .\scripts\verify-bundle.py --reject-native-binaries `
+              $PackageArchives[0].FullName
           if ($LASTEXITCODE -ne 0) {
               throw "Public Windows ZIP verification failed."
           }
@@ -246,16 +229,92 @@ jobs:
           if ($PackageRoots.Count -ne 1 -or $LooseFiles.Count -ne 0) {
               throw "Public Windows ZIP must extract to exactly one top-level directory."
           }
-          if ($PackageRoots[0].Name -ne "browser-mcp-server-1.0.21-windows-x64") {
+          if ($PackageRoots[0].Name -ne "browser-mcp-server-1.0.22-windows-x64") {
               throw "Public Windows ZIP top-level directory has an unexpected name."
           }
-          python .\scripts\verify-bundle.py $PackageRoots[0].FullName
+          python .\scripts\verify-bundle.py --reject-native-binaries `
+              $PackageRoots[0].FullName
           if ($LASTEXITCODE -ne 0) {
               throw "Extracted public Windows ZIP verification failed."
           }
+          # Independent of the verifier: the public package and its inner
+          # runtime must not contain any EXE/DLL/PDB, including node.exe.
+          $NativeFiles = @(Get-ChildItem -LiteralPath $PackageRoots[0].FullName `
+              -Recurse -File | Where-Object {
+                  $_.Extension -in @(".exe", ".dll", ".pdb", ".node")
+              })
+          $RuntimeListing = & tar.exe -tzf $env:RUNTIME_ARCHIVE
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not list the runtime archive."
+          }
+          $NativeRuntimeEntries = @($RuntimeListing | Where-Object {
+              $_ -match '\.(exe|dll|pdb|node)$'
+          })
+          if ($NativeFiles.Count -ne 0 -or $NativeRuntimeEntries.Count -ne 0) {
+              $NativeNames = @($NativeFiles | ForEach-Object { $_.FullName }) +
+                  @($NativeRuntimeEntries)
+              throw ("The no-EXE package contains native binaries: " +
+                  ($NativeNames -join ", "))
+          }
+          $KitMetadata = Get-Content -LiteralPath (Join-Path `
+              $PackageRoots[0].FullName "payload\KIT-METADATA.json") `
+              -Raw -Encoding UTF8 | ConvertFrom-Json
+          $NodeRuntime = $KitMetadata.runtime.buildMetadata.nodeRuntime
+          if ($KitMetadata.runtime.buildMetadata.bundledNode -ne $false -or
+              $NodeRuntime.source -ne "system" -or
+              $NodeRuntime.minimumVersion -ne $env:FLOOR_NODE_VERSION) {
+              throw "The package must use the existing system Node.js with minimum $env:FLOOR_NODE_VERSION."
+          }
+          Write-Host "CI NO-EXE PACKAGE VERIFIED (system Node.js >= $($NodeRuntime.minimumVersion))"
           "TRANSFER_ARCHIVE=$($PackageArchives[0].FullName)" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TRANSFER_ROOT=$($PackageRoots[0].FullName)" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Set up the minimum supported Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.FLOOR_NODE_VERSION }}
+
+      - name: Run the compatibility-layer protocol suite on the minimum Node.js
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          # The no-EXE package runs on the target's existing Node.js. Prove the
+          # whole compatibility-layer tool suite on the release floor, not only
+          # on the runner's default Node.js used by the source job. This runs
+          # before the target-like Node.js is prepended to PATH.
+          $FloorNode = (Get-Command node.exe -CommandType Application `
+              -ErrorAction Stop | Select-Object -First 1).Source
+          $FloorVersion = ((& $FloorNode --version 2>&1) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $FloorVersion -ne "v$env:FLOOR_NODE_VERSION") {
+              throw "Expected floor Node.js v$env:FLOOR_NODE_VERSION; found $FloorVersion"
+          }
+          $SuiteOutput = @()
+          $SuiteExitCode = 1
+          $PreviousPreference = $ErrorActionPreference
+          try {
+              # unittest reports on stderr; Windows PowerShell 5.1 wraps it
+              # as ErrorRecords, so the exit code stays the source of truth.
+              $ErrorActionPreference = "Continue"
+              $SuiteOutput = & python -m unittest discover -s tests -p test_mcp_compatibility.py -v 2>&1
+              $SuiteExitCode = $LASTEXITCODE
+          } finally {
+              $ErrorActionPreference = $PreviousPreference
+          }
+          $SuiteText = (@($SuiteOutput) | ForEach-Object { [string]$_ }) -join "`n"
+          Write-Host $SuiteText
+          if ($SuiteExitCode -ne 0) {
+              throw "Compatibility-layer protocol suite failed on Node.js $FloorVersion."
+          }
+          if ($SuiteText -match "Node\.js is required for compatibility-layer protocol tests") {
+              throw "Compatibility-layer protocol suite was skipped instead of running on $FloorVersion."
+          }
+          Write-Host "CI COMPATIBILITY LAYER PASSED ON NODE $FloorVersion"
+          # Keep the exact floor executable for the browser E2E after install;
+          # the next setup-node step puts the target-like Node.js first on PATH.
+          "FLOOR_NODE=$FloorNode" |
               Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Set up the target-like existing npm Claude Node.js
@@ -350,6 +409,7 @@ jobs:
               "WINDOWS-PUBLISHER-RELEASE-GATE.log"
           & powershell.exe -NoLogo -NoProfile -File $Gate `
               -ClaudeExecutable $env:NATIVE_CLAUDE_EXECUTABLE `
+              -NodeExecutable $env:NPM_CLAUDE_NODE `
               -TransferPath $env:TRANSFER_ARCHIVE `
               -LogPath $PublisherGateLog
           if ($LASTEXITCODE -ne 0) {
@@ -1299,10 +1359,39 @@ jobs:
               throw "The installer did not record a valid extension installation method."
           }
           python (Join-Path $env:TRANSFER_ROOT "payload\toolkit\scripts\verify-bundle.py") `
-              $Manifest.installRoot
+              --reject-native-binaries $Manifest.installRoot
           if ($LASTEXITCODE -ne 0) {
               throw "Installed runtime verification failed."
           }
+          # No-EXE package: MCP must run on the existing target-like Node.js,
+          # never on a packaged copy inside the installed runtime.
+          if (Test-Path -LiteralPath (Join-Path $Manifest.installRoot "node")) {
+              throw "The installed runtime unexpectedly contains a node directory."
+          }
+          $InstalledNode = [IO.Path]::GetFullPath([string]$Manifest.nodeExecutable)
+          if ($InstalledNode -ine [IO.Path]::GetFullPath($env:NPM_CLAUDE_NODE)) {
+              throw "Installer did not select the existing target-like Node.js: $InstalledNode"
+          }
+          $RegisteredCommand = [string]$ClaudePayload.mcpServers.'browser-mcp'.command
+          if ([IO.Path]::GetFullPath($RegisteredCommand) -ine $InstalledNode) {
+              throw "Registered MCP command is not the selected system Node.js: $RegisteredCommand"
+          }
+          $InstalledNodeVersion = ((& $InstalledNode --version 2>&1) -join "`n").Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $InstalledNodeVersion -ne "v$env:CLAUDE_NPM_NODE_VERSION") {
+              throw "Installed MCP Node.js must be v$env:CLAUDE_NPM_NODE_VERSION; found $InstalledNodeVersion"
+          }
+          if (-not (Select-String -LiteralPath $InstallLogs[0].FullName `
+              -SimpleMatch "SYSTEM NODE SELECTED: $InstalledNode" -Quiet)) {
+              throw "The installer log does not record the selected system Node.js."
+          }
+          if (-not (Select-String -LiteralPath $PublisherGateLog `
+              -SimpleMatch "SYSTEM NODE FOR GATE:" -Quiet) -or
+              -not (Select-String -LiteralPath $PublisherGateLog `
+              -SimpleMatch "v$env:CLAUDE_NPM_NODE_VERSION x64" -Quiet)) {
+              throw "The publisher gate did not run on the target-like system Node.js."
+          }
+          Write-Host "CI SYSTEM NODE BINDING PASSED: $InstalledNode $InstalledNodeVersion"
           Copy-Item -LiteralPath $PublisherGateLog `
               -Destination (Join-Path $EvidenceRoot `
                   "WINDOWS-PUBLISHER-RELEASE-GATE.log")
@@ -1727,6 +1816,31 @@ jobs:
               if ($LASTEXITCODE -ne 0) {
                   throw "Dedicated headless MCP E2E failed."
               }
+              # Repeat the same installed-runtime browser E2E on the supported
+              # floor so the minimum Node.js is proven by execution, not only
+              # by static analysis.
+              @(Get-Process -Name chrome -ErrorAction SilentlyContinue) |
+                  Stop-Process -Force -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 2
+              $FloorNodeVersion = ((& $env:FLOOR_NODE --version 2>&1) -join "`n").Trim()
+              if ($LASTEXITCODE -ne 0 -or
+                  $FloorNodeVersion -ne "v$env:FLOOR_NODE_VERSION") {
+                  throw "Expected floor Node.js v$env:FLOOR_NODE_VERSION for the browser E2E; found $FloorNodeVersion"
+              }
+              python .\.github\scripts\exercise-extension-mcp.py `
+                  --mode dedicated `
+                  --node-executable $env:FLOOR_NODE `
+                  --playwright-cli (Join-Path $RuntimeRoot `
+                      "bin\intranet-browser-agent-mcp.js") `
+                  --playwright-config $PlaywrightConfigPath `
+                  --environment-policy (Join-Path $env:TRANSFER_ROOT `
+                      "payload\toolkit\config\windows-mcp-environment.json") `
+                  --browser-channel chrome `
+                  --browser-executable $env:CHROME_EXE
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Dedicated headless MCP E2E failed on floor Node.js $FloorNodeVersion."
+              }
+              Write-Host "CI FLOOR NODE BROWSER E2E PASSED ON $FloorNodeVersion"
           } finally {
               $env:USERPROFILE = $DedicatedPilotUserProfile
               $env:LOCALAPPDATA = $DedicatedPilotLocalAppData
@@ -1943,7 +2057,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $ReadyArchive = [IO.Path]::GetFullPath($env:TRANSFER_ARCHIVE)
           $ReadyName = [IO.Path]::GetFileName($ReadyArchive)
-          if ($ReadyName -ne "browser-mcp-server-1.0.21-windows-x64.zip") {
+          if ($ReadyName -ne "browser-mcp-server-1.0.22-windows-x64.zip") {
               throw "Unexpected public package name: $ReadyName"
           }
           python .\scripts\verify-bundle.py $ReadyArchive
@@ -1987,7 +2101,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-mcp-server-1.0.21-windows-x64.zip
+          name: browser-mcp-server-1.0.22-windows-x64.zip
           path: ${{ env.READY_ARCHIVE }}
           archive: false
           if-no-files-found: error
@@ -1997,7 +2111,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: browser-mcp-server-1.0.21-windows-x64.zip.sha256
+          name: browser-mcp-server-1.0.22-windows-x64.zip.sha256
           path: ${{ env.READY_ARCHIVE }}.sha256
           archive: false
           if-no-files-found: error

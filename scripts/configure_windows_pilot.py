@@ -101,11 +101,13 @@ def extract_upgrade_preferences(
         raise ConfiguratorError(
             "installed runtime is not a versioned Windows x64 core release"
         )
-    _require_exact_windows_path(
-        manifest.get("nodeExecutable"),
-        ntpath.join(install_root, "node", "node.exe"),
-        "installed nodeExecutable",
-    )
+    # 1.0.21 and earlier recorded the bundled runtime copy; current installs
+    # record the target's existing node.exe.  Neither path is carried into the
+    # new manifest -- the installer always supplies a freshly verified one --
+    # so only require a plausible absolute node.exe here.
+    _windows_path_key(manifest.get("nodeExecutable"), "installed nodeExecutable")
+    if ntpath.basename(str(manifest.get("nodeExecutable"))).lower() != "node.exe":
+        raise ConfiguratorError("installed nodeExecutable is not node.exe")
     output = manifest.get("output")
     if not isinstance(output, dict):
         raise ConfiguratorError("installed manifest output is missing")

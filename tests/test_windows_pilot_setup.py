@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +12,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# Windows packages carry no node.exe; manifests point at the existing one.
+SYSTEM_NODE = r"C:\Program Files\nodejs\node.exe"
 SPEC = importlib.util.spec_from_file_location(
     "configure_windows_pilot", ROOT / "scripts" / "configure_windows_pilot.py"
 )
@@ -37,7 +40,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
             profile_owner=r"CORP\pilot-user",
             browser_channel="chrome",
             browser_executable=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            node_executable=user_root + r"\releases\runtime-1\node\node.exe",
+            node_executable=SYSTEM_NODE,
         )
 
     def test_builds_valid_user_scoped_windows_pilot_manifest(self) -> None:
@@ -76,7 +79,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
             browser_executable=(
                 r"C:\Program Files\Google\Chrome\Application\chrome.exe"
             ),
-            node_executable=user_root + r"\releases\runtime-1\node\node.exe",
+            node_executable=SYSTEM_NODE,
             browser_mode="dedicated",
             headless=True,
             user_data_dir=user_root + r"\browser-profile\pilot",
@@ -146,6 +149,8 @@ class WindowsPilotSetupTests(unittest.TestCase):
             + r"\releases\browser-agent-runtime-1.0.14-core-windows-x64"
         )
         manifest["installRoot"] = runtime_root
+        # Installs up to 1.0.21 recorded the bundled copy; upgrades must still
+        # read their preferences even though the new manifest uses system Node.
         manifest["nodeExecutable"] = runtime_root + r"\node\node.exe"
         manifest["browser"]["manualConnectionApproval"] = False
 
@@ -552,9 +557,34 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertNotIn("clients2.google.com", installer)
         self.assertNotIn("AllowedOrigins", installer)
         self.assertNotIn("批准单号", installer)
-        self.assertIn('Invoke-Python @($Verifier, $PackageRoot)', installer)
+        self.assertIn(
+            'Invoke-Python @($Verifier, "--reject-native-binaries", $PackageRoot)',
+            installer,
+        )
+        self.assertIn(
+            'Invoke-Python @($Verifier, "--reject-native-binaries", $RuntimeArchive)',
+            installer,
+        )
+        self.assertNotIn("Invoke-Python @($Verifier, $", installer)
         self.assertNotIn("BROWSER_AGENT_NODE", installer)
-        self.assertIn("未修改系统 Node.js", installer)
+        self.assertNotIn("validate_node_distribution", installer)
+        self.assertNotIn("windows-node-sources", installer)
+        self.assertNotIn('Join-Path $RuntimeRoot "node"', installer)
+        self.assertIn("Resolve-SystemNodeRuntime", installer)
+        self.assertIn("SYSTEM NODE SELECTED:", installer)
+        self.assertIn("SYSTEM NODE REJECTED:", installer)
+        self.assertIn("未安装或修改 Node.js", installer)
+        self.assertIn("安装器不会安装、升级或下载 Node.js", installer)
+        self.assertIn(
+            '-ExcludedRoots @((Join-Path $env:USERPROFILE "browser-mcp-server"))',
+            installer,
+        )
+        # The system Node.js is chosen in step 1, before any user directory
+        # or Claude configuration is written.
+        self.assertLess(
+            installer.index("$SystemNode = Resolve-SystemNodeRuntime"),
+            installer.index('Write-Step 2 '),
+        )
         self.assertIn("Detailed error log:", launcher)
         self.assertNotIn("npm.cmd", target_automation)
         self.assertNotIn("pnpm.cmd", target_automation)
@@ -577,8 +607,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
 
         function_ranges = (
             ("Invoke-External", "Invoke-Python"),
-            ("Invoke-Python", "Get-NodeInfo"),
-            ("Get-NodeInfo", "Test-BrowserInstalled"),
+            ("Invoke-Python", "Get-ClaudeUserConfigPath"),
         )
         for function_name, next_function_name in function_ranges:
             start = installer.index(f"function {function_name}")
@@ -644,8 +673,16 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('"--claude-prefix", [string]$Prefix', gate)
         self.assertIn('"--node-executable", $NodeExe', gate)
         self.assertIn('"--playwright-cli", $Wrapper', gate)
-        self.assertIn("validate_node_distribution.py", gate)
-        self.assertIn("Get-NativeOutput $NodeExe", gate)
+        self.assertNotIn("validate_node_distribution.py", gate)
+        self.assertIn('[string]$NodeExecutable = ""', gate)
+        self.assertIn("-ExplicitPath $NodeExecutable", gate)
+        self.assertIn("$NodeExe = [string]$SystemNode.Executable", gate)
+        self.assertIn("SYSTEM NODE FOR GATE:", gate)
+        self.assertIn(
+            'Invoke-PythonChecked @($Verifier, "--reject-native-binaries", $RuntimeRoot)',
+            gate,
+        )
+        self.assertNotIn("Invoke-PythonChecked @($Verifier, $", gate)
         self.assertIn("smoke_playwright_mcp.py", gate)
         self.assertIn(
             '$ProbeInteractionConfig = Join-Path $TemporaryRoot "interaction.config.json"',
@@ -788,7 +825,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
         # launcher and publishes the ZIP produced by the reviewed builder.
         for marker in (
             "Assemble and extract the reviewed Windows ZIP",
-            "browser-mcp-server-1.0.21-windows-x64.zip",
+            "browser-mcp-server-1.0.22-windows-x64.zip",
             "Expand-Archive",
             "Public Windows ZIP must extract to exactly one top-level directory",
             "Prove native Claude compatibility in an isolated release gate",
@@ -900,6 +937,106 @@ class WindowsPilotSetupTests(unittest.TestCase):
             access_denied_injector,
         )
         self.assertNotIn("-HoldSeconds", workflow)
+
+    def test_system_node_resolver_contract(self) -> None:
+        discovery = (ROOT / "scripts" / "windows-tool-discovery.ps1").read_text(
+            encoding="utf-8"
+        )
+        # Windows PowerShell 5.1 reads BOM-less scripts as ANSI.
+        self.assertTrue(discovery.isascii())
+        start = discovery.index("function Resolve-SystemNodeRuntime")
+        resolver = discovery[start:]
+        probe = discovery[
+            discovery.index("function Get-NodeRuntimeProbe"):start
+        ]
+        self.assertIn('Get-Command "node.exe"', resolver)
+        self.assertIn("$env:NVM_SYMLINK", resolver)
+        self.assertIn('"nodejs\\node.exe"', resolver)
+        self.assertIn("'^[A-Za-z]:\\\\'", resolver)
+        self.assertIn("WindowsApps", resolver)
+        self.assertIn('$Probe.Arch -ne "x64"', resolver)
+        self.assertIn("$Probe.Version -lt $Minimum", resolver)
+        self.assertIn("inside the product directory", resolver)
+        # An explicit path (gate or recorded install) never falls back.
+        self.assertIn("$Candidates = @($ExplicitPath)", resolver)
+        self.assertIn('@("NODE_OPTIONS", "NODE_PATH")', probe)
+        self.assertIn('-p "process.version+\'/\'+process.arch"', probe)
+        self.assertIn('$ErrorActionPreference = "Continue"', probe)
+        self.assertNotIn("Invoke-WebRequest", discovery)
+        self.assertNotIn("npm", resolver)
+
+    @unittest.skipUnless(
+        os.name == "nt" and shutil.which("node") is not None,
+        "requires Windows PowerShell 5.1 and an existing node.exe",
+    )
+    def test_system_node_resolver_accepts_and_rejects_real_candidates(self) -> None:
+        real_node = Path(shutil.which("node") or "").resolve()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake = root / "fake" / "node.exe"
+            fake.parent.mkdir()
+            fake.write_bytes(b"MZ" + b"\0" * 126)
+            windows_apps = root / "WindowsApps" / "node.exe"
+            resolver = ROOT / "scripts" / "windows-tool-discovery.ps1"
+
+            def ps_literal(value: Path) -> str:
+                return "'" + str(value).replace("'", "''") + "'"
+
+            powershell = (
+                "$ErrorActionPreference = 'Stop'; "
+                f". {ps_literal(resolver)}; "
+                "$env:NODE_OPTIONS = '--max-old-space-size=64'; "
+                "$Ok = Resolve-SystemNodeRuntime -MinimumVersion '0.0.1' "
+                f"-ExplicitPath {ps_literal(real_node)}; "
+                "if (-not $Ok.Executable -or $Ok.Arch -ne 'x64' -or "
+                "$Ok.Text -notmatch '^v\\d+\\.\\d+\\.\\d+$') { "
+                "throw ('accept: ' + ($Ok | ConvertTo-Json -Compress)) }; "
+                "if ($env:NODE_OPTIONS -ne '--max-old-space-size=64') { "
+                "throw 'NODE_OPTIONS was not restored after probing' }; "
+                "$Old = Resolve-SystemNodeRuntime -MinimumVersion '999.0.0' "
+                f"-ExplicitPath {ps_literal(real_node)}; "
+                "if ($Old.Executable -or "
+                "(@($Old.Rejected) -join ';') -notmatch 'older than 999.0.0') { "
+                "throw 'minimum version was not enforced' }; "
+                "$Excluded = Resolve-SystemNodeRuntime -MinimumVersion '0.0.1' "
+                f"-ExplicitPath {ps_literal(real_node)} "
+                f"-ExcludedRoots @({ps_literal(real_node.parent)}); "
+                "if ($Excluded.Executable -or "
+                "(@($Excluded.Rejected) -join ';') -notmatch 'product directory') { "
+                "throw 'a node.exe inside the product directory was accepted' }; "
+                "$Fake = Resolve-SystemNodeRuntime -MinimumVersion '0.0.1' "
+                f"-ExplicitPath {ps_literal(fake)}; "
+                "if ($Fake.Executable) { throw 'a non-Node executable was accepted' }; "
+                "$Apps = Resolve-SystemNodeRuntime -MinimumVersion '0.0.1' "
+                f"-ExplicitPath {ps_literal(windows_apps)}; "
+                "if ($Apps.Executable -or "
+                "(@($Apps.Rejected) -join ';') -notmatch 'WindowsApps') { "
+                "throw 'a WindowsApps alias was accepted' }; "
+                f"$env:PATH = {ps_literal(real_node.parent)}; "
+                "$env:NVM_SYMLINK = ''; "
+                f"$env:ProgramFiles = {ps_literal(root / 'no-program-files')}; "
+                "$FromPath = Resolve-SystemNodeRuntime -MinimumVersion '0.0.1'; "
+                f"if ($FromPath.Executable -ine {ps_literal(real_node)}) {{ "
+                "throw ('PATH node.exe was not selected: ' + $FromPath.Executable) }"
+            )
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    powershell,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                0,
+                result.returncode,
+                msg=f"stdout={result.stdout}\nstderr={result.stderr}",
+            )
 
     @unittest.skipUnless(os.name == "nt", "requires Windows PowerShell 5.1")
     def test_native_claude_resolver_finds_official_path_when_path_is_stale(
@@ -1144,15 +1281,13 @@ class WindowsPilotSetupTests(unittest.TestCase):
         )
         self.assertLess(path_guard, first_install_write)
         staged_runtime_verify = installer.index(
-            "Invoke-Python @($Verifier, $StagedRuntimeRoot)"
+            'Invoke-Python @($Verifier, "--reject-native-binaries", $StagedRuntimeRoot)'
         )
-        staged_node_verify = installer.index("$StagedBundledNodeRoot =")
         runtime_publish = installer.index(
             "Publish-StagedRuntime -Source $StagedRuntimeRoot -Destination $RuntimeRoot"
         )
         self.assertLess(staged_runtime_verify, runtime_publish)
-        self.assertLess(staged_runtime_verify, staged_node_verify)
-        self.assertLess(staged_node_verify, runtime_publish)
+        self.assertNotIn("StagedBundledNode", installer)
         self.assertIn("function Test-RetryableDirectoryMoveError", installer)
         self.assertIn("function Move-DirectoryAtomicallyWithRetry", installer)
         self.assertIn("function Publish-StagedRuntime", installer)
@@ -1245,6 +1380,9 @@ class WindowsPilotSetupTests(unittest.TestCase):
         self.assertIn('$ErrorActionPreference = "Continue"', build)
         self.assertIn("$ExitCode = $LASTEXITCODE", build)
         self.assertIn("Invoke-Checked $RuntimeNode", build)
+        self.assertNotIn("NodeDistribution", build)
+        self.assertNotIn("--bundled-node", build)
+        self.assertIn('"--reject-native-binaries"', build)
 
     def test_windows_user_scope_path_check_is_case_insensitive_and_contained(self) -> None:
         user_profile = r"C:\Users\Pilot"
@@ -1308,8 +1446,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
                 profile_owner=r"CORP\pilot-user",
                 browser_channel="chrome",
                 browser_executable=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                node_executable=user_root
-                + r"\releases\runtime-1\node\node.exe",
+                node_executable=SYSTEM_NODE,
                 force=False,
             )
             configure.generate(arguments)
@@ -1318,7 +1455,7 @@ class WindowsPilotSetupTests(unittest.TestCase):
             )
             server = mcp["mcpServers"]["browser-mcp"]
             self.assertEqual("stdio", server["type"])
-            self.assertTrue(server["command"].endswith(r"node\node.exe"))
+            self.assertEqual(SYSTEM_NODE, server["command"])
             self.assertTrue(
                 server["args"][0].endswith(r"bin\intranet-browser-agent-mcp.js")
             )

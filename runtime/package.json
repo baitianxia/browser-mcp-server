@@ -1,10 +1,10 @@
 {
   "name": "browser-mcp-server-runtime",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "private": true,
   "description": "Pinned offline runtime for browser-mcp-server",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=20.12.0"
   },
   "packageManager": "pnpm@11.19.0",
   "dependencies": {

@@ -18,10 +18,18 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 
-TOOL_VERSION = "1.0.21"
+TOOL_VERSION = "1.0.22"
 PLAYWRIGHT_MCP_VERSION = "0.0.79"
 CHROME_DEVTOOLS_MCP_VERSION = "1.8.0"
-MIN_NODE_VERSION = (20, 19, 0)
+# The core runtime (fixed Playwright MCP + compatibility layer) runs on the
+# target's existing Node.js.  20.12.0 is the lowest Node.js 20 release that
+# provides every Node API the pinned runtime uses (Playwright MCP's output
+# budget relies on fs.Dirent.parentPath, added in 20.12.0), and the Windows
+# release CI runs the compatibility suite and browser E2E on exactly 20.12.0.
+# The optional chrome-devtools-mcp diagnostic profile declares ^20.19.0
+# upstream, so manifests that enable it keep that floor.
+MIN_NODE_VERSION = (20, 12, 0)
+MIN_DEVTOOLS_NODE_VERSION = (20, 19, 0)
 
 REQUIRED_CONFIRMATIONS = {
     "delete",
@@ -351,9 +359,16 @@ def validate_manifest(manifest: dict[str, Any]) -> list[str]:
         if "nodeExecutable" not in root:
             errors.append("$.nodeExecutable is required for Windows")
         else:
-            _absolute_path(
+            node_executable = _absolute_path(
                 root.get("nodeExecutable"), "$.nodeExecutable", target_os, errors
             )
+            if (
+                node_executable
+                and PureWindowsPath(node_executable).name.lower() != "node.exe"
+            ):
+                errors.append(
+                    "$.nodeExecutable must name the target's existing node.exe"
+                )
     elif "nodeExecutable" in root:
         errors.append("$.nodeExecutable is only valid for Windows")
 
@@ -910,7 +925,7 @@ def render(manifest_path: Path, output_dir: Path, force: bool) -> list[Path]:
             "chromeDevtoolsMcp": (
                 CHROME_DEVTOOLS_MCP_VERSION if manifest["controls"]["devtools"] else None
             ),
-            "minimumNode": ".".join(map(str, MIN_NODE_VERSION)),
+            "minimumNode": ".".join(map(str, minimum_node_version(manifest))),
             "installRoot": manifest["installRoot"],
         },
         "interaction": manifest["interaction"],
@@ -958,6 +973,14 @@ No extension token or login secret belongs in these generated files.
         _write_atomic(target, payloads[name], 0o640)
         written.append(target)
     return written
+
+
+def minimum_node_version(manifest: dict[str, Any]) -> tuple[int, int, int]:
+    """Return the lowest supported Node.js for the runtime a manifest uses."""
+    controls = manifest.get("controls")
+    if isinstance(controls, dict) and controls.get("devtools") is True:
+        return MIN_DEVTOOLS_NODE_VERSION
+    return MIN_NODE_VERSION
 
 
 def _version_tuple(text: str) -> tuple[int, int, int] | None:
@@ -1219,7 +1242,7 @@ def preflight(
     node_path = next((item for item in node_candidates if os.access(item, os.X_OK)), None)
     if node_path is None:
         missing_node_detail = (
-            f"configured Windows Node.js is missing or not executable: {manifest['nodeExecutable']}"
+            f"configured Windows system Node.js is missing or not executable: {manifest['nodeExecutable']}; restore it or re-run INSTALL.cmd"
             if target_system == "windows"
             else "Node.js not found; bundle it or set BROWSER_AGENT_NODE"
         )
@@ -1240,12 +1263,13 @@ def preflight(
                 timeout=10,
             )
             version = _version_tuple(result.stdout)
-            status = "pass" if version and version >= MIN_NODE_VERSION else "fail"
+            minimum_node = minimum_node_version(manifest)
+            status = "pass" if version and version >= minimum_node else "fail"
             checks.append(
                 {
                     "name": "node",
                     "status": status,
-                    "detail": f"{node_path} {result.stdout.strip()} (minimum {'.'.join(map(str, MIN_NODE_VERSION))})",
+                    "detail": f"{node_path} {result.stdout.strip()} (minimum {'.'.join(map(str, minimum_node))})",
                 }
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -1427,7 +1451,7 @@ def preflight(
 
     if target_system == "windows":
         mcp_command_path = Path(manifest["nodeExecutable"])
-        mcp_command_detail = "direct node.exe launch (no .cmd shell shim)"
+        mcp_command_detail = "direct existing node.exe launch (no .cmd shell shim)"
     else:
         mcp_command_path = runtime_root / "bin" / "playwright-mcp"
         mcp_command_detail = "POSIX runtime wrapper"
@@ -1457,19 +1481,29 @@ def preflight(
         }
     )
     if target_system == "windows":
-        expected_node_path = runtime_root / "node" / "node.exe"
-        command_matches_runtime = ntpath.normcase(
-            ntpath.normpath(str(mcp_command_path))
-        ) == ntpath.normcase(ntpath.normpath(str(expected_node_path)))
+        # Windows packages no longer carry node.exe.  The MCP command must be
+        # the target's existing node.exe and must never resolve into the
+        # installed runtime (for example a leftover bundled copy).
+        configured_node = str(manifest["nodeExecutable"])
+        names_node = ntpath.basename(configured_node).lower() == "node.exe"
+        inside_runtime = _windows_path_is_within(
+            configured_node, manifest["installRoot"]
+        )
+        binding_ok = names_node and not inside_runtime
+        if binding_ok:
+            binding_detail = "MCP command is the existing system node.exe outside the runtime"
+        elif inside_runtime:
+            binding_detail = (
+                f"configured={configured_node} is inside the runtime; "
+                "Windows packages must use the existing system node.exe"
+            )
+        else:
+            binding_detail = f"configured={configured_node} is not node.exe"
         checks.append(
             {
                 "name": "windows-mcp-node-binding",
-                "status": "pass" if command_matches_runtime else "fail",
-                "detail": (
-                    "MCP command is the verified bundled node.exe"
-                    if command_matches_runtime
-                    else f"configured={mcp_command_path}, expected={expected_node_path}"
-                ),
+                "status": "pass" if binding_ok else "fail",
+                "detail": binding_detail,
             }
         )
 

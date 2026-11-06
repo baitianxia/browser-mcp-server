@@ -62,7 +62,7 @@ PNPM_BIN=${PNPM_BIN:-$(command -v pnpm || true)}
 PYTHON_BIN=${PYTHON_BIN:-$(command -v python3 || true)}
 
 if [[ -z "$NODE_BIN" || ! -x "$NODE_BIN" ]]; then
-  echo "Set NODE_BIN to Node.js 20.19+" >&2
+  echo "Set NODE_BIN to the build Node.js 20.19+" >&2
   exit 2
 fi
 if [[ -z "$PNPM_BIN" || ! -x "$PNPM_BIN" ]]; then
@@ -118,15 +118,15 @@ if [[ "$TARGET" == "windows-x64" ]]; then
     echo "Cross-built Windows candidates are limited to the core profile" >&2
     exit 2
   fi
-  if [[ -z "$NODE_DISTRIBUTION" ]]; then
-    echo "Windows one-click bundles require --node-distribution" >&2
+  if [[ -n "$NODE_DISTRIBUTION" ]]; then
+    echo "Windows packages run on the target's existing Node.js; --node-distribution is not allowed" >&2
     exit 2
   fi
 fi
 
 export PYTHONDONTWRITEBYTECODE=1
 
-ARTIFACT_NAME="browser-agent-runtime-1.0.21-${PROFILE}-${TARGET_SYSTEM}-${TARGET_MACHINE}"
+ARTIFACT_NAME="browser-agent-runtime-1.0.22-${PROFILE}-${TARGET_SYSTEM}-${TARGET_MACHINE}"
 mkdir -p "$OUTPUT_DIR"
 ARCHIVE="$OUTPUT_DIR/$ARTIFACT_NAME.tar.gz"
 
@@ -182,27 +182,13 @@ INSTALL_ARGS=(--dir "$STAGE" install --prod --frozen-lockfile --ignore-scripts)
 RUNTIME_NODE="$NODE_BIN"
 BUNDLED_NODE_ARG=""
 if [[ -n "$NODE_DISTRIBUTION" ]]; then
-  if [[ "$TARGET_SYSTEM" == "windows" ]]; then
-    "$PYTHON_BIN" "$SCRIPT_DIR/validate_node_distribution.py" \
-      "$NODE_DISTRIBUTION" \
-      --expected-version "$NODE_VERSION" \
-      --approval-file "$PROJECT_ROOT/config/windows-node-sources.json"
-    cp -R "$NODE_DISTRIBUTION" "$STAGE/node"
-    "$PYTHON_BIN" "$SCRIPT_DIR/validate_node_distribution.py" \
-      "$STAGE/node" \
-      --expected-version "$NODE_VERSION" \
-      --approval-file "$PROJECT_ROOT/config/windows-node-sources.json"
-    if [[ "$CROSS_BUILT" -eq 0 ]]; then
-      RUNTIME_NODE="$STAGE/node/node.exe"
-    fi
-  else
-    if [[ ! -x "$NODE_DISTRIBUTION/bin/node" ]]; then
-      echo "--node-distribution must contain executable bin/node" >&2
-      exit 2
-    fi
-    cp -R "$NODE_DISTRIBUTION" "$STAGE/node"
-    RUNTIME_NODE="$STAGE/node/bin/node"
+  # Only POSIX runtimes may carry Node.js; Windows targets use their own.
+  if [[ ! -x "$NODE_DISTRIBUTION/bin/node" ]]; then
+    echo "--node-distribution must contain executable bin/node" >&2
+    exit 2
   fi
+  cp -R "$NODE_DISTRIBUTION" "$STAGE/node"
+  RUNTIME_NODE="$STAGE/node/bin/node"
   BUNDLED_NODE_ARG=--bundled-node
 fi
 
@@ -249,7 +235,11 @@ STAGED_ARCHIVE="$BUILD_TEMP/$ARTIFACT_NAME.tar.gz"
   "${ARCHIVE_ARGS[@]}" \
   --output "$STAGED_ARCHIVE"
 "$PYTHON_BIN" "$SCRIPT_DIR/write_archive_hash.py" "$STAGED_ARCHIVE"
-"$PYTHON_BIN" "$SCRIPT_DIR/verify-bundle.py" "$STAGED_ARCHIVE"
+VERIFY_ARGS=()
+if [[ "$TARGET_SYSTEM" == "windows" ]]; then
+  VERIFY_ARGS+=(--reject-native-binaries)
+fi
+"$PYTHON_BIN" "$SCRIPT_DIR/verify-bundle.py" ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"} "$STAGED_ARCHIVE"
 mv -f "$STAGED_ARCHIVE" "$ARCHIVE"
 mv -f "$STAGED_ARCHIVE.sha256" "$ARCHIVE.sha256"
 

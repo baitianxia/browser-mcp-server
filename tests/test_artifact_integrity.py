@@ -66,6 +66,135 @@ class ArtifactIntegrityTests(unittest.TestCase):
             errors = verify_bundle.verify_directory(root)
             self.assertTrue(any("hash mismatch" in error for error in errors))
 
+    @staticmethod
+    def pe_image() -> bytes:
+        """A minimal DOS stub whose e_lfanew points at a PE signature."""
+        header = bytearray(b"MZ" + b"\0" * 126)
+        header[60:64] = (64).to_bytes(4, "little")
+        header[64:68] = b"PE\0\0"
+        return bytes(header)
+
+    def make_runtime_tree(self, root: Path, files: dict[str, bytes]) -> Path:
+        root.mkdir(parents=True)
+        for relative, content in files.items():
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "write_integrity.py"),
+                "--root",
+                str(root),
+                "--reject-links",
+            ],
+            check=True,
+        )
+        return root
+
+    def test_pe_detection_requires_a_pe_signature(self) -> None:
+        self.assertTrue(verify_bundle.is_pe_image(self.pe_image()))
+        self.assertFalse(verify_bundle.is_pe_image(b"MZ"))
+        self.assertFalse(verify_bundle.is_pe_image(b"MZ is a postal code\n" * 8))
+        not_pe = bytearray(self.pe_image())
+        not_pe[64:68] = b"XXXX"
+        self.assertFalse(verify_bundle.is_pe_image(bytes(not_pe)))
+
+    def test_no_exe_mode_rejects_executables_by_name_and_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary_path = Path(temporary)
+            clean = self.make_runtime_tree(
+                temporary_path / "clean",
+                {
+                    "bin/intranet-browser-agent-mcp.js": b"'use strict';\n",
+                    "bin/playwright-mcp.cmd": b"@echo off\r\n",
+                    "scripts/install.ps1": b"Write-Host ok\n",
+                },
+            )
+            self.assertEqual(
+                [], verify_bundle.verify_directory(clean, reject_native_binaries=True)
+            )
+
+            dirty = self.make_runtime_tree(
+                temporary_path / "dirty",
+                {
+                    "node/node.exe": b"MZ",
+                    "lib/helper.DLL": b"not really a dll",
+                    "lib/addon.node": b"\x7fELF",
+                    "lib/renamed.bin": self.pe_image(),
+                    "lib/readme.txt": b"plain text\n",
+                },
+            )
+            # Without the flag the verifier keeps its historical behaviour for
+            # POSIX bundles that may legitimately carry Node.js.
+            self.assertEqual([], verify_bundle.verify_directory(dirty))
+            errors = verify_bundle.verify_directory(dirty, reject_native_binaries=True)
+            self.assertIn(
+                "native executable file type is not allowed: node/node.exe", errors
+            )
+            self.assertIn(
+                "native executable file type is not allowed: lib/helper.DLL", errors
+            )
+            self.assertIn(
+                "native executable file type is not allowed: lib/addon.node", errors
+            )
+            self.assertIn(
+                "Windows PE executable content is not allowed: lib/renamed.bin", errors
+            )
+            self.assertFalse(any("readme.txt" in error for error in errors))
+
+            archive = temporary_path / "dirty.tar.gz"
+            create_bundle_archive.create_archive(dirty, archive, reject_links=True)
+            subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "write_archive_hash.py"), str(archive)],
+                check=True,
+            )
+            self.assertEqual([], verify_bundle.verify_archive(archive))
+            archive_errors = verify_bundle.verify_archive(
+                archive, reject_native_binaries=True
+            )
+            self.assertIn(
+                "native executable file type is not allowed: node/node.exe",
+                archive_errors,
+            )
+            self.assertIn(
+                "Windows PE executable content is not allowed: lib/renamed.bin",
+                archive_errors,
+            )
+
+            zip_archive = temporary_path / "dirty.zip"
+            with zipfile.ZipFile(zip_archive, "w") as bundle:
+                for path in sorted(dirty.rglob("*")):
+                    if path.is_file():
+                        bundle.write(
+                            path, f"dirty/{path.relative_to(dirty).as_posix()}"
+                        )
+            self.assertEqual([], verify_bundle.verify_zip_archive(zip_archive))
+            zip_errors = verify_bundle.verify_zip_archive(
+                zip_archive, reject_native_binaries=True
+            )
+            self.assertIn(
+                "native executable file type is not allowed: node/node.exe", zip_errors
+            )
+            self.assertIn(
+                "Windows PE executable content is not allowed: lib/renamed.bin",
+                zip_errors,
+            )
+
+            cli = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "verify-bundle.py"),
+                    "--reject-native-binaries",
+                    str(dirty),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(1, cli.returncode)
+            self.assertIn("node/node.exe", cli.stdout)
+
     def test_unsafe_symlink_is_rejected(self) -> None:
         self.assertFalse(verify_bundle.link_stays_inside("bin/tool", "../../../etc/passwd"))
         self.assertFalse(verify_bundle.link_stays_inside("bin/tool", "/etc/passwd"))

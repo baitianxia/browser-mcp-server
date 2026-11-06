@@ -393,10 +393,33 @@ try {
     $BrowserExecutable = [string]$Manifest.browser.executablePath
     $PlaywrightCli = Join-Path $RuntimeRoot `
         "bin\intranet-browser-agent-mcp.js"
-    foreach ($RequiredRuntimePath in @($NodeExe, $BrowserExecutable, $PlaywrightCli)) {
+    foreach ($RequiredRuntimePath in @($BrowserExecutable, $PlaywrightCli)) {
         if (-not (Test-Path -LiteralPath $RequiredRuntimePath -PathType Leaf)) {
             throw "已安装运行环境不完整：$RequiredRuntimePath"
         }
+    }
+    # The package carries no node.exe; MCP runs on the existing Node.js the
+    # installer selected.  Re-verify that exact executable against the
+    # runtime's recorded floor so a removed or downgraded Node.js fails here
+    # with a clear next step instead of inside Claude Code.
+    $RuntimeBuildMetadataPath = Join-Path $RuntimeRoot "BUILD-METADATA.json"
+    if (-not (Test-Path -LiteralPath $RuntimeBuildMetadataPath -PathType Leaf)) {
+        throw "已安装运行环境不完整：$RuntimeBuildMetadataPath"
+    }
+    $RuntimeBuildMetadata = Read-Utf8JsonFile -Path $RuntimeBuildMetadataPath
+    $RuntimeNodeProperty = $RuntimeBuildMetadata.PSObject.Properties["nodeRuntime"]
+    if ($null -eq $RuntimeNodeProperty -or $null -eq $RuntimeNodeProperty.Value -or
+        [string]$RuntimeNodeProperty.Value.source -ne "system" -or
+        [string]$RuntimeNodeProperty.Value.minimumVersion -notmatch '^\d+\.\d+\.\d+$') {
+        throw "已安装运行环境不是使用现有 Node.js 的版本；请重新双击最新 INSTALL.cmd。"
+    }
+    $SystemNode = Resolve-SystemNodeRuntime `
+        -MinimumVersion ([string]$RuntimeNodeProperty.Value.minimumVersion) `
+        -ExplicitPath $NodeExe
+    if (-not $SystemNode.Executable) {
+        throw ("安装时登记的 Node.js 现在不可用：$NodeExe" + [Environment]::NewLine +
+            (@($SystemNode.Rejected) -join [Environment]::NewLine) + [Environment]::NewLine +
+            "请恢复该 Node.js（需 Windows x64 $($RuntimeNodeProperty.Value.minimumVersion) 或更高版本），或重新双击 INSTALL.cmd 选择新的 Node.js。")
     }
 
     try {

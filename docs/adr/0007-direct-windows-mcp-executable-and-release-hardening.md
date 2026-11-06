@@ -1,6 +1,6 @@
 # ADR 0007：Windows MCP 直接启动固定可执行文件并收紧发布事务
 
-状态：已接受；2026-09-01 按 ADR-0009 补充 Windows pilot 独立 Profile 与用户令牌例外，Playwright 首个脚本参数按 ADR-0010 更新。
+状态：已接受；2026-09-01 按 ADR-0009 补充 Windows pilot 独立 Profile 与用户令牌例外，Playwright 首个脚本参数按 ADR-0010 更新。2026-11-05 按 ADR-0012 修订：Windows 一键包改为 `bundledNode=false`、不携带任何 EXE，`config/windows-node-sources.json` 与 Node 来源哈希校验随之删除；MCP 仍直接执行 `node.exe`（现在是目标机已有的那一个），不得改用 `.cmd`。
 
 > 2026-09-07 统一 Windows 交付更新：当前用户路径、包名、MCP 名称和入口以 `docs/architecture.md`、`docs/acceptance.md` 和 `docs/operations.md` 为准，取代本文中旧的 `%LOCALAPPDATA%` 根目录或历史身份描述。当前根目录是 `%USERPROFILE%\browser-mcp-server`，公共 MCP 名称是 `browser-mcp`；本文关于直接 `node.exe`、完整性和事务边界的约束继续有效。
 

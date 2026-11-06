@@ -31,7 +31,7 @@ from validate_playwright_extension import (
 )
 
 
-TOOLKIT_VERSION = "1.0.21"
+TOOLKIT_VERSION = "1.0.22"
 RUNTIME_PREFIX = "browser-agent-runtime-"
 RUNTIME_SUFFIX = ".tar.gz"
 RUNTIME_NAME_PATTERN = re.compile(
@@ -55,7 +55,6 @@ EXACT_SOURCE_FILES = (
     "config/playwright-extension-source.json",
     "config/settings.example.json",
     "config/windows-mcp-environment.json",
-    "config/windows-node-sources.json",
     "docs/acceptance.md",
     "docs/architecture.md",
     "docs/design-review.md",
@@ -73,6 +72,7 @@ EXACT_SOURCE_FILES = (
     "docs/adr/0008-publisher-gate-and-single-pass-target-install.md",
     "docs/adr/0009-post-install-browser-settings.md",
     "docs/adr/0010-compact-snapshots-and-dynamic-page-compatibility.md",
+    "docs/adr/0012-windows-existing-node-no-exe-package.md",
     "examples/chrome-policy/extension-settings-self-hosted.json.template",
     "examples/chrome-policy/extension-settings-web-store.json",
     "runtime/bin/chrome-devtools-mcp",
@@ -102,10 +102,8 @@ EXACT_SOURCE_FILES = (
     "scripts/UNINSTALL.cmd",
     "scripts/UNINSTALL.ps1",
     "scripts/prepare_runtime_tree.py",
-    "scripts/prepare_windows_node_distribution.py",
     "scripts/register_claude_user_mcp.py",
     "scripts/smoke_playwright_mcp.py",
-    "scripts/validate_node_distribution.py",
     "scripts/validate_playwright_extension.py",
     "scripts/validate_windows_release_metadata.py",
     "scripts/verify-bundle.py",
@@ -119,7 +117,6 @@ EXACT_SOURCE_FILES = (
     "tests/test_browser_agent.py",
     "tests/test_claude_mcp_registration.py",
     "tests/test_mcp_compatibility.py",
-    "tests/test_node_distribution.py",
     "tests/test_playwright_mcp_smoke.py",
     "tests/test_playwright_extension.py",
     "tests/test_transfer_kit.py",
@@ -135,7 +132,6 @@ PUBLIC_WINDOWS_SOURCE_FILES = (
     "config/deployment.windows-pilot.json.template",
     "config/playwright-extension-source.json",
     "config/windows-mcp-environment.json",
-    "config/windows-node-sources.json",
     "docs/operations.md",
     "docs/windows-quickstart.md",
     "scripts/BROWSER-AGENT-SETTINGS.ps1",
@@ -144,7 +140,6 @@ PUBLIC_WINDOWS_SOURCE_FILES = (
     "scripts/configure_windows_pilot.py",
     "scripts/register_claude_user_mcp.py",
     "scripts/smoke_playwright_mcp.py",
-    "scripts/validate_node_distribution.py",
     "scripts/validate_playwright_extension.py",
     "scripts/validate_windows_release_metadata.py",
     "scripts/verify-bundle.py",
@@ -237,9 +232,26 @@ def runtime_metadata(archive: Path) -> dict[str, object]:
         raise TransferKitError("runtime archive profile does not match build metadata")
     if payload.get("target") != expected_target:
         raise TransferKitError("runtime archive target does not match build metadata")
-    if expected_target["system"] == "windows" and payload.get("bundledNode") is not True:
-        raise TransferKitError("Windows one-click transfer kits require bundledNode=true")
+    if expected_target["system"] == "windows":
+        require_windows_system_node(payload)
     return payload
+
+
+def require_windows_system_node(metadata: dict[str, object]) -> None:
+    """Windows packages carry no node.exe and run on the target's Node.js."""
+    if metadata.get("bundledNode") is not False:
+        raise TransferKitError(
+            "Windows transfer kits require bundledNode=false; node.exe must not be packaged"
+        )
+    node_runtime = metadata.get("nodeRuntime")
+    if (
+        not isinstance(node_runtime, dict)
+        or node_runtime.get("source") != "system"
+        or not isinstance(node_runtime.get("minimumVersion"), str)
+    ):
+        raise TransferKitError(
+            "Windows transfer kits require nodeRuntime.source=system with a minimumVersion"
+        )
 
 
 def validate_public_windows_build_metadata(metadata: dict[str, object]) -> None:
@@ -264,8 +276,7 @@ def validate_public_windows_build_metadata(metadata: dict[str, object]) -> None:
         raise TransferKitError("Windows public packages require a native windows/x64 build host")
     if metadata.get("profile") != "core":
         raise TransferKitError("Windows public packages require the core runtime profile")
-    if metadata.get("bundledNode") is not True:
-        raise TransferKitError("Windows public packages require bundledNode=true")
+    require_windows_system_node(metadata)
 
 
 def start_here(kit_name: str, runtime_name: str, metadata: dict[str, object]) -> str:
@@ -278,20 +289,32 @@ def start_here(kit_name: str, runtime_name: str, metadata: dict[str, object]) ->
         target_label = "unknown"
     bundled_node = metadata.get("bundledNode") is True
     cross_built = metadata.get("crossBuilt") is True
-    node_note = (
-        "运行包已携带经过来源与哈希校验的最小 Node.js；无需安装或升级系统 Node.js。"
-        if bundled_node
-        else "运行包未携带 Node.js；目标机必须提供组织批准的 Node.js 20.19+，并可通过 BROWSER_AGENT_NODE 指定。"
+    node_runtime = metadata.get("nodeRuntime")
+    minimum_node = (
+        str(node_runtime.get("minimumVersion"))
+        if isinstance(node_runtime, dict) and node_runtime.get("minimumVersion")
+        else "20.12.0"
     )
+    if bundled_node:
+        node_note = "运行包已携带最小 Node.js；无需安装或升级系统 Node.js。"
+    elif target_system == "windows":
+        node_note = (
+            f"包内不含 node.exe 或其他 EXE/DLL；目标机必须已有组织批准的 Windows x64 Node.js {minimum_node} 或更高版本，"
+            "安装器自动识别并校验，不会安装、升级或下载 Node.js。"
+        )
+    else:
+        node_note = (
+            f"运行包未携带 Node.js；目标机必须提供组织批准的 Node.js {minimum_node}+，并可通过 BROWSER_AGENT_NODE 指定。"
+        )
     if target_system == "windows" and not cross_built:
         verification_section = """## 1. 导入后校验
 
 解压前先按 `SHA256SUMS.txt` 校验 ZIP；具体步骤见 `README.md`。哈希不一致时，不要运行任何文件。
 
-完整测试、PowerShell 语法检查、注册故障矩阵和真实隔离探针已经由发布方 Windows 流水线完成。目标机不重复开发测试；安装器仍会校验当前解压目录、内层运行包、固定哈希的官方 Playwright Extension、包内 Node 和最终 MCP stdio 握手。"""
+完整测试、PowerShell 语法检查、注册故障矩阵和真实隔离探针已经由发布方 Windows 流水线完成。目标机不重复开发测试；安装器仍会校验当前解压目录、内层运行包（确认不含 EXE/DLL）、固定哈希的官方 Playwright Extension、目标机现有 Node.js 的版本与架构，以及最终 MCP stdio 握手。"""
         deployment_section = """## 3. 双击安装
 
-双击本目录的 `INSTALL.cmd` 一次，无需 UAC，也不填写项目目录、网址、防火墙或审批字段。启动器只启动一个安装/升级事务，不运行单元测试或注册器自检。向导验证 Windows 原生发布元数据和所有包内制品，把运行时和配置安装到当前用户 `%USERPROFILE%\browser-mcp-server`，自动识别 Chrome 或 Edge；扩展安装和人工授权仍受浏览器安全边界约束。随后复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，把直接执行包内 `node.exe + 固定兼容层` 的 MCP 注册到 Claude Code user scope，名称为 `browser-mcp`（显示名“浏览器助手”）。npm 入口只读取现有包的 bin：JavaScript bin 用现有 Node，Windows 原生 bin（如 `bin\\claude.exe`）直接执行，不把 `.exe` 交给 Node，也不执行 npm；找不到可验证 Claude 时安全停止，绝不安装、升级或修复 Claude Code。
+双击本目录的 `INSTALL.cmd` 一次，无需 UAC，也不填写项目目录、网址、防火墙或审批字段。启动器只启动一个安装/升级事务，不运行单元测试或注册器自检。向导验证 Windows 原生发布元数据和所有包内制品，把运行时和配置安装到当前用户 `%USERPROFILE%\browser-mcp-server`，自动识别 Chrome 或 Edge；扩展安装和人工授权仍受浏览器安全边界约束。随后复用当前用户已有的原生 `claude.exe` 或 npm `claude.cmd`，把直接执行目标机现有 `node.exe + 固定兼容层` 的 MCP 注册到 Claude Code user scope，名称为 `browser-mcp`（显示名“浏览器助手”）。npm 入口只读取现有包的 bin：JavaScript bin 用现有 Node，Windows 原生 bin（如 `bin\\claude.exe`）直接执行，不把 `.exe` 交给 Node，也不执行 npm；找不到可验证 Claude 时安全停止，绝不安装、升级或修复 Claude Code。
 
 向导会自动验证运行包、在同盘暂存后发布固定版本、生成清单并先暂存/preflight 再整目录切换配置。随后逐字节备份真实 Claude 用户配置，事务化注册并核对用户级 MCP 命令、参数及固定环境。首次安装明确没有旧 MCP 条目时会直接继续，其他删除错误会恢复并停止。安装后还会以最终命令完成 MCP stdio `initialize + tools/list` 握手。它不会创建项目目录，也不会写项目 `.mcp.json`/`CLAUDE.md`。任何校验失败都会停止并恢复用户配置和旧部署配置；不会运行 `npm install`、`pnpm install` 或 `npx`。
 
@@ -354,7 +377,7 @@ python3 toolkit/tools/browser_agent.py render --manifest /path/to/deployment.pil
 
 ## 2. 确认目标兼容
 
-目标 OS/架构必须与上面的构建目标一致；不同平台应在对应受控构建区重新产出。Windows 目标确认 Claude Code、Chrome/Edge 和 Python 3.10+ 可用。若上方显示运行包已携带 Node.js，安装器会使用包内版本且不会修改系统 Node.js；否则目标机才需满足 Node.js 20.19+。
+目标 OS/架构必须与上面的构建目标一致；不同平台应在对应受控构建区重新产出。Windows 目标确认 Claude Code、Chrome/Edge、Python 3.10+ 和 Windows x64 Node.js {minimum_node}+ 可用；Windows 包不携带任何 EXE。
 
 {deployment_section}
 """
@@ -444,7 +467,7 @@ def public_windows_manifest(
     return manifest
 
 
-def start_here_html(kit_name: str, runtime_name: str) -> str:
+def start_here_html(kit_name: str, runtime_name: str, minimum_node: str) -> str:
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -458,6 +481,7 @@ def start_here_html(kit_name: str, runtime_name: str) -> str:
   <p>先阅读 <code>README.md</code>，再双击下面的唯一安装/升级入口：</p>
   <p><a class="action" href="INSTALL.cmd">INSTALL.cmd</a></p>
   <p>安装完成后使用 <code>CONFIGURE.cmd</code> 修改设置，或使用 <code>OPEN-CONFIG.cmd</code> 打开 <code>%USERPROFILE%\\browser-mcp-server\\config\\settings.json</code>。</p>
+  <p>本包不含 EXE/DLL：浏览器助手使用这台电脑已有的 Windows x64 Node.js（{minimum_node} 或更高），安装器会自动识别并校验，不会安装或下载 Node.js。</p>
   <p>运行时归档：<code>payload/runtime/{runtime_name}</code>。校验清单：<code>SHA256SUMS.txt</code>。</p>
 </body>
 </html>
@@ -488,7 +512,11 @@ def build_windows_public_zip(
 
     temporary = Path(tempfile.mkdtemp(prefix=".browser-mcp-server.", dir=output_dir))
     verifier = project_root / "scripts" / "verify-bundle.py"
+    no_native = "--reject-native-binaries"
     try:
+        # The target may forbid unapproved executables.  Refuse to package a
+        # runtime that carries node.exe or any other executable image.
+        run_checked((sys.executable, str(verifier), no_native, str(runtime_archive)))
         stage = temporary / kit_name
         payload = stage / "payload"
         toolkit_root = payload / "toolkit"
@@ -551,7 +579,12 @@ def build_windows_public_zip(
         for name in ("INSTALL.cmd", "CONFIGURE.cmd", "OPEN-CONFIG.cmd", "UNINSTALL.cmd"):
             shutil.copy2(project_root / "scripts" / name, stage / name)
         (stage / "START-HERE.html").write_text(
-            start_here_html(kit_name, runtime_name), encoding="utf-8"
+            start_here_html(
+                kit_name,
+                runtime_name,
+                str(metadata["nodeRuntime"]["minimumVersion"]),  # type: ignore[index]
+            ),
+            encoding="utf-8",
         )
         release_manifest = public_windows_manifest(
             kit_name=kit_name,
@@ -566,7 +599,7 @@ def build_windows_public_zip(
             encoding="utf-8",
         )
         write_checksum_manifest(stage)
-        run_checked((sys.executable, str(verifier), str(stage)))
+        run_checked((sys.executable, str(verifier), no_native, str(stage)))
         metadata_verifier = project_root / "scripts" / "validate_windows_release_metadata.py"
         run_checked((sys.executable, str(metadata_verifier), str(payload / "KIT-METADATA.json")))
         run_checked((sys.executable, str(metadata_verifier), str(stage / "release-manifest.json")))
@@ -574,7 +607,7 @@ def build_windows_public_zip(
         staged_archive = temporary / f"{kit_name}.zip"
         with zipfile.ZipFile(staged_archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
             add_zip_tree(bundle, stage, kit_name)
-        run_checked((sys.executable, str(verifier), str(staged_archive)))
+        run_checked((sys.executable, str(verifier), no_native, str(staged_archive)))
         os.replace(staged_archive, archive)
         sidecar.write_text(f"{sha256(archive)}  {archive.name}\n", encoding="utf-8", newline="")
     finally:

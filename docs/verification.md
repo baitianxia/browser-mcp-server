@@ -8,6 +8,27 @@
 
 该阶段工作树已由原生 Windows x64 发布门禁放行。macOS 本地检查仍只覆盖 Python 回归、静态结构和可在当前主机运行的打包校验；Windows PowerShell 5.1、Windows x64 运行包构建、目标安装/升级/卸载、Chrome/Edge 扩展和真实 Claude user-scope 门禁以 Actions 证据为准。
 
+## 2026-11-05 browser 1.0.22：不含 EXE 的 Windows 包（未经 Windows 验证）
+
+依据 ADR-0012，Windows 包不再携带 `node.exe`，改用目标机已有的 Windows x64 Node.js（≥ 20.12.0；最初为 20.18.3，2026-11-06 放宽）；版本提升到 `1.0.22`。
+
+已在 macOS 开发机完成（只是这一层的证据）：
+
+- `python3 -m unittest discover -s tests` 全部通过；需要 Windows PowerShell 5.1 或 Node.js 的用例在本机跳过。
+- 新增或更新的测试覆盖：`verify-bundle.py --reject-native-binaries` 对目录、tar.gz 和 ZIP 按扩展名和 PE 内容拒绝可执行文件，以“MZ”开头的文本不误报；构建器拒绝声明为 system Node 但实际夹带 `node.exe` 的运行包；发布元数据必须是 `bundledNode=false` 且 `nodeRuntime` 完全一致；Windows 目标拒绝 `--bundled-node`；preflight 拒绝位于运行包内的 `node.exe`；验证器、`browser_agent`、`runtime/package.json` 和兼容层守卫的下限一致；升级仍能读取 1.0.21 记录的旧包内路径。
+- 对 1.0.19 正式运行包做的静态扫描显示，唯一的原生二进制是 `node/node.exe`，兼容层和固定 Playwright 包中没有 Node 20.18 之后才有的 Node 侧 API。对与当前 lockfile 相同的 1.0.17 运行包复扫（`Promise.withResolvers`、Set 新方法、迭代器辅助方法、`URL.parse`、全局 `WebSocket`/`navigator`、`require(esm)` 等）也只命中 zod 方法名、浏览器注入脚本或带特性判断的代码。兼容层只使用 `fs`、`os`、`path`、`readline`、`string_decoder`、`url`、`child_process`，并用 `process.execPath` 启动上游，所以上游跟随同一个系统 Node。这些都只是静态证据。
+- 放宽下限前，又对同一运行包扫描了 Node 20.1–20.19 各小版本新增的 Node API（递归 `readdir`、`Dirent.parentPath`、`AbortSignal.any`、`util.styleText`、`crypto.hash`、`import.meta.dirname`、`process.getBuiltinModule`、`zlib.crc32`、`path.matchesGlob`、`require(esm)` 等）。唯一的实际依赖是 Playwright MCP 输出目录大小上限使用的 `Dirent.parentPath`（20.12.0）：我们的配置启用了该上限，在 20.0–20.11 上它会被上游 `try/catch` 吞掉而静默失效。另一处在“远程连接时上传整个目录”，本工程不使用。`Symbol.asyncDispose` 在 20.4 之前只会变成一个无害的属性名。因此下限定为 20.12.0，而不是 20.0.0。
+- 运行包内容除启动守卫、版本号和 `playwright-mcp(.cmd)` 的提示文字外没有改动；MCP 注册参数、环境映射、Playwright 配置生成、扩展处理、设置工具的模式切换和卸载均未改动。
+
+尚未验证，不能写成 Windows 结论：
+
+- 改动后的 PowerShell 脚本（安装器、设置工具、发布门禁、`windows-tool-discovery.ps1`）没有在 Windows PowerShell 5.1 上解析或运行过。
+- 固定 Playwright MCP 在 Node.js 20.12.0 和 20.18.3 上的真实 `initialize/tools/list`、扩展连接和浏览器操作尚未运行。1.0.21 及以前的全部 Windows 功能证据都运行在包内 Node v24.19.0 上，不能直接沿用。CI 已改为：门禁握手、扩展模式和独立 Profile 模式的真实 Chrome E2E（`browser_navigate`、`browser_snapshot`、`browser_click_and_wait`、`browser_select_custom_option`、`browser_read_tooltip`）都用安装器选中的 20.18.3 执行；支持下限另用 `FLOOR_NODE_VERSION`（20.12.0）证明：兼容层协议测试（`tests/test_mcp_compatibility.py`，覆盖下载、剪贴板、helper、表格桥、任务标签页等工具）在 package job 中用 20.12.0 运行，并拒绝“因缺少 Node 被跳过”的假通过；安装完成后再用 20.12.0 对已安装运行包跑一次独立 Profile 真实浏览器 E2E。
+- `Resolve-SystemNodeRuntime` 的真实候选行为（PATH、nvm4w 链接路径、WindowsApps 拒绝）只有一个 Windows 专用用例，尚未在 Actions 中运行。
+- 目标电脑的 AppLocker/WDAC 或第三方安全软件是否允许已有 `node.exe` 运行，仍只有 `claude-workspace-client` 探针的单机证据。
+
+放行前需要 `.github/workflows/windows-release.yml` 在 `windows-2022`、`windows-latest` 和原生 package/install job 全部通过，并把 run 编号和制品链接补记在本节。
+
 ## 2026-09-22 browser 1.0.21 Windows 发布
 
 在公共标准迁移之后，browser 发布版本提升到 `1.0.21`，避免与 1.0.20 修复前制品复用同一个文件名。GitHub Actions run `35728526693` 已在 `windows-2022`、`windows-latest` 和原生 package/install job 全部通过；该 run 的 ZIP、checksum 和 validation evidence 由同一提交生成：[`ZIP artifact`](https://github.com/baitianxia/browser-mcp-server/actions/runs/35728526693/artifacts/10693959563)、[`checksum artifact`](https://github.com/baitianxia/browser-mcp-server/actions/runs/35728526693/artifacts/10694104555)、[`Windows evidence`](https://github.com/baitianxia/browser-mcp-server/actions/runs/35728526693/artifacts/10694034577)。

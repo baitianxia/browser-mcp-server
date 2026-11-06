@@ -6,7 +6,6 @@ param(
     [string]$Profile = "core",
 
     [string]$OutputDir = (Join-Path $PSScriptRoot "..\dist"),
-    [string]$NodeDistribution = "",
     [string]$NodeBin = "",
     [string]$PnpmBin = "",
     [string]$PythonBin = "",
@@ -95,9 +94,9 @@ function Invoke-PythonChecked {
 if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
     throw "Use build-offline-bundle.ps1 only on Windows"
 }
-if (-not $NodeDistribution) {
-    throw "Windows one-click bundles require -NodeDistribution"
-}
+# Windows packages carry no node.exe (or any other EXE/DLL).  The build Node
+# below only installs and smoke-tests the JavaScript runtime; targets run it
+# with their own existing Node.js, verified by the installer.
 
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $NodeBin = Resolve-Tool $NodeBin "node.exe"
@@ -135,7 +134,7 @@ switch ($Architecture) {
 
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
-$ArtifactName = "browser-agent-runtime-1.0.21-$Profile-windows-$TargetMachine"
+$ArtifactName = "browser-agent-runtime-1.0.22-$Profile-windows-$TargetMachine"
 $Archive = Join-Path $OutputDir "$ArtifactName.tar.gz"
 $ArchiveSidecar = "$Archive.sha256"
 if ((Test-Path -LiteralPath $Archive) -or (Test-Path -LiteralPath $ArchiveSidecar)) {
@@ -171,25 +170,6 @@ try {
     )
 
     $RuntimeNode = $NodeBin
-    $BundledNodeArguments = @()
-    if ($NodeDistribution) {
-        Invoke-PythonChecked @(
-            (Join-Path $PSScriptRoot "validate_node_distribution.py"),
-            $NodeDistribution,
-            "--expected-version", $NodeVersion,
-            "--approval-file", (Join-Path $ProjectRoot "config\windows-node-sources.json")
-        )
-        Copy-Item -LiteralPath $NodeDistribution -Destination (Join-Path $Stage "node") -Recurse
-        Invoke-PythonChecked @(
-            (Join-Path $PSScriptRoot "validate_node_distribution.py"),
-            (Join-Path $Stage "node"),
-            "--expected-version", $NodeVersion,
-            "--approval-file", (Join-Path $ProjectRoot "config\windows-node-sources.json")
-        )
-        $RuntimeNode = Join-Path $Stage "node\node.exe"
-        $BundledNodeArguments = @("--bundled-node")
-    }
-
     $env:BROWSER_AGENT_NODE = $RuntimeNode
     Invoke-Checked $RuntimeNode @(
         (Join-Path $Stage "bin\intranet-browser-agent-mcp.js"),
@@ -222,7 +202,7 @@ try {
         "--pnpm-version", $PnpmVersion,
         "--target-system", "windows",
         "--target-machine", $TargetMachine
-    ) + $BundledNodeArguments
+    )
     Invoke-PythonChecked $MetadataArguments
 
     Invoke-PythonChecked @(
@@ -238,7 +218,11 @@ try {
         "--reject-links"
     )
     Invoke-PythonChecked @((Join-Path $PSScriptRoot "write_archive_hash.py"), $StagedArchive)
-    Invoke-PythonChecked @((Join-Path $PSScriptRoot "verify-bundle.py"), $StagedArchive)
+    Invoke-PythonChecked @(
+        (Join-Path $PSScriptRoot "verify-bundle.py"),
+        "--reject-native-binaries",
+        $StagedArchive
+    )
 
     if ($Force) {
         Remove-Item -LiteralPath $Archive, $ArchiveSidecar -Force -ErrorAction SilentlyContinue

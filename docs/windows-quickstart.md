@@ -4,7 +4,7 @@
 
 ## 目标机要求
 
-目标机需要 Windows x64、Python 3.10 或更高版本、Chrome（优先）或 Edge，以及当前用户已经可以正常运行的 Claude Code。Claude Code 可以是原生 `claude.exe`，也可以是现有 npm 安装提供的 `claude.cmd`；安装器只复用并验证现有入口，不安装、升级、替换或修复 Claude Code。入口发现和 `.exe`/JS 分流遵循[公共 Windows Claude Code 探测与调用标准](https://github.com/baitianxia/mcp-engineering-standards/blob/v1.0.0/docs/windows-claude-code-discovery.md)。目标机不需要系统 Node.js，正式包会携带批准的 Windows x64 Node.js 和固定 Playwright MCP 运行时。整个目标机流程不运行 `npm`、`pnpm`、`npx` 或在线下载。
+目标机需要 Windows x64、Python 3.10 或更高版本、Chrome（优先）或 Edge，以及当前用户已经可以正常运行的 Claude Code。Claude Code 可以是原生 `claude.exe`，也可以是现有 npm 安装提供的 `claude.cmd`；安装器只复用并验证现有入口，不安装、升级、替换或修复 Claude Code。入口发现和 `.exe`/JS 分流遵循[公共 Windows Claude Code 探测与调用标准](https://github.com/baitianxia/mcp-engineering-standards/blob/v1.0.0/docs/windows-claude-code-discovery.md)。目标机还需要已有的 Windows x64 Node.js 20.12.0 或更高版本：正式包不含任何 EXE/DLL（包括 `node.exe`），只携带固定 Playwright MCP 的 JavaScript 运行时。安装器依次检查 PATH 中的 `node.exe`、`%NVM_SYMLINK%\node.exe` 和 `%ProgramFiles%\nodejs\node.exe`，拒绝 WindowsApps 别名、非 x64、低于 20.12.0 和本工程目录内的副本，并把选中的绝对路径登记为 MCP 命令；它不安装、升级、下载或修复 Node.js。可以先在 PowerShell 中运行 `node -p "process.version+'/'+process.arch"` 自查，结果应类似 `v20.18.3/x64`。整个目标机流程不运行 `npm`、`pnpm`、`npx` 或在线下载。
 
 ## 校验并解压
 

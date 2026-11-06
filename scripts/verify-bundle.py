@@ -20,6 +20,17 @@ WINDOWS_RESERVED_NAME = re.compile(
     r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.IGNORECASE
 )
 
+# Windows packages run on the target's existing Node.js and must not carry any
+# executable image.  ``--reject-native-binaries`` enforces that by file type and
+# by content, so a renamed PE file is rejected as well.
+NATIVE_BINARY_SUFFIXES = frozenset(
+    {".exe", ".dll", ".pdb", ".sys", ".node", ".msi", ".ocx", ".cpl", ".scr"}
+)
+# Real PE headers sit well inside the first 64 KiB (e_lfanew is normally below
+# 0x400).  Only an actual "PE\0\0" signature counts, so text that merely
+# starts with "MZ" is not flagged.
+PE_PROBE_BYTES = 64 * 1024
+
 
 def digest_stream(handle: BinaryIO) -> str:
     digest = hashlib.sha256()
@@ -31,6 +42,39 @@ def digest_stream(handle: BinaryIO) -> str:
 def digest_path(path: Path) -> str:
     with path.open("rb") as handle:
         return digest_stream(handle)
+
+
+def digest_stream_with_head(handle: BinaryIO) -> tuple[str, bytes]:
+    digest = hashlib.sha256()
+    head = b""
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        if len(head) < PE_PROBE_BYTES:
+            head += chunk[: PE_PROBE_BYTES - len(head)]
+        digest.update(chunk)
+    return digest.hexdigest(), head
+
+
+def digest_path_with_head(path: Path) -> tuple[str, bytes]:
+    with path.open("rb") as handle:
+        return digest_stream_with_head(handle)
+
+
+def is_pe_image(head: bytes) -> bool:
+    """Return true when the prefix is a DOS/PE executable image."""
+    if len(head) < 64 or head[:2] != b"MZ":
+        return False
+    offset = int.from_bytes(head[60:64], "little")
+    if offset + 4 > len(head):
+        return False
+    return head[offset : offset + 4] == b"PE\0\0"
+
+
+def native_binary_error(relative: str, head: bytes) -> str | None:
+    if PurePosixPath(relative).suffix.lower() in NATIVE_BINARY_SUFFIXES:
+        return f"native executable file type is not allowed: {relative}"
+    if is_pe_image(head):
+        return f"Windows PE executable content is not allowed: {relative}"
+    return None
 
 
 def parse_sums(text: str) -> dict[str, str]:
@@ -117,7 +161,7 @@ def load_link_manifest(text: str) -> dict[str, str]:
     return result
 
 
-def verify_directory(root: Path) -> list[str]:
+def verify_directory(root: Path, reject_native_binaries: bool = False) -> list[str]:
     if is_link_or_reparse(root) or not root.is_dir():
         return [f"bundle root is not a regular directory: {root}"]
     errors: list[str] = []
@@ -169,9 +213,14 @@ def verify_directory(root: Path) -> list[str]:
                     errors.append(f"unsafe symlink: {relative} -> {target}")
             elif path.is_file() and relative != sums_name:
                 seen_files.add(relative)
+                actual_digest, head = digest_path_with_head(path)
+                if reject_native_binaries:
+                    native_error = native_binary_error(relative, head)
+                    if native_error:
+                        errors.append(native_error)
                 if relative not in expected:
                     errors.append(f"unlisted file: {relative}")
-                elif digest_path(path) != expected[relative]:
+                elif actual_digest != expected[relative]:
                     errors.append(f"hash mismatch: {relative}")
             elif path.is_dir():
                 # Directories are structural entries and are covered by the
@@ -208,9 +257,9 @@ def verify_sidecar(archive: Path) -> list[str]:
     return [] if raw == expected else ["invalid or non-canonical archive checksum sidecar"]
 
 
-def verify_archive(archive: Path) -> list[str]:
+def verify_archive(archive: Path, reject_native_binaries: bool = False) -> list[str]:
     if archive.suffix.lower() == ".zip":
-        return verify_zip_archive(archive)
+        return verify_zip_archive(archive, reject_native_binaries)
     errors = verify_sidecar(archive)
     if errors:
         return errors
@@ -283,11 +332,19 @@ def verify_archive(archive: Path) -> list[str]:
                     errors.append(f"unsupported archive member type: {relative}")
                     continue
                 seen_files.add(relative)
+                handle = tar.extractfile(member)
+                if handle is None:
+                    errors.append(f"hash mismatch: {relative}")
+                    continue
+                actual_digest, head = digest_stream_with_head(handle)
+                if reject_native_binaries:
+                    native_error = native_binary_error(relative, head)
+                    if native_error:
+                        errors.append(native_error)
                 if relative not in expected:
                     errors.append(f"unlisted file: {relative}")
                     continue
-                handle = tar.extractfile(member)
-                if handle is None or digest_stream(handle) != expected[relative]:
+                if actual_digest != expected[relative]:
                     errors.append(f"hash mismatch: {relative}")
 
             for missing in sorted(expected.keys() - seen_files):
@@ -316,7 +373,7 @@ def _zip_member_is_special(member: zipfile.ZipInfo) -> bool:
     return mode not in {0, stat.S_IFREG, stat.S_IFDIR, stat.S_IFLNK}
 
 
-def verify_zip_archive(archive: Path) -> list[str]:
+def verify_zip_archive(archive: Path, reject_native_binaries: bool = False) -> list[str]:
     """Verify a single-top-level-directory ZIP with an in-archive checksum list.
 
     The in-archive manifest is sufficient for an extracted package.  When an
@@ -411,10 +468,17 @@ def verify_zip_archive(archive: Path) -> list[str]:
                     errors.append(f"unsupported archive member type: {relative}")
                     continue
                 seen_files.add(relative)
+                content = bundle.read(info)
+                if reject_native_binaries:
+                    native_error = native_binary_error(
+                        relative, content[:PE_PROBE_BYTES]
+                    )
+                    if native_error:
+                        errors.append(native_error)
                 if relative not in expected:
                     errors.append(f"unlisted file: {relative}")
                     continue
-                if hashlib.sha256(bundle.read(info)).hexdigest() != expected[relative]:
+                if hashlib.sha256(content).hexdigest() != expected[relative]:
                     errors.append(f"hash mismatch: {relative}")
 
             for missing in sorted(expected.keys() - seen_files):
@@ -430,11 +494,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundle", type=Path)
     parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument(
+        "--reject-native-binaries",
+        action="store_true",
+        help="fail on .exe/.dll/.pdb/.node and other executable images (Windows no-EXE packages)",
+    )
     args = parser.parse_args()
     if args.bundle.is_dir():
-        errors = verify_directory(args.bundle)
+        errors = verify_directory(args.bundle, args.reject_native_binaries)
     elif args.bundle.is_file():
-        errors = verify_archive(args.bundle)
+        errors = verify_archive(args.bundle, args.reject_native_binaries)
     else:
         errors = [f"not found: {args.bundle}"]
     if args.as_json:

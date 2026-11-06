@@ -11,7 +11,7 @@ Windows V1 只支持 x64、本机盘符路径和当前用户范围。历史工�
 ## 组件与信任边界
 
 ```text
-Claude Code ── user-scope stdio ── node.exe + 固定兼容层
+Claude Code ── user-scope stdio ── 目标机已有 node.exe + 固定兼容层
                                       │
                                       └─ 同包 Playwright MCP
                                            │
@@ -19,7 +19,7 @@ Claude Code ── user-scope stdio ── node.exe + 固定兼容层
                          用户批准标签页             独立 Profile
 ```
 
-兼容层和固定 Playwright MCP 位于同一个离线运行包。兼容层只负责配置读取、MCP 身份、快照策略、页面稳定等待和受检的交互回退；它不扩大 Node 文件权限、网络权限或浏览器认证边界。高风险动作由 Claude Code 确认和企业业务审批共同约束。
+兼容层和固定 Playwright MCP 位于同一个离线运行包；Windows 运行包不含 `node.exe` 或任何其他可执行映像，由目标机已有的 Windows x64 Node.js（≥ 20.12.0）执行（ADR-0012）。兼容层只负责配置读取、MCP 身份、快照策略、页面稳定等待和受检的交互回退；它不扩大 Node 文件权限、网络权限或浏览器认证边界。高风险动作由 Claude Code 确认和企业业务审批共同约束。
 
 - **文件边界**：运行时、配置、输出、扩展副本、维护工具和备份只在 `%USERPROFILE%\browser-mcp-server` 内；Chrome/Edge 的 `LOCALAPPDATA` 只用于发现既有浏览器 Profile 和检查扩展状态。
 - **身份边界**：Extension 模式由用户选择具体标签页；persistent 模式使用本工程独立的 `browser-profile\pilot`，不读取日常 Profile。
@@ -46,7 +46,7 @@ V1 只允许 loopback 的受控调试端点或官方 channel；禁止 `0.0.0.0`�
 
 ## MCP 与配置契约
 
-Windows MCP 条目必须是 user-scope stdio，命令直接执行清单中已验证的 `node.exe`，首个脚本参数为固定运行包内的兼容层（当前文件名仍为内部实现 `bin\intranet-browser-agent-mcp.js`），随后由兼容层启动同包上游 CLI。不得把 `.cmd`、`.bat` 或 `npx` 作为 MCP `command`，不得在线解析或下载依赖。
+Windows MCP 条目必须是 user-scope stdio，命令直接执行清单中已验证的、目标机已有的 `node.exe`（必须位于运行包之外），首个脚本参数为固定运行包内的兼容层（当前文件名仍为内部实现 `bin\intranet-browser-agent-mcp.js`），随后由兼容层启动同包上游 CLI。不得把 `.cmd`、`.bat` 或 `npx` 作为 MCP `command`，不得在线解析或下载依赖。
 
 安装器、设置工具、卸载工具和发布门禁复用当前用户已有的 npm Claude Code 时，必须先读取同级 `node_modules\@anthropic-ai\claude-code\package.json` 的 `claude` bin，并确认目标仍在该包目录内。JavaScript bin（`.js`、`.cjs` 或 `.mjs`）通过该 npm 安装本来使用的 `node.exe` 直接执行；Windows 原生 bin（`.exe`，例如 `bin\claude.exe`）直接执行，不得把 PE 文件交给 Node。`.cmd` 只用于发现入口，不能作为子进程 executable。候选收集、WindowsApps 排除、NVM/npm 链接解析、PE/身份/能力探针和诊断字段遵循[公共 Windows Claude Code 探测与调用标准](https://github.com/baitianxia/mcp-engineering-standards/blob/v1.0.0/docs/windows-claude-code-discovery.md)；本工程若尚未覆盖其中某项，必须在验证记录中标为未验证。
 
@@ -76,13 +76,13 @@ Extension 模式的同一活动连接会复用一个 Playwright 分组，任务�
 
 正式用户交付物是一个 ZIP，只有一个顶层目录，顶层入口为 `INSTALL.cmd`、`CONFIGURE.cmd`、`OPEN-CONFIG.cmd` 和 `UNINSTALL.cmd`。用户解压后只需双击 `INSTALL.cmd`。安装器不运行测试、AST 扫描、注册器自检、npm/pnpm/npx 或在线下载；它只复用当前用户已经安装且可验证的 Claude Code。
 
-安装器先验证 ZIP/清单、内层运行包、Node 来源、扩展和浏览器，再在同卷短路径暂存并以 `[IO.Directory]::Move` 原子发布。配置先完整渲染和握手，之后才整目录切换；外部锁定时在同一进程有界退避重试，状态不明确或超时则保留旧目录并失败关闭。升级只提取当前受管清单中的浏览器模式、channel、授权、无头和交互选项，不复制旧运行路径、任意字段或历史共享目录。卸载只处理本工程根目录和当前 `browser-mcp` 条目。
+安装器先验证 ZIP/清单、内层运行包（拒绝任何可执行映像）、目标机已有 Node.js 的版本与架构、扩展和浏览器，再在同卷短路径暂存并以 `[IO.Directory]::Move` 原子发布。配置先完整渲染和握手，之后才整目录切换；外部锁定时在同一进程有界退避重试，状态不明确或超时则保留旧目录并失败关闭。升级只提取当前受管清单中的浏览器模式、channel、授权、无头和交互选项，不复制旧运行路径、任意字段或历史共享目录。卸载只处理本工程根目录和当前 `browser-mcp` 条目。
 
 ## 发布与验收
 
-构建机使用固定 Node/pnpm/Python，跳过安装脚本和浏览器下载，携带批准的 Windows x64 Node。`build-transfer-kit.py` 按审查白名单生成 ZIP、`release-manifest.json`、`KIT-METADATA.json`、逐文件 `SHA256SUMS.txt`、CRX/`unpacked` 和 `NOTICE.md`；测试、缓存、秘密、symlink/junction 和发布门禁脚本不进入公共 ZIP。
+构建机使用固定 Node/pnpm/Python，跳过安装脚本和浏览器下载；构建用 Node 不进入发布包。`build-transfer-kit.py` 按审查白名单生成 ZIP、`release-manifest.json`、`KIT-METADATA.json`、逐文件 `SHA256SUMS.txt`、CRX/`unpacked` 和 `NOTICE.md`；测试、缓存、秘密、symlink/junction 和发布门禁脚本不进入公共 ZIP。
 
-发布门禁 `scripts/verify-windows-release.ps1` 必须在原生 Windows PowerShell 5.1 运行。它验证 ZIP 和解压目录、PowerShell AST、完整 Python 测试、内层运行时、Node 版本、MCP stdio `initialize/tools/list` 及隔离真实 Claude `remove/add/get`，并在测试前后复验包。门禁由发布流水线调用，目标 launcher 不调用它。只有 `buildHost=windows/x64`、`target=windows/x64`、`crossBuilt=false` 和 `targetCliSmokeTested=true` 的制品可标为正式包。
+发布门禁 `scripts/verify-windows-release.ps1` 必须在原生 Windows PowerShell 5.1 运行。它验证 ZIP 和解压目录（无可执行映像）、PowerShell AST、完整 Python 测试、内层运行时，用 `-NodeExecutable` 指定的目标同版本 Node 完成 MCP stdio `initialize/tools/list` 及隔离真实 Claude `remove/add/get`，并在测试前后复验包。门禁由发布流水线调用，目标 launcher 不调用它。只有 `buildHost=windows/x64`、`target=windows/x64`、`crossBuilt=false` 和 `targetCliSmokeTested=true` 的制品可标为正式包。
 
 ## 变更规则
 

@@ -4,6 +4,9 @@
 param(
     [string]$PythonExecutable = "",
     [string]$ClaudeExecutable = "",
+    # The target's existing Node.js to gate with.  Release CI passes the
+    # target-like version equal to the package's nodeRuntime.minimumVersion.
+    [string]$NodeExecutable = "",
     [Parameter(Mandatory = $true)]
     [string]$TransferPath = "",
     [string]$LogPath = ""
@@ -106,23 +109,6 @@ function Invoke-NativeChecked {
     if ($ExitCode -ne 0) { throw "$Executable failed with exit code $ExitCode" }
 }
 
-function Get-NativeOutput {
-    param([string]$Executable, [string[]]$Arguments)
-    $PreviousPreference = $ErrorActionPreference
-    $Output = @()
-    $ExitCode = 1
-    try {
-        $ErrorActionPreference = "Continue"
-        $Output = & $Executable @Arguments 2>&1
-        $ExitCode = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $PreviousPreference
-    }
-    $Text = ((@($Output) | ForEach-Object { [string]$_ }) -join [Environment]::NewLine).Trim()
-    if ($ExitCode -ne 0) { throw "$Executable failed with exit code ${ExitCode}: $Text" }
-    return $Text
-}
-
 function Parse-PowerShellScripts {
     param([Parameter(Mandatory = $true)][string]$Root)
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
@@ -161,7 +147,7 @@ function Resolve-PublicPackageRoot {
         if (($SidecarItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Public Windows ZIP checksum sidecar must be a regular file: $Sidecar"
         }
-        Invoke-PythonChecked @($Verifier, $Resolved)
+        Invoke-PythonChecked @($Verifier, "--reject-native-binaries", $Resolved)
         $ExtractRoot = Join-Path $TemporaryRoot "public-package"
         New-Item -ItemType Directory -Path $ExtractRoot -Force | Out-Null
         Expand-Archive -LiteralPath $Resolved -DestinationPath $ExtractRoot -Force
@@ -174,7 +160,7 @@ function Resolve-PublicPackageRoot {
     if (-not (Test-Path -LiteralPath $Resolved -PathType Container)) {
         throw "TransferPath must be the public Windows ZIP or its extracted root."
     }
-    Invoke-PythonChecked @($Verifier, $Resolved)
+    Invoke-PythonChecked @($Verifier, "--reject-native-binaries", $Resolved)
     return $Resolved
 }
 
@@ -256,7 +242,7 @@ function Invoke-ReleaseGate {
 
         $RuntimeArchiveName = [string]$KitMetadata.runtime.archive
         $RuntimeArchive = Join-Path (Join-Path $PayloadRoot "runtime") $RuntimeArchiveName
-        Invoke-PythonChecked @($Verifier, $RuntimeArchive)
+        Invoke-PythonChecked @($Verifier, "--reject-native-binaries", $RuntimeArchive)
         $RuntimeExtraction = Join-Path $TemporaryRoot "runtime"
         New-Item -ItemType Directory -Path $RuntimeExtraction -Force | Out-Null
         $Tar = Get-Command "tar.exe" -ErrorAction SilentlyContinue
@@ -264,21 +250,28 @@ function Invoke-ReleaseGate {
         Invoke-NativeChecked $Tar.Source @("-xzf", $RuntimeArchive, "-C", $RuntimeExtraction)
         $RuntimeName = $RuntimeArchiveName -replace '\.tar\.gz$', ''
         $RuntimeRoot = Join-Path $RuntimeExtraction $RuntimeName
-        Invoke-PythonChecked @($Verifier, $RuntimeRoot)
+        Invoke-PythonChecked @($Verifier, "--reject-native-binaries", $RuntimeRoot)
         $BuildMetadata = $KitMetadata.runtime.buildMetadata
-        $NodeRoot = Join-Path $RuntimeRoot "node"
-        $NodeExe = Join-Path $NodeRoot "node.exe"
-        $NodeApprovals = Join-Path $SourceRoot "config\windows-node-sources.json"
-        Invoke-PythonChecked @(
-            (Join-Path $SourceRoot "scripts\validate_node_distribution.py"),
-            $NodeRoot,
-            "--expected-version", [string]$BuildMetadata.tools.node,
-            "--approval-file", $NodeApprovals
-        )
-        $ActualNode = Get-NativeOutput $NodeExe @("--version")
-        if ($ActualNode -ne [string]$BuildMetadata.tools.node) {
-            throw "Packaged Node.js reports $ActualNode; expected $($BuildMetadata.tools.node)"
+        if ($BuildMetadata.bundledNode -ne $false -or
+            [string]$BuildMetadata.nodeRuntime.source -ne "system") {
+            throw "Windows runtime must use the target's existing Node.js (bundledNode=false)."
         }
+        if (Test-Path -LiteralPath (Join-Path $RuntimeRoot "node")) {
+            throw "Windows runtime unexpectedly contains a node directory."
+        }
+        $MinimumNodeVersion = [string]$BuildMetadata.nodeRuntime.minimumVersion
+        $SystemNode = Resolve-SystemNodeRuntime `
+            -MinimumVersion $MinimumNodeVersion `
+            -ExplicitPath $NodeExecutable
+        foreach ($Rejection in @($SystemNode.Rejected)) {
+            Write-Host "SYSTEM NODE REJECTED: $Rejection"
+        }
+        if (-not $SystemNode.Executable) {
+            throw "No existing Windows x64 Node.js $MinimumNodeVersion+ is available for the release gate."
+        }
+        $NodeExe = [string]$SystemNode.Executable
+        Write-Host ("SYSTEM NODE FOR GATE: {0} {1} {2} (minimum {3})" -f `
+            $NodeExe, $SystemNode.Text, $SystemNode.Arch, $MinimumNodeVersion)
         $Wrapper = Join-Path $RuntimeRoot "bin\intranet-browser-agent-mcp.js"
         $ProbeConfig = Join-Path $TemporaryRoot "playwright.config.json"
         [IO.File]::WriteAllText(
@@ -347,7 +340,7 @@ function Invoke-ReleaseGate {
         }
 
         # A final pass proves the gate and its tests did not mutate the package.
-        Invoke-PythonChecked @($Verifier, $ResolvedPackageRoot)
+        Invoke-PythonChecked @($Verifier, "--reject-native-binaries", $ResolvedPackageRoot)
     } finally {
         if (Test-Path -LiteralPath $TemporaryRoot) {
             Remove-Item -LiteralPath $TemporaryRoot -Recurse -Force -ErrorAction SilentlyContinue

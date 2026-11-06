@@ -13,6 +13,10 @@ from typing import Any
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 NODE_VERSION_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+# Windows packages carry no node.exe.  The installer selects the target's
+# existing Node.js and must enforce exactly this release-approved floor, which
+# is also the version the publisher gate runs the MCP handshake with.
+SYSTEM_NODE_RUNTIME = {"source": "system", "minimumVersion": "20.12.0"}
 
 
 class MetadataValidationError(RuntimeError):
@@ -23,6 +27,18 @@ def require_object(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise MetadataValidationError(f"{name} must be an object")
     return value
+
+
+def validate_system_node_runtime(build: dict[str, Any], label: str) -> None:
+    if build.get("bundledNode") is not False:
+        raise MetadataValidationError(
+            f"{label}bundledNode must be false; Windows packages must not carry node.exe"
+        )
+    if build.get("nodeRuntime") != SYSTEM_NODE_RUNTIME:
+        raise MetadataValidationError(
+            f"{label}nodeRuntime must be exactly "
+            + json.dumps(SYSTEM_NODE_RUNTIME, sort_keys=True)
+        )
 
 
 def validate_metadata(payload: Any) -> None:
@@ -77,8 +93,7 @@ def validate_metadata(payload: Any) -> None:
         raise MetadataValidationError("crossBuilt must be false")
     if build.get("targetCliSmokeTested") is not True:
         raise MetadataValidationError("targetCliSmokeTested must be true")
-    if build.get("bundledNode") is not True:
-        raise MetadataValidationError("bundledNode must be true")
+    validate_system_node_runtime(build, "")
     if build.get("profile") != "core":
         raise MetadataValidationError("Windows one-click release profile must be core")
     if build.get("runtimeVersion") != toolkit_version:
@@ -203,8 +218,7 @@ def validate_public_manifest(payload: Any) -> None:
         raise MetadataValidationError("buildMetadata.target must be windows/x64")
     if build.get("crossBuilt") is not False or build.get("targetCliSmokeTested") is not True:
         raise MetadataValidationError("public release must be a native CLI-tested Windows build")
-    if build.get("bundledNode") is not True:
-        raise MetadataValidationError("public release must include bundled Node.js")
+    validate_system_node_runtime(build, "buildMetadata.")
     extension = root.get("browserExtension")
     if extension is not None:
         extension = require_object(extension, "browserExtension")

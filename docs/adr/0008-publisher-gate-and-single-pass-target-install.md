@@ -1,6 +1,6 @@
 # ADR 0008：发布门禁与目标机单次安装分离
 
-状态：已接受（2026-08-31）
+状态：已接受（2026-08-31）；目标安装器的“包内 Node 来源与版本”校验已按 ADR-0012 改为“目标机已有 Node.js 的版本与架构”和“包内无可执行映像”。
 
 > 2026-09-07 统一 Windows 交付更新：当前 breaking release 的公共制品和入口以 `docs/architecture.md`、`docs/acceptance.md` 和 `docs/operations.md` 为准，即 `browser-mcp-server-<版本>-windows-x64.zip` 与顶层 `INSTALL.cmd`。本文关于发布门禁与目标机单次安装的职责边界继续有效；旧包名或旧入口只描述历史版本。
 
