@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import re
 import tempfile
 import unittest
@@ -160,25 +161,32 @@ class BrowserAgentManifestTests(unittest.TestCase):
         manifest["controls"]["devtools"] = True
         self.assertEqual((20, 19, 0), browser_agent.minimum_node_version(manifest))
 
+    def windows_preflight_checks(self, node_executable: str) -> dict[str, dict]:
+        manifest = self.valid_windows_manifest()
+        manifest["nodeExecutable"] = node_executable
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest_path = Path(temporary) / "windows.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with mock.patch.object(
+                browser_agent, "_host_system", return_value="windows"
+            ), mock.patch.object(
+                browser_agent, "_host_machine", return_value="x64"
+            ), mock.patch.dict(
+                os.environ, {"USERPROFILE": r"C:\Users\pilot"}
+            ):
+                checks = browser_agent.preflight(
+                    manifest_path,
+                    Path(temporary) / "runtime",
+                    Path(temporary) / "config",
+                    run_cli_help=False,
+                )
+        return {check["name"]: check for check in checks}
+
     def test_windows_preflight_requires_existing_node_outside_runtime(self) -> None:
         def binding_status(node_executable: str) -> dict[str, str]:
-            manifest = self.valid_windows_manifest()
-            manifest["nodeExecutable"] = node_executable
-            with tempfile.TemporaryDirectory() as temporary:
-                manifest_path = Path(temporary) / "windows.json"
-                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-                with mock.patch.object(
-                    browser_agent, "_host_system", return_value="windows"
-                ), mock.patch.object(browser_agent, "_host_machine", return_value="x64"):
-                    checks = browser_agent.preflight(
-                        manifest_path,
-                        Path(temporary) / "runtime",
-                        Path(temporary) / "config",
-                        run_cli_help=False,
-                    )
-            return next(
-                check for check in checks if check["name"] == "windows-mcp-node-binding"
-            )
+            return self.windows_preflight_checks(node_executable)[
+                "windows-mcp-node-binding"
+            ]
 
         existing = binding_status(r"C:\Program Files\nodejs\node.exe")
         self.assertEqual("pass", existing["status"], existing["detail"])
@@ -187,6 +195,15 @@ class BrowserAgentManifestTests(unittest.TestCase):
         )
         self.assertEqual("fail", bundled["status"])
         self.assertIn("inside the runtime", bundled["detail"])
+
+    def test_windows_user_scope_paths_allow_system_node_outside_profile(self) -> None:
+        # The existing Node.js normally lives in Program Files or an nvm
+        # directory; only runtime, config, output and Profile must sit under
+        # USERPROFILE.  (Regression: 1.0.22 CI install stopped here.)
+        for node in (r"C:\Program Files\nodejs\node.exe", r"C:\nvm4w\nodejs\node.exe"):
+            with self.subTest(node=node):
+                scope = self.windows_preflight_checks(node)["user-scope-paths"]
+                self.assertNotIn("nodeExecutable", scope["detail"])
 
     def test_manifest_strings_reject_surrounding_whitespace(self) -> None:
         manifest = self.valid_windows_manifest()

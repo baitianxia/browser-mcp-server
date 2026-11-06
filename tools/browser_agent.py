@@ -1144,10 +1144,13 @@ def preflight(
         )
         if target_system == "windows":
             user_profile = os.environ.get("USERPROFILE", "")
+            # manifest.nodeExecutable is deliberately absent: Windows packages
+            # run on the target's existing Node.js (Program Files, nvm, ...),
+            # which normally lives outside USERPROFILE.  Its placement is
+            # checked by windows-mcp-node-binding instead.
             scoped_paths = {
                 "runtime-root": str(runtime_root),
                 "manifest.installRoot": manifest["installRoot"],
-                "manifest.nodeExecutable": manifest["nodeExecutable"],
                 "config-root": str(config_root),
                 "manifest.configRoot": manifest["configRoot"],
                 "output.directory": manifest["output"]["directory"],
